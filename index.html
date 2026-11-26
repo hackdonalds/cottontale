@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Cottontale</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐇</text></svg>" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <form id="lobby" class="panel" autocomplete="off">
+    <h1>🐇 Cottontale</h1>
+    <p class="sub">A little 3D tabletop for family adventures. Peer-to-peer over Nostr, end-to-end encrypted.</p>
+    <label>Your name <input id="name" maxlength="24" required placeholder="e.g. Dad the Dungeon Master" /></label>
+    <label>Your colour <span id="colors" class="swatches"></span></label>
+    <label>Table code
+      <span class="row"><input id="code" required minlength="6" spellcheck="false" /><button type="button" id="newcode" title="New random code">🎲</button></span>
+    </label>
+    <p class="hint">Everyone who enters the same code sits at the same table. Keep it secret — it is also the encryption key.</p>
+    <details>
+      <summary>Relays</summary>
+      <textarea id="relays" rows="3" spellcheck="false"></textarea>
+    </details>
+    <button class="primary" id="join">Sit down at the table</button>
+  </form>
+
+  <div id="hud" hidden>
+    <div id="top" class="panel">
+      <b>🐇</b>
+      <span id="status" title="Relay connections">●</span>
+      <span id="players"></span>
+      <span class="grow"></span>
+      <button id="invite" title="Copy invite link">🔗 Invite</button>
+      <button id="menuBtn" title="Menu">☰</button>
+      <div id="menu" class="panel" hidden>
+        <button data-act="meadow">🌱 Add a starter meadow</button>
+        <button data-act="export">💾 Export table</button>
+        <button data-act="import">📂 Import table</button>
+        <button data-act="clear">🧹 Clear table</button>
+        <button data-act="leave">🚪 Leave</button>
+        <p class="hint">Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z undo · Del remove</p>
+      </div>
+    </div>
+
+    <div id="tools" class="panel">
+      <button data-tool="move" title="Move minis (1)">✋</button>
+      <button data-tool="build" title="Build (2)">🧱</button>
+      <button data-tool="erase" title="Erase (3)">⛏️</button>
+      <button data-tool="mini" title="Add minis (4)">♟️</button>
+      <button data-tool="ping" title="Ping (5)">📣</button>
+    </div>
+
+    <div id="palette" class="panel" hidden></div>
+
+    <div id="minipanel" class="panel" hidden>
+      <input id="miniName" maxlength="20" placeholder="Name" />
+      <span id="miniColors" class="swatches"></span>
+      <span class="row">
+        <button id="miniRot" title="Turn (R)">↻</button>
+        <button id="miniSize" title="Size">⇲</button>
+        <button id="miniDel" title="Remove (Del)">🗑️</button>
+      </span>
+    </div>
+
+    <button id="logToggle" class="panel" title="Chat & dice">💬</button>
+    <div id="log" class="panel">
+      <div id="msgs"></div>
+      <div id="dice">
+        <button id="diceN" title="Number of dice">1×</button>
+        <button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button>
+        <button data-d="10">d10</button><button data-d="12">d12</button><button data-d="20">d20</button><button data-d="100">d100</button>
+      </div>
+      <form id="chat"><input id="chatIn" maxlength="300" placeholder="Say something… or /r 2d6+3" autocomplete="off" /></form>
+    </div>
+    <div id="toast"></div>
+  </div>
+  <input type="file" id="file" accept="application/json" hidden />
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

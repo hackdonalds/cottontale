@@ -1,0 +1,306 @@
+// Multiplayer over Nostr.
+//
+// A table is identified by a secret room code. From it we derive
+//   - an AES-GCM key  (all event content is encrypted; relays see only noise)
+//   - a public tag    (so relays can route events to people at the same table)
+//
+// Two kinds of events are used:
+//   - kind 21420 (ephemeral): live ops, chat, dice, pings, presence. Not stored.
+//   - kind 30078 (addressable app data): each player's snapshot of the board,
+//     split in chunks, so late joiners and returning players get the full map.
+import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
+import type { Row, Store } from './store';
+
+export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
+const LIVE = 21420;
+const SNAP = 30078;
+const CHUNK_ROWS = 1000;
+
+export type Msg =
+  | { y: 'ops'; o: Row[] }
+  | { y: 'hi'; n: string; c: string; re?: boolean }
+  | { y: 'bye' }
+  | { y: 'chat'; m: string }
+  | { y: 'roll'; d: string; r: number[]; mod: number }
+  | { y: 'ping'; p: [number, number, number] }
+  | { y: 'mv'; id: string; p: [number, number, number] };
+
+export interface Peer { name: string; color: string; last: number }
+
+const te = new TextEncoder();
+const td = new TextDecoder();
+export const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+export const unhex = (s: string) => new Uint8Array((s.match(/../g) ?? []).map((h) => parseInt(h, 16)));
+
+function b64(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function pipe(data: Uint8Array, t: CompressionStream | DecompressionStream): Promise<Uint8Array> {
+  const stream = new Blob([data as BlobPart]).stream().pipeThrough(t as unknown as TransformStream<Uint8Array, Uint8Array>);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+export async function deriveRoom(code: string): Promise<{ key: CryptoKey; tag: string }> {
+  const base = await crypto.subtle.importKey('raw', te.encode(code.trim().toLowerCase()), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(
+    await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: te.encode('cottontale/v1'), iterations: 150_000 }, base, 384),
+  );
+  const key = await crypto.subtle.importKey('raw', bits.slice(0, 32), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return { key, tag: hex(bits.slice(32, 48)) };
+}
+
+export async function seal(key: CryptoKey, data: unknown): Promise<string> {
+  let body: Uint8Array = te.encode(JSON.stringify(data));
+  let flag = 0;
+  if (body.length > 400) { body = await pipe(body, new CompressionStream('gzip')); flag = 1; }
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plain = new Uint8Array(body.length + 1);
+  plain[0] = flag;
+  plain.set(body, 1);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plain));
+  const out = new Uint8Array(12 + ct.length);
+  out.set(iv);
+  out.set(ct, 12);
+  return b64(out);
+}
+
+export async function unseal<T = unknown>(key: CryptoKey, content: string): Promise<T> {
+  const raw = unb64(content);
+  const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.subarray(0, 12) }, key, raw.subarray(12)));
+  const body = plain[0] === 1 ? await pipe(plain.subarray(1), new DecompressionStream('gzip')) : plain.subarray(1);
+  return JSON.parse(td.decode(body)) as T;
+}
+
+/** One relay connection with auto-reconnect. */
+class Relay {
+  open = false;
+  private ws?: WebSocket;
+  private retry = 1000;
+  private dead = false;
+  constructor(
+    readonly url: string,
+    private filters: () => object[],
+    private onEvent: (e: Event) => void,
+    private onState: (r: Relay) => void,
+    private onEose: () => void,
+  ) { this.connect(); }
+
+  private connect(): void {
+    if (this.dead) return;
+    let ws: WebSocket;
+    try { ws = new WebSocket(this.url); } catch { this.again(); return; }
+    this.ws = ws;
+    ws.onopen = () => {
+      this.open = true;
+      this.retry = 1000;
+      ws.send(JSON.stringify(['REQ', 'ct', ...this.filters()]));
+      this.onState(this);
+    };
+    ws.onmessage = (m) => {
+      try {
+        const d = JSON.parse(m.data as string);
+        if (d[0] === 'EVENT' && d[2]) this.onEvent(d[2]);
+        else if (d[0] === 'EOSE') this.onEose();
+      } catch { /* ignore malformed frames */ }
+    };
+    ws.onclose = () => {
+      const was = this.open;
+      this.open = false;
+      if (was) this.onState(this);
+      this.again();
+    };
+    ws.onerror = () => ws.close();
+  }
+  private again(): void {
+    if (this.dead) return;
+    setTimeout(() => this.connect(), this.retry);
+    this.retry = Math.min(this.retry * 2, 30_000);
+  }
+  send(e: Event): void { if (this.open) this.ws!.send(JSON.stringify(['EVENT', e])); }
+  close(): void { this.dead = true; this.ws?.close(); }
+}
+
+export interface NetOpts {
+  code: string;
+  relays: string[];
+  sk: Uint8Array;
+  name: string;
+  color: string;
+  store: Store;
+  /** Keys loaded from local storage that the relays have not yet confirmed. */
+  unconfirmed?: Set<string>;
+  onMsg: (msg: Msg, from: string) => void;
+  onPeers: () => void;
+  onStatus: (open: number, total: number) => void;
+}
+
+export class Net {
+  readonly pk: string;
+  peers = new Map<string, Peer>();
+  tag = '';
+  synced = false;
+  private key!: CryptoKey;
+  private relays: Relay[] = [];
+  private seen = new Set<string>();
+  private ops: Row[] = [];
+  private opTimer?: ReturnType<typeof setTimeout>;
+  private snapTimer?: ReturnType<typeof setTimeout>;
+  private dirty = false;
+  private beat?: ReturnType<typeof setInterval>;
+  private unconfirmed: Set<string>;
+
+  constructor(private o: NetOpts) {
+    this.pk = getPublicKey(o.sk);
+    this.unconfirmed = o.unconfirmed ?? new Set();
+  }
+
+  async start(): Promise<void> {
+    const { key, tag } = await deriveRoom(this.o.code);
+    this.key = key;
+    this.tag = tag;
+    const since = Math.floor(Date.now() / 1000) - 15;
+    const filters = () => [{ kinds: [SNAP], '#t': [tag] }, { kinds: [LIVE], '#t': [tag], since }];
+    const finishSync = () => {
+      if (this.synced) return;
+      this.synced = true;
+      // Anything we had locally that no relay knows about (e.g. the relay
+      // dropped it) gets re-published.
+      if (this.unconfirmed.size) this.snapshotSoon(500);
+    };
+    this.relays = this.o.relays.map((url) => new Relay(
+      url, filters,
+      (e) => void this.receive(e),
+      () => {
+        this.o.onStatus(this.relays.filter((r) => r.open).length, this.relays.length);
+        this.hello();
+        if (this.synced && this.o.store.entries.size) this.snapshotSoon(2000);
+      },
+      () => setTimeout(finishSync, 300),
+    ));
+    setTimeout(finishSync, 5000);
+    this.o.store.onLocal = (row) => this.queueOp(row);
+    this.beat = setInterval(() => {
+      this.hello();
+      const now = Date.now();
+      let changed = false;
+      for (const [pk, p] of this.peers) if (now - p.last > 55_000) { this.peers.delete(pk); changed = true; }
+      if (changed) this.o.onPeers();
+    }, 20_000);
+  }
+
+  setProfile(name: string, color: string): void {
+    this.o.name = name;
+    this.o.color = color;
+    this.hello();
+  }
+
+  private hello(re = false): void {
+    void this.send({ y: 'hi', n: this.o.name, c: this.o.color, ...(re ? { re } : {}) });
+  }
+
+  async send(msg: Msg): Promise<void> {
+    if (!this.relays.some((r) => r.open)) return;
+    this.publish(LIVE, [['t', this.tag]], await seal(this.key, msg));
+  }
+
+  private publish(kind: number, tags: string[][], content: string): void {
+    const ev = finalizeEvent({ kind, tags, content, created_at: Math.floor(Date.now() / 1000) }, this.o.sk);
+    this.seen.add(ev.id);
+    for (const r of this.relays) r.send(ev);
+  }
+
+  private queueOp(row: Row): void {
+    this.ops.push(row);
+    this.snapshotSoon(5000);
+    this.opTimer ??= setTimeout(() => {
+      this.opTimer = undefined;
+      const all = this.ops;
+      this.ops = [];
+      for (let i = 0; i < all.length; i += 300) void this.send({ y: 'ops', o: all.slice(i, i + 300) });
+    }, 120);
+  }
+
+  private snapshotSoon(ms: number): void {
+    this.dirty = true;
+    this.snapTimer ??= setTimeout(() => void this.snapshot(), ms);
+  }
+
+  /** Publish our full view of the board as replaceable chunks. */
+  async snapshot(): Promise<void> {
+    clearTimeout(this.snapTimer);
+    this.snapTimer = undefined;
+    if (!this.relays.some((r) => r.open)) return; // retried on reconnect
+    this.dirty = false;
+    this.unconfirmed.clear();
+    const rows = this.o.store.dump().sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    for (let i = 0, n = 0; i < rows.length; i += CHUNK_ROWS, n++) {
+      const content = await seal(this.key, rows.slice(i, i + CHUNK_ROWS));
+      this.publish(SNAP, [['d', `cottontale:${this.tag}:${n}`], ['t', this.tag]], content);
+    }
+  }
+
+  private async receive(ev: Event): Promise<void> {
+    if (!ev?.id || this.seen.has(ev.id)) return;
+    this.seen.add(ev.id);
+    if (ev.kind !== LIVE && ev.kind !== SNAP) return;
+    if (!verifyEvent(ev)) return;
+    let data: unknown;
+    try { data = await unseal(this.key, ev.content); } catch { return; } // not for this table
+
+    if (ev.kind === SNAP) {
+      if (Array.isArray(data)) this.mergeRows(data as Row[]);
+      return;
+    }
+    if (ev.pubkey === this.pk) return;
+    const msg = data as Msg;
+    const known = this.peers.get(ev.pubkey);
+    if (known) known.last = Date.now();
+    switch (msg.y) {
+      case 'ops':
+        if (Array.isArray(msg.o)) this.mergeRows(msg.o);
+        break;
+      case 'hi': {
+        const name = String(msg.n ?? '?').slice(0, 24);
+        const color = /^#[0-9a-f]{6}$/i.test(msg.c) ? msg.c : '#cccccc';
+        this.peers.set(ev.pubkey, { name, color, last: Date.now() });
+        this.o.onPeers();
+        if (!known) {
+          if (!msg.re) setTimeout(() => this.hello(true), Math.random() * 400);
+          if (this.dirty) void this.snapshot(); // make sure the newcomer can fetch a fresh map
+        }
+        break;
+      }
+      case 'bye':
+        if (this.peers.delete(ev.pubkey)) this.o.onPeers();
+        break;
+      default:
+        this.o.onMsg(msg, ev.pubkey);
+    }
+  }
+
+  private mergeRows(rows: Row[]): void {
+    for (const row of rows) {
+      if (!Array.isArray(row)) continue;
+      this.o.store.merge(row);
+      if (this.unconfirmed.size && row[2] >= (this.o.store.entries.get(row[0])?.t ?? 0)) this.unconfirmed.delete(row[0]);
+    }
+  }
+
+  nameOf(pk: string): string {
+    return pk === this.pk ? this.o.name : this.peers.get(pk)?.name ?? pk.slice(0, 6);
+  }
+  colorOf(pk: string): string {
+    return pk === this.pk ? this.o.color : this.peers.get(pk)?.color ?? '#cccccc';
+  }
+
+  async stop(): Promise<void> {
+    clearInterval(this.beat);
+    if (this.dirty) await this.snapshot();
+    await this.send({ y: 'bye' });
+    setTimeout(() => this.relays.forEach((r) => r.close()), 200);
+  }
+}
