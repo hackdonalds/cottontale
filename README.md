@@ -22,9 +22,16 @@ others. Everyone with the same code sits at the same table.
 | ♟️ Minis | click to place the selected mini |
 | 📣 Ping | click to show everyone a spot |
 
-Left-drag orbits, right-drag pans, wheel zooms. Keys: `1`–`5` tools, `R` rotate,
-`Ctrl+Z` undo, `Del` remove mini, `Enter` chat. Chat understands `/r 2d6+3`.
-The ☰ menu has a starter meadow, export/import, and clear.
+**Phone / tablet (the primary target):** one finger looks around; with 🧱 or ⛏️
+selected, tap to edit and drag to paint a flat layer. Two fingers pan, pinch to
+zoom and twist to turn — and never edit. ↩️ undoes (a whole stroke at once), 🎲
+opens dice and chat. Add it to your home screen to run it full-screen like an app.
+
+**Desktop:** left-drag orbits, right-drag pans, wheel zooms. Keys: `1`–`5`
+tools, `R` rotate, `Ctrl+Z` undo, `Del` remove mini, `Enter` chat.
+
+Chat understands `/r 2d6+3`. The ☰ menu has a starter meadow, export/import,
+and clear.
 
 `npm run build` produces a static site in `dist/` that can be hosted anywhere
 with HTTPS (the browser's crypto API requires it).
@@ -50,8 +57,9 @@ dev relay (`npm run relay`, `ws://<your-ip>:7777`) and use that instead.
 
 ```sh
 npm test                      # unit tests (state merge, crypto)
-npm run build && npm run e2e  # two browsers + local relay (needs Playwright)
+npm run build && npm run e2e  # two desktop players + phone portrait/landscape
+                              # touch checks, on a local relay (needs Playwright)
 ```
 
 `src/catalog.ts` holds every block, prop and mini — all built from primitives,
-so adding one is a few lines.
+so adding one is a few lines. Development is mobile first; see `CLAUDE.md`.

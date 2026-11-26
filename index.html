@@ -2,10 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#1b2233" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <meta name="referrer" content="no-referrer" />
   <title>Cottontale</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐇</text></svg>" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
@@ -41,39 +47,44 @@
         <button data-act="import">📂 Import table</button>
         <button data-act="clear">🧹 Clear table</button>
         <button data-act="leave">🚪 Leave</button>
-        <p class="hint">Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z undo · Del remove</p>
+        <p class="hint" id="help"></p>
       </div>
     </div>
 
-    <div id="tools" class="panel">
-      <button data-tool="move" title="Move minis (1)">✋</button>
-      <button data-tool="build" title="Build (2)">🧱</button>
-      <button data-tool="erase" title="Erase (3)">⛏️</button>
-      <button data-tool="mini" title="Add minis (4)">♟️</button>
-      <button data-tool="ping" title="Ping (5)">📣</button>
+    <!-- Bottom dock: everything a thumb needs. Stacks so panels can never overlap. -->
+    <div id="dock">
+      <div id="palette" class="panel" hidden></div>
+
+      <div id="minipanel" class="panel" hidden>
+        <span class="row">
+          <input id="miniName" maxlength="20" placeholder="Name" enterkeyhint="done" />
+          <button id="miniRot" title="Turn" aria-label="Turn">↻</button>
+          <button id="miniSize" title="Size" aria-label="Size">⇲</button>
+          <button id="miniDel" title="Remove" aria-label="Remove">🗑️</button>
+        </span>
+        <span id="miniColors" class="swatches"></span>
+      </div>
+
+      <div id="tools" class="panel">
+        <button data-tool="move" title="Move minis" aria-label="Move minis">✋</button>
+        <button data-tool="build" title="Build" aria-label="Build">🧱</button>
+        <button data-tool="erase" title="Erase" aria-label="Erase">⛏️</button>
+        <button data-tool="mini" title="Add minis" aria-label="Add minis">♟️</button>
+        <button data-tool="ping" title="Ping" aria-label="Ping">📣</button>
+        <span class="sep"></span>
+        <button id="undo" title="Undo" aria-label="Undo">↩️</button>
+        <button id="logToggle" title="Dice &amp; chat" aria-label="Dice and chat">🎲</button>
+      </div>
     </div>
 
-    <div id="palette" class="panel" hidden></div>
-
-    <div id="minipanel" class="panel" hidden>
-      <input id="miniName" maxlength="20" placeholder="Name" />
-      <span id="miniColors" class="swatches"></span>
-      <span class="row">
-        <button id="miniRot" title="Turn (R)">↻</button>
-        <button id="miniSize" title="Size">⇲</button>
-        <button id="miniDel" title="Remove (Del)">🗑️</button>
-      </span>
-    </div>
-
-    <button id="logToggle" class="panel" title="Chat & dice">💬</button>
-    <div id="log" class="panel">
+    <div id="log" class="panel closed">
       <div id="msgs"></div>
       <div id="dice">
         <button id="diceN" title="Number of dice">1×</button>
         <button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button>
         <button data-d="10">d10</button><button data-d="12">d12</button><button data-d="20">d20</button><button data-d="100">d100</button>
       </div>
-      <form id="chat"><input id="chatIn" maxlength="300" placeholder="Say something… or /r 2d6+3" autocomplete="off" /></form>
+      <form id="chat"><input id="chatIn" maxlength="300" placeholder="Say something… or /r 2d6+3" autocomplete="off" enterkeyhint="send" /></form>
     </div>
     <div id="toast"></div>
   </div>

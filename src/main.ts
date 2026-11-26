@@ -23,7 +23,8 @@ function swatches(el: HTMLElement, current: () => string, pick: (c: string) => v
     for (const c of PLAYER_COLORS) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.style.background = c;
+      b.style.setProperty('--c', c);
+      b.setAttribute('aria-label', `Colour ${c}`);
       b.classList.toggle('on', c === current());
       b.onclick = () => { pick(c); paint(); };
       el.append(b);
@@ -31,6 +32,26 @@ function swatches(el: HTMLElement, current: () => string, pick: (c: string) => v
   };
   paint();
   return paint;
+}
+
+// ---- device plumbing ----
+
+const coarse = matchMedia('(pointer: coarse)').matches;
+
+// Keep bottom-anchored UI above the on-screen keyboard (iOS overlays it instead of resizing the page).
+const vv = window.visualViewport;
+if (vv) {
+  const fit = () => document.documentElement.style.setProperty('--kb', `${Math.max(0, innerHeight - vv.height - vv.offsetTop)}px`);
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+}
+
+// Installable, and opens offline.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) void navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+// A phone that dims mid-encounter is no fun.
+function stayAwake(): void {
+  if (document.visibilityState === 'visible') void navigator.wakeLock?.request('screen').catch(() => {});
 }
 
 // ---- lobby -------------------------------------------------------------------
@@ -109,6 +130,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
+  stayAwake();
+  $('help').innerHTML = coarse
+    ? 'One finger: look around — or, with 🧱 ⛏️, tap to edit and drag to paint.<br />Two fingers: pan, pinch to zoom, twist to turn.'
+    : 'Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z undo · Del remove';
   say(`<span class="sys">Welcome, ${esc(name)}! Share the invite link to bring others to the table.</span>`);
 
   function handle(msg: Msg, from: string): void {
@@ -136,6 +161,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     box.append(d);
     while (box.children.length > 200) box.firstChild!.remove();
     box.scrollTop = box.scrollHeight;
+    // The log is a closed sheet on phones: flag what was missed.
+    if ($('log').classList.contains('closed') && !d.querySelector('.sys')) $('logToggle').classList.add('unread');
   }
 
   let toastTimer: ReturnType<typeof setTimeout>;
@@ -174,17 +201,22 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     say(`<b style="color:${myColor}">${esc(name)}</b>: ${esc(text)}`);
     void net.send({ y: 'chat', m: text });
   };
-  $('logToggle').onclick = () => $('log').classList.toggle('closed');
-  if (matchMedia('(max-width: 720px)').matches) $('log').classList.add('closed');
+  $('logToggle').onclick = () => {
+    const closed = $('log').classList.toggle('closed');
+    $('logToggle').classList.toggle('on', !closed);
+    $('logToggle').classList.remove('unread');
+    if (!closed) $('msgs').scrollTop = $('msgs').scrollHeight;
+  };
+  $('undo').onclick = () => board.undo();
 
   // ---- tools & palette ----
 
   function setTool(t: Tool): void {
     board.setTool(t);
-    for (const b of $('tools').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', b.dataset.tool === t);
+    for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.classList.toggle('on', b.dataset.tool === t);
     renderPalette();
   }
-  for (const b of $('tools').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => setTool(b.dataset.tool as Tool);
+  for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.onclick = () => setTool(b.dataset.tool as Tool);
 
   function renderPalette(): void {
     const el = $('palette');
@@ -193,6 +225,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const add = (title: string, inner: string, on: boolean, click: () => void) => {
       const b = document.createElement('button');
       b.title = title;
+      b.setAttribute('aria-label', title);
       b.innerHTML = inner;
       b.classList.toggle('on', on);
       b.onclick = () => { click(); renderPalette(); };
@@ -235,6 +268,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // ---- menu ----
 
   $('invite').onclick = async () => {
+    if (coarse && navigator.share) {
+      // Phones: hand the link straight to Messages / WhatsApp / ...
+      try { await navigator.share({ title: 'Cottontale', text: 'Join my table!', url: invite }); } catch { /* dismissed */ }
+      return;
+    }
     try { await navigator.clipboard.writeText(invite); say('<span class="sys">Invite link copied. Anyone with it can join this table.</span>'); }
     catch { prompt('Copy this invite link:', invite); }
   };
@@ -297,9 +335,24 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     else if (e.key === 'Escape') setTool('move');
     else if (e.key === 'Enter') $('chatIn').focus();
   });
+  // Phones suspend background tabs and kill their sockets. Save on the way
+  // out, and reconnect (re-fetching snapshots) the moment we are back.
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      ls.set(`room:${tag}`, JSON.stringify(store.dump()));
+      return;
+    }
+    net.wake(Date.now() - hiddenAt > 20_000);
+    stayAwake();
+    board.invalidate();
+  });
+  addEventListener('online', () => net.wake(false));
+  addEventListener('pageshow', (e) => { if (e.persisted) net.wake(true); });
   addEventListener('pagehide', () => {
     ls.set(`room:${tag}`, JSON.stringify(store.dump()));
-    void net.stop();
+    void net.pause();
   });
 
   setTool('move');

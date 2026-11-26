@@ -85,6 +85,18 @@ class Layer {
   }
 }
 
+interface Undo { k: string; prev: unknown }
+/** One pointer's journey from down to up. */
+interface Gesture {
+  id: number; x: number; y: number; button: number;
+  touch: boolean; moved: boolean;
+  mini: string | null;
+  /** Touch editing: what the first contact pointed at, and the flat layer a drag paints on. */
+  first: Vec | null;
+  stroke: { level: number; plane: number } | null;
+}
+const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
+
 interface Mini { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string; label: THREE.Sprite }
 
 function labelSprite(text: string): THREE.Sprite {
@@ -129,16 +141,22 @@ export class Board {
   private ghost: THREE.Mesh;
   private ring: THREE.Mesh;
   private pings: { mesh: THREE.Mesh; t: number }[] = [];
-  private down: { x: number; y: number; id: string | null; moved: boolean } | null = null;
+  private pointers = new Map<number, { x: number; y: number }>();
+  private gesture: Gesture | null = null;
+  private twist = 0;
   private dragPos: Vec | null = null;
   private lastLive = 0;
-  private undoStack: { k: string; prev: unknown }[] = [];
+  private undoStack: Undo[][] = [];
+  private batch: Undo[] | null = null;
+  private dirty = true;
+  private coarse = matchMedia('(pointer: coarse)').matches;
   private last = performance.now();
 
   constructor(private canvas: HTMLCanvasElement, private store: Store, private hooks: BoardHooks) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
+    const lowEnd = this.coarse && ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 3;
+    this.renderer.shadowMap.enabled = !lowEnd;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.scene.background = new THREE.Color('#1b2233');
     this.scene.fog = new THREE.Fog('#1b2233', 60, 170);
@@ -146,7 +164,7 @@ export class Board {
     this.scene.add(new THREE.HemisphereLight('#dfeaff', '#3a3344', 1.25));
     this.sun = new THREE.DirectionalLight('#fff2dd', 2.1);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.setScalar(this.coarse ? 1024 : 2048);
     const sc = this.sun.shadow.camera;
     sc.left = sc.bottom = -36;
     sc.right = sc.top = 36;
@@ -155,16 +173,27 @@ export class Board {
     this.sun.shadow.normalBias = 0.03;
     this.scene.add(this.sun, this.sun.target);
 
+    // The grid is painted into the ground texture (not hairline GL lines), so
+    // its thickness scales with the cells and stays visible on high-DPI phones.
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 128;
+    const g = cv.getContext('2d')!;
+    g.fillStyle = '#34415a';
+    g.fillRect(0, 0, 128, 128);
+    g.strokeStyle = '#5b6a88';
+    g.lineWidth = 6; // half of it falls outside the tile, leaving a 3px line per edge
+    g.strokeRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.setScalar(LIMIT * 2);
+    tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(LIMIT * 2, LIMIT * 2).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: '#34415a', roughness: 1 }),
+      new THREE.MeshStandardMaterial({ map: tex, roughness: 1 }),
     );
     this.ground.receiveShadow = true;
-    const grid = new THREE.GridHelper(LIMIT * 2, LIMIT * 2, '#aab6cf', '#8794ad');
-    grid.position.y = 0.003;
-    (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.45;
-    this.scene.add(this.ground, grid);
+    this.scene.add(this.ground);
 
     this.ghost = new THREE.Mesh(
       new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
@@ -186,6 +215,7 @@ export class Board {
     this.controls.minDistance = 3;
     this.controls.maxDistance = 90;
     this.controls.target.set(0, 0, 0);
+    this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene));
 
@@ -193,8 +223,8 @@ export class Board {
     canvas.addEventListener('pointerdown', (e) => this.onDown(e), true);
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
     canvas.addEventListener('pointerup', (e) => this.onUp(e));
-    canvas.addEventListener('pointercancel', () => this.cancelDrag());
-    canvas.addEventListener('pointerleave', () => { this.ghost.visible = false; });
+    canvas.addEventListener('pointercancel', (e) => { this.pointers.delete(e.pointerId); this.abortGesture(); });
+    canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this.hideGhost(); });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
@@ -203,7 +233,15 @@ export class Board {
 
   // ---- store → scene -------------------------------------------------------
 
+  /** Ask for a redraw. The board only renders when something changed. */
+  invalidate(): void { this.dirty = true; }
+  private hideGhost(): void {
+    if (this.ghost.visible) this.invalidate();
+    this.ghost.visible = false;
+  }
+
   apply(key: string, value: unknown, prev: unknown): void {
+    this.invalidate();
     if (key.startsWith('b:')) this.applyCell(key, value as CellVal | null, prev as CellVal | null);
     else if (key.startsWith('m:')) this.applyMini(key.slice(2), value as MiniVal | null);
   }
@@ -254,8 +292,11 @@ export class Board {
       const base = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.4, 0.08, 24), new THREE.MeshStandardMaterial({ color: v.c, roughness: 0.5 }));
       base.position.y = 0.04;
       base.castShadow = base.receiveShadow = true;
+      // Generous invisible hit area: minis are small targets for a fingertip.
+      const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.56, def.height + 0.15, 10), new THREE.MeshBasicMaterial({ visible: false }));
+      hit.position.y = (def.height + 0.15) / 2;
       const body = new THREE.Group();
-      body.add(base, ...def.make());
+      body.add(base, hit, ...def.make());
       body.scale.setScalar(v.s || 1);
       const label = labelSprite(v.n);
       label.position.y = def.height * (v.s || 1) + 0.35;
@@ -272,14 +313,14 @@ export class Board {
       if (this.selected === id) this.attachRing(m);
     }
     m.val = v;
-    m.target.copy(pos);
+    if (this.gesture?.mini !== id) m.target.copy(pos);
     m.group.children[0].rotation.y = ((v.r || 0) * Math.PI) / 4;
   }
 
   /** Another player is dragging a mini: show it moving before they drop it. */
   liveMove(id: string, p: Vec): void {
     const m = this.minis.get(id);
-    if (m && p.every(Number.isFinite)) m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5);
+    if (m && this.gesture?.mini !== id && p.every(Number.isFinite)) m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5);
   }
 
   ping(p: Vec, color: string): void {
@@ -289,6 +330,7 @@ export class Board {
     );
     mesh.position.set(p[0], p[1] + 0.05, p[2]);
     mesh.renderOrder = 10;
+    this.invalidate();
     this.scene.add(mesh);
     this.pings.push({ mesh, t: 0 });
   }
@@ -299,6 +341,7 @@ export class Board {
     if (this.selected) this.minis.get(this.selected)?.group.remove(this.ring);
     this.selected = id && this.minis.has(id) ? id : null;
     if (this.selected) this.attachRing(this.minis.get(this.selected)!);
+    this.invalidate();
     this.hooks.onSelect(this.selected);
   }
   private attachRing(m: Mini): void {
@@ -308,19 +351,25 @@ export class Board {
 
   setTool(t: Tool): void {
     this.tool = t;
-    this.ghost.visible = false;
+    this.hideGhost();
     if (t !== 'move') this.select(null);
+    // Touch: in editing tools one finger edits and two fingers move the camera.
+    const edits = t === 'build' || t === 'erase' || t === 'mini';
+    this.controls.touches.ONE = edits ? (-1 as THREE.TOUCH) : THREE.TOUCH.ROTATE;
     this.canvas.style.cursor = t === 'move' ? 'grab' : 'crosshair';
   }
 
+  /** Undo the last edit; a whole painted stroke counts as one. */
   undo(): void {
-    const u = this.undoStack.pop();
-    if (u) this.store.set(u.k, u.prev);
+    for (const u of (this.undoStack.pop() ?? []).reverse()) this.store.set(u.k, u.prev);
   }
   private edit(k: string, v: unknown): void {
-    this.undoStack.push({ k, prev: this.store.get(k) });
+    const u = { k, prev: this.store.get(k) };
+    if (this.batch) this.batch.push(u);
+    else this.undoStack.push([u]);
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.store.set(k, v);
+    if (this.gesture?.touch) navigator.vibrate?.(6);
   }
 
   focus(x: number, y: number, z: number): void {
@@ -331,9 +380,9 @@ export class Board {
 
   // ---- picking ---------------------------------------------------------------
 
-  private aim(e: PointerEvent): void {
+  private aim(e: PointerEvent, lift = 0): void {
     const r = this.canvas.getBoundingClientRect();
-    this.ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera);
+    this.ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - lift - r.top) / r.height) * 2 + 1), this.camera);
   }
 
   /** What solid surface is under the pointer: the block hit (if any) and the empty cell in front of it. */
@@ -393,39 +442,114 @@ export class Board {
   // ---- pointer input -----------------------------------------------------------
 
   private onDown(e: PointerEvent): void {
-    this.down = { x: e.clientX, y: e.clientY, id: null, moved: false };
-    if (e.button !== 0 || this.tool !== 'move') return;
-    this.aim(e);
-    const id = this.pickMini();
-    if (id) {
-      this.down.id = id;
-      this.controls.enabled = false;
-      this.canvas.setPointerCapture(e.pointerId);
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pointers.size > 1) {
+      // A second finger means a camera gesture, never an edit.
+      this.abortGesture();
+      this.twist = this.twistAngle();
+      return;
     }
+    const g: Gesture = {
+      id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button,
+      touch: e.pointerType !== 'mouse', moved: false, mini: null, first: null, stroke: null,
+    };
+    this.gesture = g;
+    if (e.button !== 0) return;
+    this.aim(e);
+    if (this.tool === 'move') {
+      const id = this.pickMini();
+      if (id) {
+        g.mini = id;
+        this.controls.enabled = false;
+        this.canvas.setPointerCapture(e.pointerId);
+      }
+    } else if (g.touch && this.tool !== 'ping') {
+      // No hover on touch: show where the edit will land as soon as the finger is down.
+      this.updateGhost();
+      if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
+      else if (this.tool === 'erase') { const t = this.eraseTarget(); g.first = t ? parse(t) : null; }
+    }
+  }
+
+  private twistAngle(): number {
+    const [a, b] = [...this.pointers.values()];
+    return Math.atan2(b.y - a.y, b.x - a.x);
   }
 
   private onMove(e: PointerEvent): void {
-    const d = this.down;
-    if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) d.moved = true;
-    this.aim(e);
-    if (d?.id) {
-      if (!d.moved) return;
-      const p = this.standing();
-      const m = this.minis.get(d.id);
-      if (!p || !m) return;
-      this.dragPos = p;
-      m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5);
+    const p = this.pointers.get(e.pointerId);
+    if (p) { p.x = e.clientX; p.y = e.clientY; }
+    if (this.pointers.size === 2 && e.pointerType !== 'mouse') {
+      // Two-finger twist turns the table (pinch and pan are handled by OrbitControls).
+      const a = this.twistAngle();
+      let d = a - this.twist;
+      if (d > Math.PI) d -= Math.PI * 2;
+      if (d < -Math.PI) d += Math.PI * 2;
+      this.twist = a;
+      const t = this.controls.target;
+      this.camera.position.sub(t).applyAxisAngle(THREE.Object3D.DEFAULT_UP, d).add(t);
+      return;
+    }
+    const g = this.gesture;
+    if (!g || g.id !== e.pointerId) {
+      if (e.pointerType === 'mouse' && !e.buttons) { this.aim(e); this.updateGhost(); }
+      return;
+    }
+    if (!g.moved && Math.hypot(e.clientX - g.x, e.clientY - g.y) > (g.touch ? 12 : 6)) g.moved = true;
+    if (g.mini) {
+      if (!g.moved) return;
+      this.aim(e, g.touch ? TOUCH_LIFT : 0);
+      const pos = this.standing();
+      const m = this.minis.get(g.mini);
+      if (!pos || !m) return;
+      this.dragPos = pos;
+      m.target.set(pos[0] + 0.5, pos[1] + 0.3, pos[2] + 0.5);
       if (performance.now() - this.lastLive > 180) {
         this.lastLive = performance.now();
-        this.hooks.onLiveMove(d.id, p);
+        this.hooks.onLiveMove(g.mini, pos);
       }
       return;
     }
-    if (e.pointerType === 'mouse' && !e.buttons) this.updateGhost();
+    if (!g.touch || g.button !== 0) return;
+    this.aim(e);
+    if (this.tool === 'mini') this.updateGhost();
+    else if ((this.tool === 'build' || this.tool === 'erase') && g.moved) this.paint(g);
+  }
+
+  /** Dragging a finger paints (or erases) a flat layer at the height of the first cell. */
+  private paint(g: Gesture): void {
+    if (!g.first) return;
+    const build = this.tool === 'build';
+    if (!g.stroke) {
+      const prop = !build && !!PROPS[this.store.get<CellVal>(ck(...g.first))?.i ?? ''];
+      g.stroke = { level: g.first[1], plane: g.first[1] + (build ? 0 : prop ? 0.3 : 1) };
+      this.batch = [];
+      this.undoStack.push(this.batch);
+      this.paintCell(g.first, build);
+    }
+    const pt = this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, -g.stroke.plane), new THREE.Vector3());
+    if (!pt || pt.distanceTo(this.camera.position) > 120) return;
+    this.paintCell([Math.floor(pt.x), g.stroke.level, Math.floor(pt.z)], build);
+  }
+
+  private paintCell(c: Vec, build: boolean): void {
+    if (Math.abs(c[0]) >= LIMIT || Math.abs(c[2]) >= LIMIT || c[1] < 0 || c[1] >= MAX_Y) return;
+    const key = ck(...c);
+    const has = this.store.get(key) !== null;
+    if (build && !has) this.edit(key, this.brushValue());
+    else if (!build && has) this.edit(key, null);
+    this.ghost.position.set(c[0] + 0.5, c[1], c[2] + 0.5);
+    this.invalidate();
+  }
+
+  private brushValue(): CellVal {
+    const v: CellVal = { i: this.brush };
+    if (PROPS[this.brush] && this.rot) v.r = this.rot;
+    return v;
   }
 
   private updateGhost(): void {
-    this.ghost.visible = false;
+    this.hideGhost();
     if (this.tool === 'move' || this.tool === 'ping') return;
     const mat = this.ghost.material as THREE.MeshBasicMaterial;
     if (this.tool === 'erase') {
@@ -443,6 +567,7 @@ export class Board {
       this.ghost.position.set(p[0] + 0.5, p[1], p[2] + 0.5);
     }
     this.ghost.visible = true;
+    this.invalidate();
   }
 
   private eraseTarget(): string | null {
@@ -453,20 +578,29 @@ export class Board {
   }
 
   private onUp(e: PointerEvent): void {
-    const d = this.down;
-    this.down = null;
-    if (!d) return;
-    if (d.id) {
+    this.pointers.delete(e.pointerId);
+    const g = this.gesture;
+    if (!g || g.id !== e.pointerId) return;
+    this.gesture = null;
+    if (g.mini) {
       this.controls.enabled = true;
-      const m = this.minis.get(d.id);
+      const m = this.minis.get(g.mini);
       const p = this.dragPos;
       this.dragPos = null;
-      if (m && d.moved && p) this.store.set(`m:${d.id}`, { ...m.val, x: p[0], y: p[1], z: p[2] });
+      if (m && g.moved && p) this.store.set(`m:${g.mini}`, { ...m.val, x: p[0], y: p[1], z: p[2] });
       else if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
-      this.select(d.id);
+      this.select(g.mini);
       return;
     }
-    if (d.moved || e.button !== 0) return;
+    if (g.button !== 0) return;
+    if (g.stroke) { // the drag already did the editing
+      this.batch = null;
+      this.hideGhost();
+      return;
+    }
+    // A moved pointer was a camera drag, except a finger sliding a mini's landing spot.
+    if (g.moved && !(g.touch && this.tool === 'mini')) { this.hideGhost(); return; }
+    this.gesture = g; // so edit() knows whether to give haptic feedback
     this.aim(e);
     switch (this.tool) {
       case 'move':
@@ -474,10 +608,7 @@ export class Board {
         break;
       case 'build': {
         const p = this.pickSurface()?.place;
-        if (!p || p[1] < 0 || p[1] >= MAX_Y) break;
-        const v: CellVal = { i: this.brush };
-        if (PROPS[this.brush] && this.rot) v.r = this.rot;
-        this.edit(ck(...p), v);
+        if (p && p[1] >= 0 && p[1] < MAX_Y) this.edit(ck(...p), this.brushValue());
         break;
       }
       case 'erase': {
@@ -498,15 +629,20 @@ export class Board {
         break;
       }
     }
-    this.updateGhost();
+    this.gesture = null;
+    if (g.touch) this.hideGhost();
+    else this.updateGhost();
   }
 
-  private cancelDrag(): void {
-    const d = this.down;
-    this.down = null;
+  /** Drop whatever the current pointer was doing (second finger landed, or the OS took over). */
+  private abortGesture(): void {
+    const g = this.gesture;
+    this.gesture = null;
+    this.batch = null;
     this.dragPos = null;
     this.controls.enabled = true;
-    const m = d?.id ? this.minis.get(d.id) : null;
+    this.hideGhost();
+    const m = g?.mini ? this.minis.get(g.mini) : null;
     if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
   }
 
@@ -518,15 +654,21 @@ export class Board {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.invalidate();
   }
 
   private frame(): void {
     const now = performance.now();
     const dt = Math.min((now - this.last) / 1000, 0.1);
     this.last = now;
-    for (const l of this.layers.values()) if (l.dirty) l.rebuild();
+    let busy = this.controls.update() || this.dirty;
+    for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); busy = true; }
     const k = 1 - Math.exp(-dt * 14);
-    for (const m of this.minis.values()) m.group.position.lerp(m.target, k);
+    for (const m of this.minis.values()) {
+      if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;
+      m.group.position.lerp(m.target, k);
+      busy = true;
+    }
     for (let i = this.pings.length - 1; i >= 0; i--) {
       const p = this.pings[i];
       p.t += dt;
@@ -537,8 +679,11 @@ export class Board {
         this.scene.remove(p.mesh);
         this.pings.splice(i, 1);
       }
+      busy = true;
     }
-    this.controls.update();
+    // Idle tables cost no GPU time (and no battery).
+    if (!busy) return;
+    this.dirty = false;
     this.sun.position.copy(this.controls.target).add(new THREE.Vector3(22, 40, 14));
     this.sun.target.position.copy(this.controls.target);
     this.renderer.render(this.scene, this.camera);

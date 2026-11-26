@@ -80,6 +80,7 @@ class Relay {
   open = false;
   private ws?: WebSocket;
   private retry = 1000;
+  private timer?: ReturnType<typeof setTimeout>;
   private dead = false;
   constructor(
     readonly url: string,
@@ -90,11 +91,13 @@ class Relay {
   ) { this.connect(); }
 
   private connect(): void {
+    clearTimeout(this.timer);
     if (this.dead) return;
     let ws: WebSocket;
     try { ws = new WebSocket(this.url); } catch { this.again(); return; }
     this.ws = ws;
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.open = true;
       this.retry = 1000;
       ws.send(JSON.stringify(['REQ', 'ct', ...this.filters()]));
@@ -108,6 +111,7 @@ class Relay {
       } catch { /* ignore malformed frames */ }
     };
     ws.onclose = () => {
+      if (this.ws !== ws) return; // superseded by wake()
       const was = this.open;
       this.open = false;
       if (was) this.onState(this);
@@ -117,11 +121,25 @@ class Relay {
   }
   private again(): void {
     if (this.dead) return;
-    setTimeout(() => this.connect(), this.retry);
+    this.timer = setTimeout(() => this.connect(), this.retry);
     this.retry = Math.min(this.retry * 2, 30_000);
   }
+  /**
+   * Reconnect now instead of waiting out the backoff. With `force`, also replace
+   * a socket that claims to be open: phones silently kill sockets of
+   * backgrounded tabs, and a fresh subscription re-delivers the snapshots.
+   */
+  wake(force: boolean): void {
+    if (this.dead || (!force && (this.open || this.ws?.readyState === WebSocket.CONNECTING))) return;
+    const old = this.ws;
+    this.ws = undefined;
+    if (this.open) { this.open = false; this.onState(this); }
+    old?.close();
+    this.retry = 1000;
+    this.connect();
+  }
   send(e: Event): void { if (this.open) this.ws!.send(JSON.stringify(['EVENT', e])); }
-  close(): void { this.dead = true; this.ws?.close(); }
+  close(): void { this.dead = true; clearTimeout(this.timer); this.ws?.close(); }
 }
 
 export interface NetOpts {
@@ -297,10 +315,20 @@ export class Net {
     return pk === this.pk ? this.o.color : this.peers.get(pk)?.color ?? '#cccccc';
   }
 
-  async stop(): Promise<void> {
-    clearInterval(this.beat);
+  /** The page came back to the foreground or the network returned. */
+  wake(force: boolean): void {
+    for (const r of this.relays) r.wake(force);
+  }
+
+  /** The page is being hidden and may never run again: get our edits out, but stay resumable. */
+  async pause(): Promise<void> {
     if (this.dirty) await this.snapshot();
     await this.send({ y: 'bye' });
+  }
+
+  async stop(): Promise<void> {
+    clearInterval(this.beat);
+    await this.pause();
     setTimeout(() => this.relays.forEach((r) => r.close()), 200);
   }
 }
