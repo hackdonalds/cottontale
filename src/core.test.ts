@@ -390,6 +390,41 @@ describe('scene generators', () => {
     }
   });
 
+  it('redoes one room without touching the rest, and keeps locked rooms through a new layout', () => {
+    for (const theme of ['dungeon', 'tavern'] as const) {
+      const a = generate(opts(theme, 3, 4));
+      const again = generate(opts(theme, 3, 4), a.rooms, true);
+      expect(JSON.stringify(again.edits)).toBe(JSON.stringify(a.edits)); // nothing rerolled: nothing moves
+      const which = 1, q = a.rooms[which];
+      const b = generate(opts(theme, 3, 4), a.rooms.map((r, i) => (i === which ? { ...r, seed: r.seed + 1 } : r)), true);
+      const before = new Map(a.edits.map(([k, v]) => [k, JSON.stringify(v)])), after = new Map(b.edits.map(([k, v]) => [k, JSON.stringify(v)]));
+      let changed = 0;
+      for (const k of new Set([...before.keys(), ...after.keys()])) {
+        if (before.get(k) === after.get(k)) continue;
+        changed++;
+        const [x, , z] = k.slice(2).split(',').map(Number);
+        expect(k.startsWith('b:') && x >= q.x0 && x <= q.x1 && z >= q.z0 && z <= q.z1, `${theme} ${k}`).toBe(true);
+      }
+      expect(changed).toBeGreaterThan(0);
+    }
+    // A new dungeon around a locked room: the room is where it was, furnished as it was.
+    const a = generate(opts('dungeon', 3, 4)), kept = { ...a.rooms[2], lock: true };
+    const b = generate(opts('dungeon', 99, 4), a.rooms.map((r, i) => (i === 2 ? kept : r)));
+    expect(b.rooms.filter((r) => r.lock)).toEqual([kept]);
+    expect(b.rooms.length).toBeGreaterThan(3);
+    const inside = (edits: [string, unknown][]) => new Map(edits.filter(([k]) => {
+      const [x, y, z] = k.slice(2).split(',').map(Number);
+      return k.startsWith('b:') && y === 1 && x >= kept.x0 && x <= kept.x1 && z >= kept.z0 && z <= kept.z1;
+    }).map(([k, v]) => [k, JSON.stringify(v)]));
+    const was = inside(a.edits), now = inside(b.edits);
+    expect(was.size).toBeGreaterThan(2);
+    let same = 0;
+    for (const [k, v] of now) { expect(was.get(k) ?? v).toBe(v); if (was.has(k)) same++; } // nothing moved or changed
+    expect(same).toBeGreaterThanOrEqual(was.size - 3); // only what stood in a new doorway is gone
+    const map = new Map(b.edits) as Map<string, { i: string }>;
+    expect(reach(map, `${b.rooms[0].x0},${b.rooms[0].z0}`, () => true).has(`${kept.x0},${kept.z0}`)).toBe(true);
+  });
+
   it('digs one cave you can walk the whole of', () => {
     for (const seed of [1, 2, 3]) {
       const map = new Map(generate(opts('cave', seed)).edits) as Map<string, { i: string }>;

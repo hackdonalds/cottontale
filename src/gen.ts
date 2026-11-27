@@ -11,7 +11,12 @@ export type Theme = 'forest' | 'dungeon' | 'cave' | 'tavern';
 /** The three sliders run 0..4. What they mean depends on the theme (see THEMES). */
 export interface GenOpts { theme: Theme; seed: number; size: number; density: number; detail: number }
 export type Edit = [key: string, value: unknown];
-export interface GenRoom { kind: string; x0: number; x1: number; z0: number; z1: number }
+/** A room of a scene. Its furnishing has a seed of its own, so one room can be redone; a locked room survives a new layout. */
+export interface GenRoom { kind: string; x0: number; x1: number; z0: number; z1: number; seed: number; lock?: boolean }
+export const ROOM_NAMES: Record<string, string> = {
+  guard: '🛡️ Guard room', store: '📦 Store', crypt: '⚰️ Crypt', shrine: '🕯️ Shrine', treasure: '💰 Treasury',
+  cell: '⛓️ Cells', lair: '🦴 Lair', hall: '🍺 Hall', bedroom: '🛏️ Bedroom',
+};
 export interface Scene { edits: Edit[]; bounds: [x0: number, x1: number, z0: number, z1: number]; rooms: GenRoom[] }
 
 export const THEMES: Record<Theme, { name: string; icon: string; sliders: [string, string, string] }> = {
@@ -57,6 +62,7 @@ class Build {
   edge(x: number, y: number, z: number, s: Side, i: string): void { this.map.set(ek(x, y, z, s), { i }); }
   set(key: string, value: unknown): void { this.map.set(key, value); }
   has(x: number, y: number, z: number): boolean { return this.map.has(`b:${x},${y},${z}`); }
+  drop(x: number, y: number, z: number): void { this.map.delete(`b:${x},${y},${z}`); }
   edits(): Edit[] { return [...this.map]; }
 }
 const NEAR: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -111,18 +117,24 @@ const DUNGEON_ROOMS: Record<string, { centre?: string; walls: string[]; floor: s
   lair: { centre: 'campfire', walls: ['bones', 'sacks', 'crate'], floor: ['bones'] },
 };
 
-function dungeon(o: GenOpts): Scene {
-  const b = new Build(), r = rng(o.seed), half = 9 + o.size * 2 + (o.size >> 1);
-  const want = 3 + o.density * 2 + o.size, rooms: GenRoom[] = [];
-  for (let tries = 0; tries < 300 && rooms.length < want; tries++) {
+function dungeon(o: GenOpts, prior: GenRoom[], fixed: boolean): Scene {
+  // Layout, kinds and corridors each draw from their own run of chance, so keeping the
+  // rooms where they are also keeps the corridors between them.
+  const b = new Build(), r = rng(o.seed), dig_r = rng(o.seed + 2), half = 9 + o.size * 2 + (o.size >> 1);
+  const want = 3 + o.density * 2 + o.size, rooms: GenRoom[] = prior.filter((q) => fixed || q.lock).map((q) => ({ ...q }));
+  for (let tries = 0; !fixed && tries < 300 && rooms.length < want; tries++) {
     const w = 3 + r.int(4), d = 3 + r.int(4), x0 = -half + 1 + r.int(2 * half - w - 1), z0 = -half + 1 + r.int(2 * half - d - 1);
-    const room = { kind: '', x0, x1: x0 + w - 1, z0, z1: z0 + d - 1 };
+    const room = { kind: '', x0, x1: x0 + w - 1, z0, z1: z0 + d - 1, seed: 0 };
     if (rooms.some((q) => room.x0 <= q.x1 + 2 && room.x1 >= q.x0 - 2 && room.z0 <= q.z1 + 2 && room.z1 >= q.z0 - 2)) continue;
     rooms.push(room);
   }
   rooms.sort((a, c) => a.x0 + a.x1 - c.x0 - c.x1 || a.z0 - c.z0);
-  const kinds = Object.keys(DUNGEON_ROOMS);
-  rooms.forEach((room, i) => { room.kind = i === 0 ? 'guard' : r.pick(kinds); });
+  const kinds = Object.keys(DUNGEON_ROOMS), kind_r = rng(o.seed + 1);
+  rooms.forEach((room, i) => {
+    if (room.kind) return; // kept from before
+    room.kind = i === 0 ? 'guard' : kind_r.pick(kinds);
+    room.seed = hash(room.x0, room.z0, o.seed) % 100000;
+  });
   // Which room a cell belongs to (-1: a corridor), for every cell of floor.
   const floor = new Map<string, number>();
   rooms.forEach((q, i) => { for (let x = q.x0; x <= q.x1; x++) for (let z = q.z0; z <= q.z1; z++) floor.set(ck(x, z), i); });
@@ -137,15 +149,15 @@ function dungeon(o: GenOpts): Scene {
     }
   };
   const dig = (a: GenRoom, c: GenRoom) => {
-    let x = a.x0 + r.int(a.x1 - a.x0 + 1), z = a.z0 + r.int(a.z1 - a.z0 + 1);
-    const tx = c.x0 + r.int(c.x1 - c.x0 + 1), tz = c.z0 + r.int(c.z1 - c.z0 + 1), xFirst = r.chance(1, 2);
+    let x = a.x0 + dig_r.int(a.x1 - a.x0 + 1), z = a.z0 + dig_r.int(a.z1 - a.z0 + 1);
+    const tx = c.x0 + dig_r.int(c.x1 - c.x0 + 1), tz = c.z0 + dig_r.int(c.z1 - c.z0 + 1), xFirst = dig_r.chance(1, 2);
     for (let leg = 0; leg < 2; leg++) {
       if ((leg === 0) === xFirst) while (x !== tx) { const nx = x + Math.sign(tx - x); step(x, z, nx, z); x = nx; }
       else while (z !== tz) { const nz = z + Math.sign(tz - z); step(x, z, x, nz); z = nz; }
     }
   };
   for (let i = 1; i < rooms.length; i++) dig(rooms[i - 1], rooms[i]);
-  for (let i = 2; i < rooms.length; i++) if (r.chance(1, 4)) dig(rooms[i], rooms[r.int(i - 1)]); // a few ways round
+  for (let i = 2; i < rooms.length; i++) if (dig_r.chance(1, 4)) dig(rooms[i], rooms[dig_r.int(i - 1)]); // a few ways round
   for (const [key, room] of floor) {
     const [x, z] = key.split(',').map(Number);
     b.block(x, 0, z, room < 0 ? 'cobble' : 'stone');
@@ -156,8 +168,15 @@ function dungeon(o: GenOpts): Scene {
       b.set(edge, { i: other !== undefined && doors.has(edge) ? 'walldoor' : 'wall' });
     }
   }
-  rooms.forEach((q, i) => furnish(b, rng(o.seed + 101 * (i + 1)), q, DUNGEON_ROOMS[q.kind], o.detail, doorway, floor, i));
-  return { edits: b.edits(), bounds: [-half, half, -half, half], rooms };
+  // A room is furnished from its own seed alone, so it comes out the same wherever the
+  // corridors happen to enter; then whatever stands in a doorway is taken away.
+  rooms.forEach((q, i) => furnish(b, rng(q.seed), q, DUNGEON_ROOMS[q.kind], o.detail, new Set(), floor, i));
+  for (const k of doorway) {
+    const [x, z] = k.split(',').map(Number);
+    b.drop(x, 1, z);
+  }
+  const lo = (pick: (q: GenRoom) => number) => Math.min(-half, ...rooms.map(pick)) - 1, hi = (pick: (q: GenRoom) => number) => Math.max(half, ...rooms.map(pick)) + 1;
+  return { edits: b.edits(), bounds: [lo((q) => q.x0), hi((q) => q.x1), lo((q) => q.z0), hi((q) => q.z1)], rooms };
 }
 
 /** Fill a room: a centrepiece, things along the walls, the odd thing on the floor. Doorways stay clear. */
@@ -245,7 +264,7 @@ function cave(o: GenOpts): Scene {
 
 // ---- tavern ----------------------------------------------------------------------------
 
-function tavern(o: GenOpts): Scene {
+function tavern(o: GenOpts, prior: GenRoom[]): Scene {
   const b = new Build(), r = rng(o.seed), w = 6 + o.size + r.int(2), d = 6 + (o.size >> 1) + r.int(2), timber = r.chance(1, 2);
   const x0 = -(w >> 1), x1 = x0 + w - 1, z0 = -(d >> 1), z1 = z0 + d - 1, yard = 4;
   const door = x0 + ((w - 1) >> 1);
@@ -261,10 +280,15 @@ function tavern(o: GenOpts): Scene {
   for (const [k, piece] of roomEdges(x0, x1, z0, z1, 1, timber)) b.set(k, { i: piece });
   // Two back rooms behind a partition, each with its own doorway into the hall.
   const back = z0 + 1, split = x0 + (w >> 1), solid = timber ? 'wallwood' : 'wall';
+  // The building follows from the scene's seed; each room's furnishing from the room's own.
+  const was = (kind: string, salt: number) => {
+    const q = prior.find((p) => p.kind === kind);
+    return { seed: q ? q.seed : o.seed + salt, ...(q?.lock ? { lock: true } : {}) };
+  };
   const rooms: GenRoom[] = [
-    { kind: 'hall', x0, x1, z0: back + 1, z1 },
-    { kind: 'store', x0, x1: split - 1, z0, z1: back },
-    { kind: 'bedroom', x0: split, x1, z0, z1: back },
+    { kind: 'hall', x0, x1, z0: back + 1, z1, ...was('hall', 11) },
+    { kind: 'store', x0, x1: split - 1, z0, z1: back, ...was('store', 12) },
+    { kind: 'bedroom', x0: split, x1, z0, z1: back, ...was('bedroom', 13) },
   ];
   const doors = [x0 + r.int(split - x0), split + r.int(x1 - split + 1)], clear = new Set<string>([ck(door, z1)]);
   for (let x = x0; x <= x1; x++) {
@@ -274,17 +298,17 @@ function tavern(o: GenOpts): Scene {
   }
   for (let z = z0; z <= back; z++) b.edge(split, 1, z, 'w', solid);
   // The hall: tables with seats around them, more of them as the slider goes up.
-  const hall = rooms[0], spots: [number, number][] = [];
+  const hall = rooms[0], spots: [number, number][] = [], hall_r = rng(hall.seed);
   for (let x = hall.x0 + 1; x <= hall.x1 - 1; x += 3) for (let z = hall.z0 + 1; z <= hall.z1 - 1; z += 3) spots.push([x, z]);
   const tables = Math.max(1, div(spots.length * (o.density + 1), 5));
   for (let i = 0; i < tables && spots.length; i++) {
-    const [x, z] = spots.splice(r.int(spots.length), 1)[0];
+    const [x, z] = spots.splice(hall_r.int(spots.length), 1)[0];
     if (clear.has(ck(x, z)) || x === door) continue;
-    b.prop(x, 1, z, 'table', r.int(2));
+    b.prop(x, 1, z, 'table', hall_r.int(2));
     for (const [dx, dz, turn] of [[1, 0, 1], [-1, 0, 3], [0, 1, 0], [0, -1, 2]] as const) {
       const sx = x + dx, sz = z + dz;
-      if (sx < hall.x0 || sx > hall.x1 || sz < hall.z0 || sz > hall.z1 || clear.has(ck(sx, sz)) || sx === door || b.has(sx, 1, sz) || !r.chance(2, 3)) continue;
-      b.prop(sx, 1, sz, r.chance(1, 4) ? 'bench' : 'chair', turn);
+      if (sx < hall.x0 || sx > hall.x1 || sz < hall.z0 || sz > hall.z1 || clear.has(ck(sx, sz)) || sx === door || b.has(sx, 1, sz) || !hall_r.chance(2, 3)) continue;
+      b.prop(sx, 1, sz, hall_r.chance(1, 4) ? 'bench' : 'chair', turn);
     }
   }
   const none = new Set<string>();
@@ -293,17 +317,21 @@ function tavern(o: GenOpts): Scene {
     for (const [dx, dz] of NEAR) none.add(ck(x + dx, z + dz));
   }
   for (const k of clear) none.add(k);
-  furnish(b, rng(o.seed + 11), hall, { walls: ['barrel', 'barrel', 'bookshelf', 'candles', 'cauldron', 'crate'], floor: ['rug'] }, o.detail, none, null, 0);
-  furnish(b, rng(o.seed + 12), rooms[1], { walls: ['barrel', 'crate', 'sacks', 'crate', 'barrel'], floor: ['sacks'] }, o.detail + 1, none, null, 0);
+  furnish(b, rng(hall.seed + 1), hall, { walls: ['barrel', 'barrel', 'bookshelf', 'candles', 'cauldron', 'crate'], floor: ['rug'] }, o.detail, none, null, 0);
+  furnish(b, rng(rooms[1].seed), rooms[1], { walls: ['barrel', 'crate', 'sacks', 'crate', 'barrel'], floor: ['sacks'] }, o.detail + 1, none, null, 0);
   const bed = rooms[2];
   if (!none.has(ck(bed.x1, bed.z0))) b.prop(bed.x1, 1, bed.z0, 'bed', 1);
-  furnish(b, rng(o.seed + 13), bed, { walls: ['chest', 'bookshelf', 'candles'], floor: ['rug'] }, o.detail, none, null, 0);
+  furnish(b, rng(bed.seed), bed, { walls: ['chest', 'bookshelf', 'candles'], floor: ['rug'] }, o.detail, none, null, 0);
   return { edits: b.edits(), bounds: [x0 - yard, x1 + yard, z0 - yard, z1 + yard], rooms };
 }
 
-/** Build a scene. Sliders outside 0..4 are brought into range. */
-export function generate(opts: GenOpts): Scene {
+/**
+ * Build a scene. Sliders outside 0..4 are brought into range.
+ * @param prior the rooms of the scene this one replaces: a locked room is kept as it is
+ * @param fixed keep every prior room where it is (redoing one room's furnishing, not the layout)
+ */
+export function generate(opts: GenOpts, prior: GenRoom[] = [], fixed = false): Scene {
   const c = (v: number) => Math.max(0, Math.min(4, Math.floor(v) || 0));
   const o = { ...opts, seed: opts.seed >>> 0, size: c(opts.size), density: c(opts.density), detail: c(opts.detail) };
-  return { forest, dungeon, cave, tavern }[o.theme](o);
+  return o.theme === 'dungeon' ? dungeon(o, prior, fixed) : o.theme === 'tavern' ? tavern(o, prior) : o.theme === 'cave' ? cave(o) : forest(o);
 }

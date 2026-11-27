@@ -1229,7 +1229,7 @@ export class Board {
    * Put a generated scene on the table as one undo step: everything built inside its
    * bounds, and whatever is left of the scene it replaces (`old`), makes way for it.
    */
-  applyScene(edits: [string, unknown][], [x0, x1, z0, z1]: number[], old: Set<string>): void {
+  applyScene(edits: [string, unknown][], [x0, x1, z0, z1]: number[], old: Set<string>, frame = true): void {
     if (!this.full) return;
     const scene = new Map(edits);
     this.batch = [];
@@ -1241,6 +1241,8 @@ export class Board {
     }
     for (const [k, v] of edits) if (JSON.stringify(this.store.get(k)) !== JSON.stringify(v)) this.edit(k, v);
     this.batch = null;
+    this.touched();
+    if (!frame) return;
     // Stand back far enough to see all of it, looking the way the camera already looks.
     const t = this.controls.target, away = this.camera.position.clone().sub(t).normalize();
     t.set((x0 + x1 + 1) / 2, 0.5, (z0 + z1 + 1) / 2);
@@ -1248,6 +1250,15 @@ export class Board {
     this.camera.position.copy(t).addScaledVector(away, Math.min(this.controls.maxDistance, (Math.max(x1 - x0, z1 - z0) + 2) * 0.62 / half));
     this.controls.update();
     this.touched();
+  }
+
+  /** Turn the camera to a spot on the table, keeping its distance and angle. */
+  lookAt(x: number, y: number, z: number): void {
+    const t = this.controls.target, off = this.camera.position.clone().sub(t);
+    t.set(x, y, z);
+    this.camera.position.copy(t).add(off);
+    this.controls.update();
+    this.invalidate();
   }
 
   /** Undo the last edit; a whole painted stroke counts as one. */

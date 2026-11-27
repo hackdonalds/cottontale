@@ -2,7 +2,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
 import { loadKit, type Season } from './kit';
-import { THEMES, generate, type GenOpts, type Theme } from './gen';
+import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
@@ -147,6 +147,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
+    if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
     later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
   };
@@ -805,6 +806,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (act === 'import') $('file').click();
     if (act === 'clear' && confirm('Remove everything from the table, for everyone?')) {
       for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:'), ...store.keys('w:')]) store.set(k, null);
+      store.set('gen', null);
       store.set('turn', null);
     }
     if (act === 'leave') void net.stop().then(() => { location.hash = ''; location.reload(); });
@@ -824,11 +826,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let genOpts: GenOpts = { theme: 'forest', seed: newSeed(), size: 2, density: 2, detail: 2 };
   let genRecent: GenOpts[] = [];
   try { genRecent = JSON.parse(ls.get('genRecent') ?? '[]'); } catch { /* start with none */ }
-  /** What the last scene built here put on the table, so the next one can take its place. */
-  let genLast = new Set<string>();
+  /** The scene on this board, remembered with the table so its rooms can be redone or locked later. */
+  interface SceneRec { o: GenOpts; rooms: GenRoom[] }
+  const sceneRec = () => store.get<SceneRec>('gen');
   function renderGen(): void {
-    const themes = $('genThemes'), sliders = $('genSliders'), recent = $('genRecent');
-    themes.innerHTML = sliders.innerHTML = recent.innerHTML = '';
+    const themes = $('genThemes'), sliders = $('genSliders'), recent = $('genRecent'), list = $('genRooms');
+    themes.innerHTML = sliders.innerHTML = recent.innerHTML = list.innerHTML = '';
     for (const [id, t] of Object.entries(THEMES) as [Theme, (typeof THEMES)[Theme]][]) {
       const b = document.createElement('button');
       b.textContent = `${t.icon} ${t.name}`;
@@ -845,26 +848,63 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       row.append(name, input);
       sliders.append(row);
     });
+    // The rooms of the scene on the table: look at one, redo its furnishing, or lock it so a new layout keeps it.
+    const rec = sceneRec();
+    if (rec?.rooms.length) {
+      list.insertAdjacentHTML('beforeend', '<p class="hint">Rooms — 🎲 refurnishes one, 🔒 keeps it when you build another</p>');
+      rec.rooms.forEach((q, i) => {
+        const row = document.createElement('span'), name = document.createElement('button'), dice = document.createElement('button'), lock = document.createElement('button');
+        row.className = 'row';
+        name.className = 'grow';
+        name.textContent = ROOM_NAMES[q.kind] ?? q.kind;
+        name.onclick = () => board.lookAt((q.x0 + q.x1 + 1) / 2, 1, (q.z0 + q.z1 + 1) / 2);
+        dice.textContent = '🎲';
+        dice.title = dice.ariaLabel = 'Refurnish this room';
+        dice.disabled = !!q.lock;
+        dice.onclick = () => buildScene(rec.o, rec.rooms.map((r, j) => (j === i ? { ...r, seed: newSeed() } : r)), true);
+        lock.textContent = q.lock ? '🔒' : '🔓';
+        lock.title = lock.ariaLabel = q.lock ? 'Locked: unlock this room' : 'Lock this room';
+        lock.classList.toggle('on', !!q.lock);
+        lock.onclick = () => store.set('gen', { o: rec.o, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock: !r.lock } : r)) });
+        row.append(name, dice, lock);
+        list.append(row);
+      });
+    }
     for (const o of genRecent) {
       const b = document.createElement('button');
       b.textContent = `${THEMES[o.theme].icon} #${o.seed}`;
       b.title = `${THEMES[o.theme].name}, seed ${o.seed}`;
-      b.onclick = () => { genOpts = { ...o }; buildScene(); };
+      b.onclick = () => { genOpts = { ...o }; buildScene(genOpts); };
       recent.append(b);
     }
   }
-  function buildScene(): void {
+  /**
+   * Build a scene in place of the one on the table. `prior` rooms that are locked are kept;
+   * with `fixed` every room stays where it is and only what changed in them is rebuilt.
+   */
+  function buildScene(o: GenOpts, prior: GenRoom[] = [], fixed = false): void {
     if (!full()) return;
-    const scene = generate(genOpts);
-    board.applyScene(scene.edits, scene.bounds, genLast);
-    genLast = new Set(scene.edits.map(([k]) => k));
-    const same = (o: GenOpts) => JSON.stringify(o) === JSON.stringify(genOpts);
-    genRecent = [{ ...genOpts }, ...genRecent.filter((o) => !same(o))].slice(0, 6);
+    const old = sceneRec();
+    // What the old scene put on the table follows from its numbers, so it can be cleared exactly.
+    const gone = new Set(old ? generate(old.o, old.rooms, true).edits.map(([k]) => k) : []);
+    const scene = generate(o, prior, fixed);
+    board.applyScene([...scene.edits, ['gen', { o, rooms: scene.rooms }]], scene.bounds, gone, !fixed);
+    const same = (p: GenOpts) => JSON.stringify(p) === JSON.stringify(o);
+    genRecent = [{ ...o }, ...genRecent.filter((p) => !same(p))].slice(0, 6);
     ls.set('genRecent', JSON.stringify(genRecent));
     renderGen();
   }
-  $('genGo').onclick = buildScene;
-  $('genAgain').onclick = () => { genOpts = { ...genOpts, seed: newSeed() }; buildScene(); };
+  $('genGo').onclick = () => buildScene(genOpts, sceneRec()?.rooms.filter((q) => q.lock) ?? []);
+  $('genAgain').onclick = () => {
+    const rec = sceneRec(), locked = rec?.o.theme === genOpts.theme ? rec.rooms.filter((q) => q.lock) : [];
+    if (genOpts.theme === 'tavern' && rec && locked.length) {
+      // A tavern is one building: with a room locked it stays standing and the other rooms are refurnished.
+      buildScene(rec.o, rec.rooms.map((q) => (q.lock ? q : { ...q, seed: newSeed() })), true);
+      return;
+    }
+    genOpts = { ...genOpts, seed: newSeed() };
+    buildScene(genOpts, locked);
+  };
 
   /** A starter scene: a cottage in a clearing, with something to fight. */
   function meadow(): void {
