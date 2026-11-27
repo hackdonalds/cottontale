@@ -46,6 +46,8 @@ export interface PrepPage {
   hint?: string;
   /** False for a page that is only reached from another page. */
   listed?: boolean;
+  /** True for a page that leaves the table showing (and takes touches only where it draws): `#prepPages[data-see]`. */
+  see?: boolean;
   /** Draw the page into an empty element. */
   render(el: HTMLElement, ctx: PrepCtx): void;
   /** The table changed while the page is showing. Without it the page is left as it is. */
@@ -122,6 +124,7 @@ export function initPrep(app: PrepApp): Prep {
     body.innerHTML = '';
     body.className = fresh ? 'in' : '';
     body.dataset.page = id;
+    shell.toggleAttribute('data-see', !!page?.see);
     if (page) page.render(body, ctx); else list(body);
     body.scrollTop = fresh ? 0 : scrolls.get(id) ?? 0;
     // Screen readers and keyboards start at the title of the new page; nothing scrolls to get there.

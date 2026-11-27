@@ -301,13 +301,13 @@ function plate(v: MiniVal, f: Face = v): THREE.Sprite {
  * `spill`: how far fire and magic glow into the picture; `sheen`: how much of the room shows in polished things.
  * These three are what a sky looks like unless the board's theme brings a light of its own (see theme.ts).
  */
-const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number; spill: number; sheen: number }> = {
+export const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number; spill: number; sheen: number }> = {
   day: { bg: '#100e0d', sun: '#ffdcae', sunI: 3.9, hemi: '#a9bdea', hemiI: 0.85, spill: 0.14, sheen: 0.32 },
   dusk: { bg: '#120b0f', sun: '#ff9a58', sunI: 2.3, hemi: '#b79fc9', hemiI: 0.55, spill: 0.3, sheen: 0.2 },
   night: { bg: '#05060b', sun: '#8fb0ff', sunI: 0.75, hemi: '#6f84c6', hemiI: 0.32, spill: 0.44, sheen: 0.08 }, // dark enough for torches to matter
 };
 /** Where the haze starts and ends unless a theme says otherwise: far out, only to lose the table's edge in the dark. */
-const HAZE = { near: 60, far: 170 };
+export const HAZE = { near: 60, far: 170 };
 
 export class Board {
   tool: Tool = 'move';
@@ -342,6 +342,8 @@ export class Board {
   private spill = 0.2;
   /** What the sky was last set to, so setting it again costs nothing. */
   private skySig = '';
+  /** What a panel covers of the screen (see setInset). */
+  private inset = { bottom: 0, right: 0 };
   /** How strongly fires, torches and crystals light the table: the GM's dial, 0 (out) to 2. */
   private glow = 1;
   private litAt = new THREE.Vector3(1e9, 0, 0);
@@ -649,6 +651,15 @@ export class Board {
   }
   /** The table's dice (see theme.ts): the next ones picked up or thrown wear it. */
   setDice(look?: DiceLook): void { this.dice.setLook(look); }
+  /**
+   * Leave part of the screen to a panel (CSS pixels it covers at the bottom and on the right; less
+   * than nothing leans the other way): the picture, and where dice land, centre on what is left.
+   */
+  setInset(bottom = 0, right = 0): void {
+    if (bottom === this.inset.bottom && right === this.inset.right) return;
+    this.inset = { bottom, right };
+    this.resize();
+  }
 
   setTurn(id: string | null): void {
     if (this.turnId) this.minis.get(this.turnId)?.group.remove(this.turnRing);
@@ -1478,7 +1489,8 @@ export class Board {
 
   /** Where thrown dice should land (the middle of the view) and where the thrower stands. */
   throwSpot(): { target: Vec; cam: Vec; tray: number } {
-    this.ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    // The middle of what a panel leaves of the screen (see setInset); without one, the middle of the screen.
+    this.ray.setFromCamera(new THREE.Vector2(-this.inset.right / this.canvas.clientWidth || 0, this.inset.bottom / this.canvas.clientHeight || 0), this.camera);
     const p = this.pickSurface()?.point ?? this.controls.target;
     // Size the invisible dice tray to what this screen shows there (narrow on a portrait phone).
     const half = Math.tan((this.camera.fov * Math.PI) / 360) * this.camera.position.distanceTo(p);
@@ -2003,6 +2015,8 @@ export class Board {
     this.look?.setSize(w, h, this.renderer.getPixelRatio());
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.inset.bottom || this.inset.right) this.camera.setViewOffset(w, h, this.inset.right / 2, this.inset.bottom / 2, w, h);
+    else if (this.camera.view) this.camera.clearViewOffset();
     this.invalidate();
   }
 

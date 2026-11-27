@@ -55,6 +55,11 @@ first, then enhance for larger screens.
   referee: triggers are applied by one device only (the GM's; lowest id of several; the actor's with no GM here).
 - A mini stores only inputs and outcomes: `sv` (entered stats), `cn` (conditions), `fx` (ids of the last events applied
   to it, so a repeat is harmless) beside the old `hp`/`mhp`/`ini`. Derived values are never stored.
+- `src/themeEdit.ts` pure theme editing (copy under `<player>:<slug>`, set/clamp, pieces, share code, size, undo): every edit is read
+  back through `parseTheme`, so what is written is what is read — unit-test here (`src/themeEdit.test.ts`).
+  `src/ui/themeEditor.ts` (+ its own `.css`) is the UI: the Prep → Theme gallery, the see-through editor page (one panel with tabs,
+  the table as live preview: `PrepPage.see`, `board.setInset`) and the piece-picker page. It writes the whole theme to `at:theme` at
+  most every 300 ms; "Mine" is this device's `cottontale:themes`; "Use on every board" writes `set:theme`.
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
 - Board-specific keys (`b:` `m:` `f:` `w:` `at:` `turn`) are scoped per board by the store;

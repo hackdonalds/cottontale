@@ -394,6 +394,90 @@ await a.click('#seasons button:has-text("Summer")');
 await a.click('#scapes button:has-text("Silence")');
 await a.click('#skies button:has-text("Day")');
 await a.click('#atmo [data-close]');
+
+// ---- Make your own theme (ui/themeEditor.ts): start from one that ships, tweak it, and everyone watches it change ----
+await a.click('[data-mode="prep"]');
+await a.click('.prepRow[data-page="theme"]');
+await a.click('[data-edit="vampire"]');
+await a.waitForSelector('#ted');
+const ownTheme = await a.evaluate(() => window.__ct.store.get('at:theme'));
+assert(/^[a-z0-9]{10}:vampires$/.test(ownTheme.id) && ownTheme.id.startsWith(await a.evaluate(() => window.__ct.store.me)) && ownTheme.name === 'My Vampires'
+  && await ok(b, (id) => window.__ct.store.get('at:theme')?.id === id && window.__ct.store.get('at:sky') === 'night' && window.__ct.board.sun.intensity === 1.1, ownTheme.id),
+  `Customise puts a copy on the board at once, under an id of the GM's own (${ownTheme.id})`);
+await a.fill('#ted [data-dial="sunI"]', '2.5');
+await a.fill('#ted [data-dial="near"]', '7');
+await a.click('#tedTabs [data-tab="dice"]');
+await a.click('#ted [data-colour="body"]');
+await a.click('#ted [data-swatch="#3dd68c"]');
+await a.fill('#ted [data-dial="metal"]', '0.8');
+assert(await a.evaluate(() => { const { board } = window.__ct; return board.sun.intensity === 2.5 && board.scene.fog.near === 7 && board.dice.look.body === '#3dd68c'; }), 'the editor shows each change on its own device at once');
+assert(await ok(b, () => { const { board } = window.__ct; return board.sun.intensity === 2.5 && board.scene.fog.near === 7 && board.scene.fog.far === 90 && board.dice.look.body === '#3dd68c' && board.dice.look.metal === 0.8 && board.dice.look.ink === '#e8dcc0'; }),
+  'and the other player\'s board follows: sun strength, haze and dice');
+// Pieces: one off the shelf, another found by searching the whole library.
+await a.click('#tedTabs [data-tab="pieces"]');
+await a.click('.tedStrip[data-shelf="props"] [data-piece="coffin"]');
+await a.click('#ted [data-remove="coffin"]');
+await a.click('#ted [data-add="props"]');
+await a.fill('#tedQ', 'barr');
+const found = await a.evaluate(() => [...document.querySelectorAll('#tedGrid .tile')].map((t) => t.dataset.piece));
+await a.click('#tedGrid [data-piece="barrel"]');
+const marked = await a.evaluate(() => document.querySelector('#tedGrid [data-piece="barrel"]').classList.contains('on') && /^15 of 24/.test(document.querySelector('#tedCount').textContent));
+await a.goBack();
+await a.waitForSelector('#ted');
+assert(found.join() === 'barrel' && marked && await ok(b, () => { const p = window.__ct.store.get('at:theme')?.pieces.props ?? []; return !p.includes('coffin') && p.at(-1) === 'barrel'; }),
+  `a piece is taken off the theme's shelf and another, found by search, added (${found})`);
+// Undo and redo walk the session, for everyone.
+await a.click('#tedUndo');
+assert(await ok(b, () => !window.__ct.store.get('at:theme').pieces.props.includes('barrel')), 'undo takes the last change back, for everyone');
+await a.click('#tedRedo');
+assert(await ok(b, () => window.__ct.store.get('at:theme').pieces.props.includes('barrel')), 'and redo brings it again');
+// About: its name, its size, a code to share, and a place among this device's own themes.
+await a.click('#tedTabs [data-tab="about"]');
+await a.fill('#ted [data-field="name"]', 'Blood moon');
+await a.click('#ted [data-act="share"]');
+await a.waitForFunction(() => document.querySelector('#ted [data-field="share"]')?.value.startsWith('cottontale-theme:'));
+const themeCode = await a.inputValue('#ted [data-field="share"]');
+await a.click('#ted [data-act="save"]');
+const about = await a.evaluate(() => ({ bytes: +document.querySelector('#tedSize').dataset.bytes, saved: JSON.parse(localStorage.getItem('cottontale:themes')).map((t) => t.name) }));
+assert(about.bytes > 500 && about.bytes < 16384 && about.saved.join() === 'Blood moon' && await ok(b, () => window.__ct.store.get('at:theme')?.name === 'Blood moon'),
+  `the theme has a name, a size (${about.bytes} bytes), a share code (${themeCode.length} characters) and is saved on this device`);
+await a.evaluate(() => window.__ct.ui.prep.close());
+await a.waitForFunction(() => document.querySelector('#prepPages').hidden);
+// The GM's library: the theme's shelf is the changed one.
+await a.click('[data-mode="build"]');
+await a.click('[data-cat="things"]');
+const shelfNow = await a.evaluate(() => ({ chip: document.querySelector('#palette .chip.on')?.textContent, tiles: [...document.querySelectorAll('#palette .tile')].map((t) => t.title) }));
+assert(shelfNow.chip?.includes('Blood moon') && shelfNow.tiles.at(-1) === 'Barrel' && !shelfNow.tiles.includes('Coffin') && shelfNow.tiles.includes('Tombstone'), `the library's theme shelf shows the changed pieces ${JSON.stringify(shelfNow)}`);
+await a.keyboard.press('1');
+// The code, pasted by another GM into another board: that board gets the theme, this one keeps its own.
+await b.evaluate(() => window.__ct.store.set(`gm:${window.__ct.store.me}`, true));
+await b.waitForFunction(() => !document.body.classList.contains('player'));
+await b.click('#menuBtn');
+await b.click('[data-act="boards"]');
+await b.click('#boardNew');
+await b.waitForFunction(() => !document.querySelector('#prep').hidden && window.__ct.store.get('at:theme') === null);
+await b.click('#boards [data-close]');
+await b.click('[data-mode="prep"]');
+await b.click('.prepRow[data-page="theme"]');
+await b.click('#prepBody [data-act="import"]');
+await b.fill('#prepBody [data-field="code"]', 'nonsense');
+await b.click('#prepBody [data-act="use"]');
+await b.waitForFunction(() => /not a theme code/.test(document.querySelector('#prepBody .tedBox').textContent));
+await b.fill('#prepBody [data-field="code"]', `Here you go: ${themeCode}`);
+await b.click('#prepBody [data-act="use"]');
+const imported = await ok(b, (id) => { const { store, board } = window.__ct, t = store.get('at:theme'); return t?.id === id && t.name === 'Blood moon' && board.sun.intensity === 2.5 && board.dice.look.body === '#3dd68c' && document.querySelector('.card.on')?.dataset.theme === id; }, ownTheme.id);
+const elsewhere = await ok(a, () => [...window.__ct.store.entries].filter(([k, e]) => /^@.+\/at:theme$/.test(k) && e.v?.name === 'Blood moon').length === 1);
+assert(imported && elsewhere && await a.evaluate(() => window.__ct.store.get('at:theme')?.name === 'Blood moon'), `a share code pasted on another device becomes the theme of the board that device is on (there: ${imported}, seen from here: ${elsewhere})`);
+await b.evaluate(() => window.__ct.ui.prep.close());
+await b.click('#menuBtn');
+await b.click('[data-act="boards"]');
+b.once('dialog', (d) => d.accept());
+await b.click('#boardList button[title="Delete this board"]');
+await b.waitForFunction(() => document.querySelectorAll('#boardList .row').length === 1);
+await b.click('#boards [data-close]');
+await b.evaluate(() => window.__ct.store.set(`gm:${window.__ct.store.me}`, null));
+await a.evaluate(() => { const s = window.__ct.store; s.set('at:theme', ''); for (const [k, v] of [['sky', 'day'], ['season', 'summer'], ['glow', 1], ['amb', 'off']]) s.set(`at:${k}`, v); });
+assert(await ok(b, () => document.body.classList.contains('player') && window.__ct.store.get('at:theme') === '' && JSON.parse(window.__ct.board.skySig)[0] === 'day' && window.__ct.board.dice.look.body === undefined), 'and the table is as it was');
 // A scene from a preset that is nothing but data (public/gens/cove.json): it is built, and the other player gets it.
 const beforeCove = await count(a, 'b:');
 await a.click('#menuBtn');
@@ -544,7 +628,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
-    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init', '.sheet:not(.closed)', '#prepPages'].map((q) => document.querySelector(q)).filter((e) => e && !e.hidden && vis(e))
+    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init', '.sheet:not(.closed)', '#prepPages:not([data-see])', '#prepPages[data-see] #prepBar', '#ted', '#tedDo'].map((q) => document.querySelector(q)).filter((e) => e && !e.hidden && vis(e))
       .map((e) => ({ id: e.id, r: e.getBoundingClientRect() }));
     const bad = [];
     for (const a of boxes) {
@@ -933,6 +1017,83 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.tap('#scapes button:has-text("Silence")');
   await p.tap('#atmo [data-close]');
 
+  // ---- Make your own theme: one panel with tabs, and the table still in view and in hand ----
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="theme"]');
+  await p.tap('[data-edit="pirate"]');
+  await p.waitForSelector('#ted');
+  await settle();
+  bad = [];
+  const shot = async (name) => { await settle(); bad.push(...(await layout()).map((x) => `${name}: ${x}`)); await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme-${name}.png` }); };
+  for (const tab of ['look', 'sound', 'pieces', 'dice', 'gen', 'about']) {
+    await p.tap(`#tedTabs [data-tab="${tab}"]`);
+    await shot(tab);
+    if (tab === 'look') { await p.tap('#ted [data-colour="sun"]'); await shot('look-colour'); await p.tap('#ted [data-swatch="#ffc46b"]'); await p.tap('#ted [data-haze]'); await shot('look-haze'); }
+    if (tab === 'pieces') { await p.tap('.tedStrip[data-shelf="props"] .tile:nth-child(2)'); await shot('pieces-picked'); await p.tap('#ted [data-move="-1"]'); }
+    if (tab === 'dice') { await p.tap('#ted [data-colour="ink"]'); await shot('dice-colour'); }
+    if (tab === 'about') { await p.tap('#ted [data-act="share"]'); await shot('about-share'); await p.tap('#ted [data-act="import"]'); await shot('about-import'); await p.tap('#ted [data-act="save"]'); await shot('about-saved'); }
+  }
+  const panel = await p.evaluate(() => {
+    const r = document.querySelector('#ted').getBoundingClientRect(), d = document.querySelector('#tedDo').getBoundingClientRect(), t = window.__ct.store.get('at:theme');
+    return { top: Math.min(r.top, d.top) / innerHeight, left: r.left / innerWidth, tabs: document.querySelectorAll('#tedTabs [role="tab"]').length, sun: t.mood.light.sun, fog: t.mood.fog ?? null, first: t.pieces.props[0], saved: JSON.parse(localStorage.getItem('cottontale:themes')).length };
+  });
+  assert(!bad.length, `every tab of the theme editor is laid out cleanly ${bad.join('; ')}`);
+  assert(panel.tabs === 6 && panel.sun === '#ffc46b' && panel.fog?.near === 20 && panel.first === 'rock' && panel.saved === 1 && (label === 'portrait' ? panel.top > 0.4 && panel.left < 0.1 : panel.left > 0.4),
+    `the editor is one panel that leaves the table in view (${label === 'portrait' ? 'under' : 'beside'} it), and its controls work by touch ${JSON.stringify(panel)}`);
+  // The table is still the table: one finger looks around, two zoom, and neither edits anything.
+  // (Somewhere on the visible table that is not a figure: a finger on a figure would move it, as in Play.)
+  const [tx, ty] = await p.evaluate(([w, h, tall]) => {
+    const { board } = window.__ct, spots = [...board.minis.keys()].map((id) => board.spotOf(id)).filter(Boolean);
+    const tries = tall ? [0.2, 0.5, 0.8].flatMap((x) => [0.2, 0.28, 0.36].map((y) => [w * x, h * y])) : [0.1, 0.22, 0.34].flatMap((x) => [0.35, 0.55, 0.75].map((y) => [w * x, h * y]));
+    const far = (q) => Math.min(...spots.map((s) => Math.hypot(s.x - q[0], s.y - q[1])), 1e6);
+    return tries.sort((a, b) => far(b) - far(a))[0];
+  }, [viewport.width, viewport.height, label === 'portrait']);
+  const camAt = () => p.evaluate(() => window.__ct.board.camera.position.toArray().map((v) => Math.round(v * 100) / 100).join());
+  const edits = () => p.evaluate(() => [...window.__ct.store.keys('b:'), ...window.__ct.store.keys('m:')].map((k) => k + JSON.stringify(window.__ct.store.get(k))).join());
+  const [cam0, dist0, edits0] = [await camAt(), await camDist(), await edits()];
+  await touch('touchStart', [[tx, ty]]);
+  for (let i = 1; i <= 8; i++) { await touch('touchMove', [[tx + i * 9, ty + i * 2]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', []);
+  await settle();
+  const cam1 = await camAt();
+  await touch('touchStart', [[tx - 20, ty]]);
+  await touch('touchStart', [[tx - 20, ty], [tx + 20, ty]]);
+  for (let i = 1; i <= 8; i++) { await touch('touchMove', [[tx - 20 - i * 8, ty], [tx + 20 + i * 8, ty]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', [[tx + 84, ty]]);
+  await touch('touchEnd', []);
+  await settle();
+  const dist1 = await camDist();
+  assert(cam1 !== cam0 && dist1 < dist0 - 0.3 && await edits() === edits0 && await p.evaluate(() => !!document.querySelector('#ted')), `with the editor open a one-finger drag on the table turns the camera and a pinch zooms it (${cam0} → ${cam1}, ${dist0.toFixed(1)} → ${dist1.toFixed(1)})`);
+  // Adding pieces is a page of its own, with search; Back returns to the panel.
+  await p.tap('#tedTabs [data-tab="pieces"]');
+  await p.tap('#ted [data-add="minis"]');
+  await p.waitForSelector('#tedGrid');
+  await p.fill('#tedQ', 'drag');
+  await p.tap('#tedGrid [data-piece="dragon"]');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme-pick.png` });
+  await p.goBack();
+  await p.waitForSelector('#ted');
+  await p.waitForFunction(() => window.__ct.store.get('at:theme')?.pieces.minis.at(-1) === 'dragon' && !!document.querySelector('.tedStrip[data-shelf="minis"] [data-piece="dragon"]'));
+  await p.goBack();
+  await p.waitForSelector('.cards[data-group="mine"] .card.on');
+  await p.tap('[data-rename]');
+  await settle();
+  bad.push(...await layout());
+  await p.fill('.cardBox input', 'Salt and rum');
+  await p.tap('.cardBox [data-yes]');
+  await p.waitForFunction(() => document.querySelector('.cards[data-group="mine"] .card b')?.textContent === 'Salt and rum' && window.__ct.store.get('at:theme')?.name === 'Salt and rum');
+  await p.tap('[data-remove]');
+  await settle();
+  bad.push(...await layout());
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme-mine.png` });
+  const asked = await p.evaluate(() => !!document.querySelector('.cardBox [data-yes]') && JSON.parse(localStorage.getItem('cottontale:themes')).length === 1);
+  await p.tap('.cardBox button:has-text("Keep")');
+  assert(asked && !bad.length && await p.evaluate(() => JSON.parse(localStorage.getItem('cottontale:themes'))[0].pieces.minis.at(-1) === 'dragon'), `pieces are added from a page of the library; a theme of one's own is renamed in the gallery, and removing it asks in the page ${bad.join('; ')}`);
+  await p.evaluate(() => { window.__ct.ui.prep.close(); const s = window.__ct.store; s.set('at:theme', ''); for (const [k, v] of [['sky', 'day'], ['season', 'summer'], ['glow', 1], ['amb', 'off']]) s.set(`at:${k}`, v); });
+  await p.waitForFunction(() => document.querySelector('#prepPages').hidden && !window.__ct.board.camera.view?.enabled);
+  await p.tap('[data-mode="play"]');
+
   await p.tap('#logToggle');
   bad = await layout();
   const sheet = await p.evaluate(() => { const r = document.querySelector('#log').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; });
@@ -962,6 +1123,15 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   });
   assert(onScreen && (await cells()).length === 1, 'flung dice come to rest in view, and the throw edits nothing');
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
+  // A theme saved on this device is still under "Mine" when the app is opened again.
+  await p.reload();
+  await p.click('#join');
+  await p.waitForSelector('#hud:not([hidden])', { state: 'attached' });
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="theme"]');
+  await p.waitForSelector('.cards[data-group="mine"] .card');
+  const kept = await p.evaluate(() => ({ name: document.querySelector('.cards[data-group="mine"] .card b').textContent, shipped: document.querySelectorAll('.cards[data-group="offered"] .card').length }));
+  assert(kept.name === 'Salt and rum' && kept.shipped >= 4, `a saved theme is under Mine after a reload ${JSON.stringify(kept)}`);
   await p.context().close();
 }
 
