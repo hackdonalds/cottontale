@@ -7,6 +7,7 @@
 // from spoiling surprises; they are not a defence against someone who edits
 // the code.
 import { BLOCKS } from './catalog';
+import { GROUND } from './terrain';
 import type { Store } from './store';
 
 export interface CellVal { i: string; r?: number }
@@ -183,4 +184,123 @@ export function nextTurn(store: Store): Turn | null {
 export function measure(a: number[], b: number[]): { cells: number; feet: number } {
   const cells = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
   return { cells, feet: Math.round(cells) * 5 };
+}
+
+// ---- shaping the land ------------------------------------------------------------
+// The brushes that sculpt and dress terrain, as pure edits of the store. Each takes a
+// `put` to write through, so the board can make a whole stroke one undo step.
+
+const MAX_Y = 40;
+type Put = (key: string, value: unknown) => void;
+const bk = (x: number, y: number, z: number) => `b:${x},${y},${z}`;
+
+/** The highest block in a column. */
+export function columnTop(store: Store, x: number, z: number): { y: number; id: string } | null {
+  for (let y = MAX_Y - 1; y >= 0; y--) {
+    const v = store.get<CellVal>(bk(x, y, z));
+    if (v && BLOCKS[v.i]) return { y, id: v.i };
+  }
+  return null;
+}
+
+/** Carry whatever stands on a column (a prop, minis) up or down with its surface. */
+function carry(store: Store, x: number, z: number, from: number, by: number, put: Put): void {
+  for (const k of [...store.keys('m:')]) {
+    const m = store.get<MiniVal>(k)!;
+    if (m.x === x && m.z === z && m.y === from) put(k, { ...m, y: from + by });
+  }
+}
+
+/**
+ * Raise (`by` 1) or lower (-1) the ground of one column by a level. Only natural ground
+ * moves: floors, paving and water stay as they were built. What stands on it rides along.
+ */
+export function sculpt(store: Store, x: number, z: number, by: 1 | -1, put: Put): boolean {
+  const top = columnTop(store, x, z);
+  if (!top) {
+    if (by > 0) put(bk(x, 0, z), { i: 'grass' });
+    return by > 0;
+  }
+  if (!GROUND[top.id]) return false;
+  const on = store.get<CellVal>(bk(x, top.y + 1, z));
+  if (by > 0) {
+    if (top.y + 2 >= MAX_Y) return false;
+    if (on) put(bk(x, top.y + 2, z), on);
+    put(bk(x, top.y + 1, z), { i: top.id });
+  } else {
+    if (top.y === 0) return false; // the table always keeps its last layer of ground
+    put(bk(x, top.y, z), on ?? null);
+    if (on) put(bk(x, top.y + 1, z), null);
+  }
+  carry(store, x, z, top.y + 1, by, put);
+  return true;
+}
+
+/** Bring a column's ground to the given height, a level at a time. */
+export function levelTo(store: Store, x: number, z: number, y: number, put: Put): void {
+  for (let i = 0; i < MAX_Y; i++) {
+    const top = columnTop(store, x, z);
+    const at = top ? top.y : -1;
+    if (at === y || !sculpt(store, x, z, at < y ? 1 : -1, put)) return;
+  }
+}
+
+/** Change what the surface of a column is made of: grass to sand, a path of stone, a river of water. */
+export function resurface(store: Store, x: number, z: number, id: string, put: Put): void {
+  const top = columnTop(store, x, z);
+  if (!top) put(bk(x, 0, z), { i: id });
+  else if (top.id !== id && !store.get(bk(x, top.y + 1, z))) put(bk(x, top.y, z), { i: id });
+}
+
+function chance(x: number, z: number, salt: number): number {
+  let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(z, 0x165667b1) ^ Math.imul(salt, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
+}
+
+/** What grows or lies on each kind of ground, and how often (the rest of the cells stay open). */
+const DRESSING: Record<string, [prop: string, share: number][]> = {
+  grass: [['tree', 0.09], ['bush', 0.05], ['flowers', 0.05], ['rock', 0.02]],
+  meadow: [['flowers', 0.12], ['bush', 0.06], ['tree', 0.04], ['reeds', 0.04]],
+  moss: [['pine', 0.15], ['mushroom', 0.06], ['log', 0.03], ['stump', 0.03], ['rock', 0.03]],
+  dirt: [['stump', 0.04], ['log', 0.04], ['rock', 0.04], ['deadtree', 0.03]],
+  mud: [['reeds', 0.14], ['log', 0.03], ['deadtree', 0.03]],
+  sand: [['cactus', 0.07], ['palm', 0.05], ['rock', 0.04]],
+  gravel: [['rock', 0.1], ['deadtree', 0.02]],
+  clay: [['cactus', 0.05], ['rock', 0.06], ['deadtree', 0.03]],
+  basalt: [['rock', 0.08], ['stalagmite', 0.05], ['crystal', 0.02]],
+  snow: [['pine', 0.14], ['rock', 0.04], ['deadtree', 0.03]],
+};
+
+/**
+ * What the grow brush would put on a cell of this ground, if anything. It follows from the
+ * spot alone, so everyone grows the same wood and brushing twice changes nothing. Woods
+ * gather by kind, and reeds crowd the water's edge.
+ */
+export function dressing(ground: string, x: number, z: number, wet: boolean): string | null {
+  const r = chance(x, z, 1);
+  if (wet && (ground === 'grass' || ground === 'meadow' || ground === 'mud' || ground === 'dirt')) return r < 0.4 ? 'reeds' : null;
+  let acc = 0;
+  for (const [prop, share] of DRESSING[ground] ?? []) {
+    acc += share;
+    if (r >= acc) continue;
+    if (prop !== 'tree') return prop;
+    const wood = chance(Math.floor(x / 5), Math.floor(z / 5), 2); // one kind of tree to a stretch of wood
+    return wood < 0.3 ? 'pine' : wood < 0.5 ? 'birch' : wood < 0.62 ? 'poplar' : 'tree';
+  }
+  return null;
+}
+
+/** Dress one column with what suits its ground. Leaves alone anything already standing there. */
+export function grow(store: Store, x: number, z: number, put: Put): void {
+  const top = columnTop(store, x, z);
+  if (!top || !GROUND[top.id] || top.y + 1 >= MAX_Y || store.get(bk(x, top.y + 1, z))) return;
+  for (const k of store.keys('m:')) {
+    const m = store.get<MiniVal>(k)!;
+    if (m.x === x && m.z === z) return;
+  }
+  const wet = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => columnTop(store, x + dx, z + dz)?.id === 'water');
+  const prop = dressing(top.id, x, z, wet);
+  if (prop) put(bk(x, top.y + 1, z), { i: prop });
 }

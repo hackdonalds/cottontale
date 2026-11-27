@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES } from './catalog';
 import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
-import { canControl, edgeBetween, ek, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
+import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
 import { Store, type Row } from './store';
 
@@ -252,6 +252,75 @@ describe('edge walls', () => {
     expect([...s.keys('w:')]).toEqual([]);
     s.setBoard('');
     expect([...s.keys('w:')]).toEqual([ek(0, 0, 0, 'n')]);
+  });
+});
+
+describe('shaping the land', () => {
+  const land = () => {
+    const s = new Store('gm');
+    for (let x = 0; x < 3; x++) for (let z = 0; z < 3; z++) s.set(`b:${x},0,${z}`, { i: 'grass' });
+    return { s, put: (k: string, v: unknown) => s.set(k, v) };
+  };
+
+  it('raises and lowers ground a level, carrying what stands on it', () => {
+    const { s, put } = land();
+    s.set('b:1,1,1', { i: 'tree' });
+    s.set('m:a', { x: 1, y: 1, z: 1, k: 'knight', c: '#fff', n: '', r: 0, s: 1 });
+    expect(sculpt(s, 1, 1, 1, put)).toBe(true);
+    expect(columnTop(s, 1, 1)).toEqual({ y: 1, id: 'grass' });
+    expect(s.get('b:1,2,1')).toEqual({ i: 'tree' });
+    expect(s.get<MiniVal>('m:a')!.y).toBe(2);
+    expect(sculpt(s, 1, 1, -1, put)).toBe(true);
+    expect(columnTop(s, 1, 1)).toEqual({ y: 0, id: 'grass' });
+    expect(s.get('b:1,1,1')).toEqual({ i: 'tree' });
+    expect(s.get('b:1,2,1')).toBeNull();
+    expect(s.get<MiniVal>('m:a')!.y).toBe(1);
+  });
+
+  it('never digs through the last layer, and leaves floors alone', () => {
+    const { s, put } = land();
+    s.set('b:1,1,1', null);
+    expect(sculpt(s, 0, 0, -1, put)).toBe(false);
+    expect(columnTop(s, 0, 0)).toEqual({ y: 0, id: 'grass' });
+    s.set('b:2,0,2', { i: 'wood' });
+    expect(sculpt(s, 2, 2, 1, put)).toBe(false);
+    expect(sculpt(s, 9, 9, 1, put)).toBe(true); // bare table: new ground appears
+    expect(columnTop(s, 9, 9)).toEqual({ y: 0, id: 'grass' });
+  });
+
+  it('levels a column to a height and repaints its surface', () => {
+    const { s, put } = land();
+    levelTo(s, 0, 0, 3, put);
+    expect(columnTop(s, 0, 0)).toEqual({ y: 3, id: 'grass' });
+    levelTo(s, 0, 0, 1, put);
+    expect(columnTop(s, 0, 0)).toEqual({ y: 1, id: 'grass' });
+    expect(s.get('b:0,2,0')).toBeNull();
+    resurface(s, 0, 0, 'sand', put);
+    expect(columnTop(s, 0, 0)).toEqual({ y: 1, id: 'sand' });
+    expect(s.get('b:0,0,0')).toEqual({ i: 'grass' }); // only the surface changes
+  });
+
+  it('grows what suits the ground, the same for everyone, and reeds by the water', () => {
+    const kinds = (ground: string, wet = false) => {
+      const seen = new Set<string>();
+      for (let x = 0; x < 40; x++) for (let z = 0; z < 40; z++) { const p = dressing(ground, x, z, wet); if (p) seen.add(p); }
+      return seen;
+    };
+    expect(kinds('sand').has('cactus')).toBe(true);
+    expect(kinds('sand').has('pine')).toBe(false);
+    expect([...kinds('snow')].every((p) => ['pine', 'rock', 'deadtree'].includes(p))).toBe(true);
+    expect([...kinds('grass', true)]).toEqual(['reeds']);
+    for (const p of [...kinds('grass'), ...kinds('moss'), ...kinds('basalt'), ...kinds('mud'), ...kinds('meadow'), ...kinds('dirt'), ...kinds('clay')]) expect(PROPS[p], p).toBeTruthy();
+    expect(dressing('grass', 7, 3, false)).toBe(dressing('grass', 7, 3, false));
+    let open = 0;
+    for (let x = 0; x < 40; x++) for (let z = 0; z < 40; z++) if (!dressing('grass', x, z, false)) open++;
+    expect(open / 1600).toBeGreaterThan(0.6); // a wood you can still walk through
+
+    const { s, put } = land();
+    for (let x = 0; x < 3; x++) for (let z = 0; z < 3; z++) grow(s, x, z, put);
+    const first = JSON.stringify(s.dump().map(([k, v]) => [k, v]).sort());
+    for (let x = 0; x < 3; x++) for (let z = 0; z < 3; z++) grow(s, x, z, put);
+    expect(JSON.stringify(s.dump().map(([k, v]) => [k, v]).sort())).toBe(first);
   });
 });
 

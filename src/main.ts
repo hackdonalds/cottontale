@@ -415,6 +415,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     } else if (board.tool === 'build') {
       add('Eraser', '⛏️', board.brush === 'erase', () => { board.brush = 'erase'; });
       shelves([...Object.keys(BLOCK_SHELVES), ...Object.keys(PROP_SHELVES), SLABS], buildShelf, (n) => { buildShelf = n; });
+      if (buildShelf === 'Terrain') {
+        // Shaping the land: each is a brush you tap or drag over the ground.
+        const land: [string, string, string][] = [['raise', '⛰️', 'Raise the ground'], ['lower', '🕳️', 'Lower the ground'], ['level', '🟰', 'Level to where you start'], ['grow', '🌱', 'Grow what suits the ground']];
+        for (const [id, icon, title] of land) add(title, icon, board.brush === id, () => { board.brush = id; });
+        add(`Brush size: ${board.reach * 2 + 1} across`, ['•', '●', '⬤'][board.reach], false, () => { board.reach = (board.reach + 1) % 3; });
+        add('Repaint the surface instead of stacking', '🖌️', board.surface, () => { board.surface = !board.surface; });
+        sep();
+      }
       for (const id of BLOCK_SHELVES[buildShelf] ?? []) add(BLOCKS[id].name, `<i style="background:${BLOCKS[id].color}"></i>`, board.brush === id, () => { board.brush = id; });
       for (const id of PROP_SHELVES[buildShelf] ?? []) add(PROPS[id].name, PROPS[id].icon, board.brush === id, () => { board.brush = id; });
       const turn = () => add('Turn (R)', ['⬆️', '➡️', '⬇️', '⬅️'][board.rot], false, () => { board.rot = (board.rot + 1) % 4; });

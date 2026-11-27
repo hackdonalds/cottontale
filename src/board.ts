@@ -5,7 +5,7 @@ import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Kind, type Start } from './dice';
-import { EDGES, ek, eyesOf, fogged, measure, miniShown, parseEdge, roomEdges, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
+import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 
 export type { CellVal, MiniVal };
@@ -47,6 +47,8 @@ type Edge = [x: number, y: number, z: number, s: Side];
 const PLAIN_WALL = new THREE.BoxGeometry(1, 1, 0.11).translate(0, 0.5, -0.5);
 const PLAIN_POST = new THREE.BoxGeometry(0.26, 1, 0.26).translate(-0.5, 0.5, -0.5);
 const ROOM_MAX = 24;
+/** Brushes that shape or dress the land (see rules.ts). */
+const LAND = new Set(['raise', 'lower', 'level', 'grow']);
 function noise(x: number, y: number, z: number): number {
   const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
   return s - Math.floor(s);
@@ -173,6 +175,8 @@ interface Gesture {
   /** Touch editing: what the first contact pointed at, and the flat layer a drag paints on. */
   first: Vec | null;
   stroke: { level: number; plane: number } | null;
+  /** Shaping the land: the columns this stroke has already touched (each changes once a stroke). */
+  shaped?: Set<string>;
   /** Drawing a wall: the edge the finger started on. The run stays in line with it. */
   edge?: Edge | null;
   press?: ReturnType<typeof setTimeout>;
@@ -283,6 +287,10 @@ export class Board {
   private edgesDirty = false;
   /** Rooms dragged out with the room brush are half-timbered rather than stone. */
   roomTimber = false;
+  /** With a block brush: repaint the surface of the ground instead of stacking another block on it. */
+  surface = false;
+  /** How far the land brushes reach around the cell touched, in cells (0 = just that cell). */
+  reach = 0;
   private minis = new Map<string, Mini>();
   private rulers = new Map<string, THREE.Group>();
   private fog: THREE.InstancedMesh | null = null;
@@ -1050,6 +1058,38 @@ export class Board {
   /** The brush is a wall piece: it goes on the edge of a cell, not in it. */
   private get edging(): boolean { return this.tool === 'build' && !!EDGES[this.brush]; }
   private get rooming(): boolean { return this.tool === 'build' && this.brush === 'room'; }
+  /** The brush shapes or dresses the land rather than placing a piece. */
+  private get shaping(): boolean {
+    return this.tool === 'build' && (LAND.has(this.brush) || (this.surface && !!BLOCKS[this.brush]));
+  }
+  /** The column under the pointer. */
+  private pickColumn(): [x: number, z: number] | null {
+    const s = this.pickSurface(), c = s && (s.cell ?? s.place);
+    return c ? [c[0], c[2]] : null;
+  }
+  /** Apply the land brush around the pointer. A drag is one stroke: every column changes once. */
+  private shape(g: Gesture): void {
+    const at = this.pickColumn();
+    if (!at) return;
+    if (!g.stroke) {
+      g.stroke = { level: columnTop(this.store, at[0], at[1])?.y ?? 0, plane: 0 };
+      g.shaped = new Set();
+      this.batch = [];
+      this.undoStack.push(this.batch);
+    }
+    const put = (k: string, v: unknown) => this.edit(k, v), r = this.reach;
+    for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+      if (dx * dx + dz * dz > r * r + r) continue; // a round brush
+      const x = at[0] + dx, z = at[1] + dz, k = `${x},${z}`;
+      if (g.shaped!.has(k) || Math.abs(x) >= LIMIT || Math.abs(z) >= LIMIT) continue;
+      g.shaped!.add(k);
+      if (this.brush === 'raise') sculpt(this.store, x, z, 1, put);
+      else if (this.brush === 'lower') sculpt(this.store, x, z, -1, put);
+      else if (this.brush === 'level') levelTo(this.store, x, z, g.stroke.level, put);
+      else if (this.brush === 'grow') grow(this.store, x, z, put);
+      else resurface(this.store, x, z, this.brush, put);
+    }
+  }
 
   /** The wall under the pointer, if there is one. */
   private pickWall(): { key: string; dist: number } | null {
@@ -1384,6 +1424,7 @@ export class Board {
         this.updateGhost();
         if (this.pasting) break;
         if (this.edging) { g.edge = this.pickEdge(); break; }
+        if (this.shaping) break;
         if (this.erasing) { const t = this.eraseTarget(); g.first = t && !t.startsWith('w:') ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
@@ -1445,6 +1486,7 @@ export class Board {
     else if (this.copying) this.stretchCopy(g, false);
     else if (this.rooming) this.stretchRoom(g, false);
     else if (this.edging) { if (g.moved) this.paintEdges(g); }
+    else if (this.shaping) { if (g.moved) { this.shape(g); this.updateGhost(); } }
     else if (this.tool === 'mini' || this.pasting) this.updateGhost();
     else if (this.tool === 'build' && g.moved) this.paint(g);
   }
@@ -1509,6 +1551,17 @@ export class Board {
     if (this.edging) {
       const e = this.pickEdge();
       if (e) this.edgeGhost(e, '#ffffff');
+      return;
+    }
+    if (this.shaping) { // a flat patch on the ground, as wide as the brush reaches
+      const at = this.pickColumn();
+      if (!at) return;
+      const w = this.reach * 2 + 1, y = (columnTop(this.store, at[0], at[1])?.y ?? -1) + 1;
+      (this.ghost.material as THREE.MeshBasicMaterial).color.set('#ffe066');
+      this.ghost.scale.set(w, 0.12, w);
+      this.ghost.position.set(at[0] + 0.5, y, at[1] + 0.5);
+      this.ghost.visible = true;
+      this.invalidate();
       return;
     }
     const mat = this.ghost.material as THREE.MeshBasicMaterial;
@@ -1612,6 +1665,11 @@ export class Board {
         if (this.edging) {
           const edge = this.pickEdge();
           if (edge) this.setEdge(edge);
+          break;
+        }
+        if (this.shaping) {
+          this.shape(g);
+          this.batch = null;
           break;
         }
         if (this.erasing) {
