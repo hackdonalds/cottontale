@@ -70,7 +70,7 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 .sheet button, #minipanel button, #prep button { justify-content: center; }
 #genRooms .row .grow, #boardList button.grow { justify-content: flex-start; }
 #menu button { justify-content: flex-start; padding: 6px 12px; }
-#menu button svg { opacity: .8; }
+#menu button svg { opacity: .8; pointer-events: none; }
 .glyph { display: grid; place-items: center; }
 #players span svg { width: 14px; height: 14px; }
 #modes { display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: rgba(0, 0, 0, .35); }

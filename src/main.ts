@@ -5,7 +5,7 @@ import { loadKit, type Season } from './kit';
 import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
 import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
-import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
+import { MAX_DICE, decode, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
@@ -303,6 +303,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     navigator.vibrate?.(12);
     await board.dice.play(t, myColor, me);
     showRoll(meTag, { d, r, mod }, true);
+    // If the view was turned away during the roll, bring our own dice back into it.
+    const rest = decode(t);
+    if (rest) board.revealDice(rest.pos.map((p) => p[t.n - 1]));
   }
   function closeSheet(): void { openSheet(null); }
 
@@ -967,9 +970,31 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     catch { prompt('Copy this invite link:', invite); }
   };
   $('menuBtn').onclick = () => { $('menu').hidden = !$('menu').hidden; };
+  // This device's own choices (not shared): ambient motion (off by default for those who ask for
+  // less motion; it also saves battery) and whether the camera follows the turn order.
+  const local = {
+    ambient: (ls.get('ambient') ?? (matchMedia('(prefers-reduced-motion: reduce)').matches ? '0' : '1')) === '1',
+    follow: ls.get('follow') !== '0',
+  };
+  function renderLocal(): void {
+    board.setAmbient(local.ambient);
+    board.followTurns = local.follow;
+    for (const [k, icon, label] of [['ambient', 'tree', 'Ambient motion'], ['follow', 'next', 'Follow turns']] as const) {
+      const b = $('menu').querySelector<HTMLElement>(`[data-act="${k}"]`)!;
+      b.innerHTML = `${ico(icon)}${label}: ${local[k] ? 'on' : 'off'}`;
+      b.setAttribute('aria-pressed', String(local[k]));
+    }
+  }
+  renderLocal();
   $('menu').onclick = (e) => {
     const act = (e.target as HTMLElement).dataset.act;
     if (!act) return;
+    if (act === 'ambient' || act === 'follow') { // a switch: flip it and leave the menu open to show it
+      local[act] = !local[act];
+      ls.set(act, local[act] ? '1' : '0');
+      renderLocal();
+      return;
+    }
     $('menu').hidden = true;
     if (act === 'gm') {
       const g = gms(store), here = [meId, ...[...net.peers.keys()].map(pid)];
