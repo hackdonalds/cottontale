@@ -33,6 +33,8 @@ type Body =
   | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] }
+  // A soundboard button the GM tapped (src/sounds.ts): the table's effect `id`, for everyone to hear.
+  | { y: 'sfx'; id: string }
   // Files passed between players (src/blobpeer.ts): who has a blob, WebRTC signalling, small blobs in pieces.
   | { y: 'bq'; h: string }
   | { y: 'bh'; h: string; to: string }
