@@ -1016,7 +1016,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForFunction(() => { const { board } = window.__ct; return board.boulder.rolling.length === 1 && !board.boulder.held && !board.boulderArmed; });
   await p.waitForTimeout(400);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-boulder.png` });
-  assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === 1, 'a flick sends the boulder rolling, and edits no terrain');
+  assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === 1, `a flick sends the boulder rolling, and edits no terrain ${JSON.stringify(await p.evaluate(() => { const b = window.__ct.board, r = b.boulder.rolling[0]; return r && { n: r.n, from: r.pos[0].toArray().map((v) => +v.toFixed(1)), to: r.pos[r.n - 1].toArray().map((v) => +v.toFixed(1)), target: b.controls.target.toArray().map((v) => +v.toFixed(1)) }; }))} ${(await cells()).length}`);
   await p.context().close();
 }
 
