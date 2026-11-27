@@ -27,7 +27,9 @@ type Body =
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }
-  | { y: 'mv'; id: string; p: [number, number, number] };
+  | { y: 'mv'; id: string; p: [number, number, number] }
+  /** A piece (`i`) at a cell or edge key was broken on purpose: burst it when its removal arrives. */
+  | { y: 'broke'; k: string; i: string };
 
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */
 export type Msg = Body & { bd?: string };

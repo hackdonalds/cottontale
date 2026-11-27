@@ -115,6 +115,9 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 #ring button.on { background: var(--acc); border-color: var(--acc); color: #201a05; }
 #ring .pop { position: absolute; left: 0; transform: translate(-50%, -100%); display: grid; gap: 6px; padding: 6px; border-radius: 18px; background: rgba(20, 24, 34, .94); border: 1px solid rgba(255, 255, 255, .2); box-shadow: 0 6px 18px rgba(0, 0, 0, .5); }
 #ring .pop button { position: static; margin: 0; box-shadow: none; border-color: transparent; background: rgba(255, 255, 255, .08); border-radius: 12px; }
+/* Break: offered over a wall or thing the GM tapped in play (see breakui.ts). */
+#break { position: absolute; left: 0; top: 0; z-index: 3; height: 48px; min-width: 48px; padding: 0 14px 0 10px; border-radius: 24px; display: flex; align-items: center; gap: 6px; font-weight: 700; white-space: nowrap; background: rgba(120, 28, 28, .95); border: 1px solid rgba(255, 150, 150, .5); box-shadow: 0 4px 14px rgba(0, 0, 0, .5); }
+#break span { font-size: 21px; }
 #ring .pop b { min-width: 60px; text-align: center; align-self: center; font-size: 16px; }
 #minipanel { display: flex; flex-direction: column; gap: 4px; padding: 8px; min-width: 0; }
 #minipanel .row input { flex: 1; }
