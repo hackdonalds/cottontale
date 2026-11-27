@@ -18,6 +18,7 @@ import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type Game
 import { FAVS, Hotbar, RECENT, type Shelf } from './ui/hotbar';
 import { initPrep, registerPrepPage } from './ui/prep';
 import * as packs from './packs';
+import './model'; // the piece kind for the GM's own 3D models (the rest of it loads when one is drawn or imported)
 import { registerImportPage } from './ui/importPage';
 import { registerPacksPage } from './ui/packsPage';
 import { registerBuiltinPrepPages } from './ui/prepPages';

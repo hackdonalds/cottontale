@@ -33,7 +33,11 @@ export type Group = 'props' | 'minis';
 export const GROUPS: readonly Group[] = ['props', 'minis'];
 
 /** One piece of a pack. `kind` says how to build it; a kind adds its own fields beside these. */
-export interface Entry { name: string; icon?: string; kind: string; ref: BlobRef; [field: string]: unknown }
+export interface Entry { name: string; icon?: string; kind: string; ref: BlobRef; /** A small picture for the library, for a piece whose file is not one (a model). */ pic?: BlobRef; [field: string]: unknown }
+/** The most a piece's library picture (`pic`) may weigh. */
+export const PIC_BYTES = 48 * 1024;
+/** The picture the library shows for a piece: its file when that is a picture, else the small one stored beside it. */
+const picOf = (e: Entry): BlobRef | null => (/^image\//.test(e.ref.m) ? e.ref : e.pic ?? null);
 export interface PackManifest {
   v: 1;
   /** The namespace: the same as the key it is stored under. */
@@ -92,8 +96,8 @@ export function parseEntry(raw: unknown, group: Group): Entry | null {
   const max = typeof impl?.budget === 'function' ? impl.budget(fields) : impl?.budget ?? MAX_BLOB;
   const ref = parseRef(r.ref, Math.min(MAX_BLOB, Math.max(1, max)));
   if (!ref) return null;
-  const icon = text(r.icon, 8);
-  return { ...fields, name: text(r.name, 32) || 'Piece', ...(icon ? { icon } : {}), kind, ref };
+  const icon = text(r.icon, 8), pic = /^image\//.test(ref.m) ? null : parseRef(r.pic, PIC_BYTES);
+  return { ...fields, name: text(r.name, 32) || 'Piece', ...(icon ? { icon } : {}), kind, ref, ...(pic && /^image\/(png|jpeg|webp)$/.test(pic.m) ? { pic } : {}) };
 }
 
 /** Read a manifest somebody else wrote. Null if it is not one (or not the one for `ns`). */
@@ -145,7 +149,7 @@ export function pieceKey(label: string, taken: (key: string) => boolean): string
 /** The bytes a pack's files take (as stored: a few more than the files themselves). */
 export function packBytes(m: PackManifest): number {
   let n = 0;
-  for (const group of GROUPS) for (const e of Object.values(m.pieces[group])) n += e.ref.n;
+  for (const group of GROUPS) for (const e of Object.values(m.pieces[group])) n += e.ref.n + (e.pic?.n ?? 0);
   return n;
 }
 export const pieceCount = (m: PackManifest): number => Object.keys(m.pieces.props).length + Object.keys(m.pieces.minis).length;
@@ -233,7 +237,7 @@ function drop(p: Piece): void {
   p.built = undefined;
   p.wait?.dispose();
   p.wait = undefined;
-  if (p.thumb) S?.blobs.release(p.entry.ref);
+  if (p.thumb) S?.blobs.release(picOf(p.entry));
   p.thumb = undefined;
   p.state = 'waiting';
 }
@@ -352,11 +356,11 @@ export function packThumb(id: string): string | null {
   const p = find(id);
   if (!p || !S) return null;
   if (p.thumb) return `background-image:url(${p.thumb});background-size:contain;background-repeat:no-repeat;background-position:center`;
-  if (!/^image\//.test(p.entry.ref.m) || (p.thumbAsked && Date.now() - p.thumbAsked < RETRY_MS)) return null;
+  const ref = picOf(p.entry), host = S;
+  if (!ref || (p.thumbAsked && Date.now() - p.thumbAsked < RETRY_MS)) return null;
   p.thumbAsked = Date.now();
-  const ref = p.entry.ref, host = S;
   host.blobs.objectUrl(ref).then((url) => {
-    if (current(p) && !p.thumb && p.entry.ref.h === ref.h) { p.thumb = url; p.thumbAsked = undefined; tell(); } else host.blobs.release(ref);
+    if (current(p) && !p.thumb && picOf(p.entry)?.h === ref.h) { p.thumb = url; p.thumbAsked = undefined; tell(); } else host.blobs.release(ref);
   }, () => {});
   return null;
 }
@@ -391,7 +395,7 @@ export interface PackInfo { ns: string; name: string; own: boolean; bytes: numbe
 export function listPacks(): PackInfo[] {
   return [...live.entries()].map(([ns, l]) => ({
     ns, name: l.manifest.name, own: !!S && ns === ownNs(S.me), bytes: packBytes(l.manifest),
-    pieces: [...l.pieces.values()].map((p) => ({ id: p.id, group: p.group, name: p.name, entry: p.entry, bytes: p.entry.ref.n, state: p.state })),
+    pieces: [...l.pieces.values()].map((p) => ({ id: p.id, group: p.group, name: p.name, entry: p.entry, bytes: p.entry.ref.n + (p.entry.pic?.n ?? 0), state: p.state })),
   }));
 }
 /** The bytes of one pack's files (0 if the table has no such pack). */
@@ -442,9 +446,9 @@ export function addPiece(ns: string, group: Group, name: string, entry: Entry, o
   const clean = parseEntry(entry, group);
   if (!clean) return no('That piece is not one this table can hold (too large, or not a kind it knows).');
   const pieces = sub(raw, 'pieces'), mine = sub(pieces, group), other = sub(pieces, group === 'props' ? 'minis' : 'props');
-  const had = obj(mine[name]), before = parseRef(had?.ref)?.n ?? 0;
+  const had = obj(mine[name]), before = (parseRef(had?.ref)?.n ?? 0) + (parseRef(had?.pic)?.n ?? 0);
   if (!had && Object.keys(mine).length + Object.keys(other).length >= MAX_PIECES) return no(`A pack holds at most ${MAX_PIECES} pieces.`);
-  if (!fits(tableSize() - before, clean.ref.n)) return no('The table\'s packs are full (100 MB). Remove something first.');
+  if (!fits(tableSize() - before, clean.ref.n + (clean.pic?.n ?? 0))) return no('The table\'s packs are full (100 MB). Remove something first.');
   delete other[name];
   mine[name] = { ...entry, ...clean };
   unshelve(raw, group, name);

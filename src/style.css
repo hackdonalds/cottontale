@@ -391,6 +391,7 @@ body:not(.sys) :is(#sheetBtn, #miniSheet) { display: none; }
 #msgs s { opacity: .5; }
 @media (min-width: 900px) and (min-height: 521px) {
   #sheet { max-height: 50%; }
+}
 /* ---- Prep → Import and Packs: the GM's own pieces (ui/importPage.ts, ui/packsPage.ts) ---- */
 .impFlow, .pkPage { display: flex; flex-direction: column; gap: 10px; }
 .impFlow > p, .pkPage > p { margin: 0; }

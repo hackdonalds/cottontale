@@ -69,6 +69,50 @@ function png(w, h, at) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', head), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 const TOKEN = { name: 'IMG_0042.png', mimeType: 'image/png', buffer: png(320, 320, (x, y) => (Math.hypot(x - 160, y - 160) < 110 ? (Math.hypot(x - 190, y - 130) < 18 ? [30, 60, 200, 255] : [200, 40, 40, 255]) : [255, 255, 255, 255])) };
+// Models to import (src/model.ts): made here too, as plain glTF binary.
+/** A .glb made here: one mesh, material and node for each part ({ pos, idx, rgb?, uv?, image?, at? }). */
+function glb(parts, images = [], more = () => {}) {
+  const chunks = [], bufferViews = [], accessors = [];
+  let at = 0;
+  const view = (bytes) => { bufferViews.push({ buffer: 0, byteOffset: at, byteLength: bytes.length }); chunks.push(bytes, Buffer.alloc((4 - (bytes.length % 4)) % 4)); at += (bytes.length + 3) & ~3; return bufferViews.length - 1; };
+  const acc = (a, type, n) => { accessors.push({ bufferView: view(Buffer.from(a.buffer)), componentType: a instanceof Float32Array ? 5126 : 5125, count: a.length / n, type }); return accessors.length - 1; };
+  const json = { asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: parts.map((_, i) => i) }], nodes: [], meshes: [], materials: [], accessors, bufferViews };
+  parts.forEach((p, i) => {
+    const attributes = { POSITION: acc(Float32Array.from(p.pos), 'VEC3', 3) };
+    if (p.uv) attributes.TEXCOORD_0 = acc(Float32Array.from(p.uv), 'VEC2', 2);
+    json.meshes.push({ primitives: [{ attributes, indices: acc(Uint32Array.from(p.idx), 'SCALAR', 1), material: i }] });
+    json.materials.push({ pbrMetallicRoughness: { baseColorFactor: [...(p.rgb ?? [1, 1, 1]), 1], ...(p.image !== undefined ? { baseColorTexture: { index: p.image } } : {}) } });
+    json.nodes.push({ mesh: i, ...(p.at ? { translation: p.at } : {}) });
+  });
+  if (images.length) { json.images = images.map((b) => ({ bufferView: view(b), mimeType: 'image/png' })); json.textures = images.map((_, i) => ({ source: i })); }
+  json.buffers = [{ byteLength: at }];
+  more(json);
+  let text = Buffer.from(JSON.stringify(json));
+  text = Buffer.concat([text, Buffer.alloc((4 - (text.length % 4)) % 4, 0x20)]);
+  const bin = Buffer.concat(chunks), head = Buffer.alloc(20), mid = Buffer.alloc(8);
+  head.writeUInt32LE(0x46546c67, 0); head.writeUInt32LE(2, 4); head.writeUInt32LE(28 + text.length + bin.length, 8); head.writeUInt32LE(text.length, 12); head.writeUInt32LE(0x4e4f534a, 16);
+  mid.writeUInt32LE(bin.length, 0); mid.writeUInt32LE(0x004e4942, 4);
+  return Buffer.concat([head, text, mid, bin]);
+}
+function boxPart(w, h, d) {
+  const pos = [], idx = [];
+  for (let i = 0; i < 8; i++) pos.push(i & 1 ? w : 0, i & 2 ? h : 0, i & 4 ? d : 0);
+  for (const [a, b, c, e] of [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]]) idx.push(a, b, c, a, c, e);
+  return { pos, idx };
+}
+function ballPart(seg, r = 1) {
+  const pos = [], idx = [], uv = [], rows = seg / 2;
+  for (let y = 0; y <= rows; y++) for (let x = 0; x <= seg; x++) { const a = (x / seg) * Math.PI * 2, b = (y / rows) * Math.PI; pos.push(Math.cos(a) * Math.sin(b) * r, Math.cos(b) * r, Math.sin(a) * Math.sin(b) * r); uv.push(x / seg, y / rows); }
+  for (let y = 0; y < rows; y++) for (let x = 0; x < seg; x++) { const i = y * (seg + 1) + x; idx.push(i, i + 1, i + seg + 1, i + 1, i + seg + 2, i + seg + 1); }
+  return { pos, idx, uv };
+}
+// A snowman of 40,000 triangles with a red hat and a blue box beside it; a crate with a picture on it; and two that must be refused.
+const STATUE = { name: 'snow_man.glb', mimeType: 'model/gltf-binary', buffer: glb([{ ...ballPart(180, 0.5), rgb: [0.9, 0.9, 0.95], at: [0, 0.5, 0] }, { ...ballPart(90, 0.32), rgb: [0.9, 0.9, 0.95], at: [0, 1.2, 0] }, { ...boxPart(0.4, 0.3, 0.4), rgb: [0.8, 0.1, 0.1], at: [-0.2, 1.45, -0.2] }, { ...boxPart(0.3, 0.3, 0.3), rgb: [0.1, 0.2, 0.8], at: [0.6, 0, 0] }], [], (j) => { j.animations = [{ channels: [], samplers: [] }]; }) };
+const crate = boxPart(1, 1, 1);
+const CRATE = { name: 'crate.glb', mimeType: 'model/gltf-binary', buffer: glb([{ pos: [0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1], idx: [0, 1, 2, 0, 2, 3], uv: [0, 1, 1, 1, 1, 0, 0, 0], image: 0 }, { ...crate, rgb: [0.6, 0.4, 0.2] }], [png(64, 64, (x, y) => ((x >> 3) + (y >> 3)) % 2 ? [220, 40, 40, 255] : [250, 220, 60, 255])]) };
+const HUGE = { name: 'city.glb', mimeType: 'model/gltf-binary', buffer: Buffer.alloc(26 * 1024 * 1024) };
+const DENSE = { name: 'scan.glb', mimeType: 'model/gltf-binary', buffer: glb([boxPart(1, 1, 1)], [], (j) => { j.accessors[1].count = 3_000_000; }) };
+
 /** The alpha of the picture being cut out, at its corner and in its middle. */
 const cutAlpha = (page) => page.evaluate(() => { const c = document.querySelector('.impCut'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; return { corner: d[3 + (2 * c.width + 2) * 4], mid: d[3 + ((c.height >> 1) * c.width + (c.width >> 1)) * 4], w: c.width }; });
 
@@ -1233,6 +1277,36 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const hand = await p.evaluate(() => ({ k: window.__ct.board.hooks.newMini().k, id: window.__ct.packs.listPacks()[0].pieces[0].id }));
   assert(hand.k === hand.id && !bad.length, `the new figure is on its shelf in Build, with its picture, and in hand ${JSON.stringify(hand)} ${bad.join('; ')}`);
   }
+  // ---- the GM's own 3D models: a .glb from the phone, worked through here, previewed, sized by touch and saved (ui/modelPage.ts) ----
+  {
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="import"]');
+  await p.waitForSelector('#impModel');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-model-start.png` });
+  await p.setInputFiles('#impModelFile', STATUE);
+  await p.waitForSelector('#mdSteps, #mdView'); // (the steps, unless it was already through them)
+  bad.push(...await layout());
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-model-working.png` });
+  await p.waitForSelector('#mdView');
+  await p.tap('[data-as="thing"]');
+  await p.tap('#mdUp');
+  await p.tap('#mdMore');
+  await p.waitForTimeout(400);
+  bad.push(...await layout());
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-model-preview.png` });
+  await p.evaluate(() => document.querySelector('#mdSave').scrollIntoView());
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-model-preview2.png` });
+  const shown = await p.evaluate(() => ({ up: document.querySelector('#mdUp').getAttribute('aria-pressed'), size: document.querySelector('#mdSize').textContent, drawn: (() => { const c = document.querySelector('#mdView'); return c.width > 100 && c.height > 100; })() }));
+  await p.fill('#mdName', 'Snow thing');
+  await p.evaluate(() => document.activeElement?.blur());
+  await p.tap('#mdSave');
+  await p.waitForFunction(() => [...document.querySelectorAll('.impDone li.ok b')].some((x) => x.textContent === 'Snow thing'));
+  bad.push(...await layout());
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-model-done.png` });
+  const piece = await p.evaluate(() => window.__ct.packs.listPacks()[0]?.pieces.find((x) => x.entry.kind === 'model'));
+  assert(shown.up === 'true' && shown.drawn && piece?.group === 'props' && piece.entry.up === true && piece.entry.tris <= 15000 && !bad.length, `a 3D model from the phone: named steps, a turning preview, stood up and sized by touch, saved as a thing (${shown.size}; ${piece?.bytes} bytes) ${bad.join('; ')}`);
+  }
   // A theme saved on this device is still under "Mine" when the app is opened again.
   await p.reload();
   await p.click('#join');
@@ -1573,6 +1647,120 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows })) });
   await b.waitForFunction(drawn, [orc.id, idol.id]);
   assert(await a.evaluate(drawn, [orc.id, idol.id]), 'importing the table brings its packs back, pictures and all');
+  await a.context().close();
+  await b.context().close();
+}
+
+// ---- the GM's own 3D models (src/model.ts, src/ingest.ts): a .glb imported on one device is a piece on every device ----
+{
+  console.log('models');
+  const a = await join('Kit', 'models-1234'), b = await join('Lou', 'models-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await a.evaluate((server) => { const s = window.__ct.store; s.set(`gm:${s.me}`, true); s.set('set:blossom', [server]); }, `http://localhost:${BLOSSOM}`);
+  await b.waitForFunction(() => window.__ct.blobs.servers().length === 1 && document.body.classList.contains('player'));
+  for (const page of [a, b]) await page.evaluate(() => { const { board } = window.__ct; board.camera.position.set(3, 7, 15); board.controls.target.set(3, 0, 3); });
+  await a.evaluate(() => window.__ct.ui.prep.open('import'));
+  // Refused before anything is unpacked: a file over 25 MB, and one that says it has a million triangles.
+  await a.setInputFiles('#impModelFile', HUGE);
+  await a.waitForSelector('.impDone li.bad');
+  const tooBig = await a.evaluate(() => document.querySelector('.impDone li.bad span').textContent);
+  await a.setInputFiles('#impModelFile', DENSE);
+  await a.waitForSelector('#impFail');
+  const tooDense = await a.evaluate(() => document.querySelector('#impFail').textContent);
+  await a.click('#mdBack');
+  await a.waitForFunction(() => document.querySelectorAll('.impDone li.bad').length === 2 && !!document.querySelector('#impModel'));
+  assert(/too large \(26 MB; a model may be at most 25 MB\)/.test(tooBig) && /more than 300,000 triangles/.test(tooDense) && await a.evaluate(() => [...window.__ct.store.keys('pk:')].length === 0), `a model over the caps is refused with the reason, before it is unpacked (“${tooBig}” / “${tooDense}”)`);
+  /** Take one model through Prep → Import as the GM would. */
+  const bring = async (file, name, as, tweak = async () => {}) => {
+    await a.setInputFiles('#impModelFile', file);
+    await a.waitForSelector('#mdView');
+    if (as !== 'figure') await a.click(`[data-as="${as}"]`);
+    await tweak();
+    await a.fill('#mdName', name);
+    const said = await a.evaluate(() => ({ stats: document.querySelector('#mdStats').textContent, notes: document.querySelector('#mdNotes').textContent, size: document.querySelector('#mdSize').textContent }));
+    await a.waitForTimeout(300);
+    await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/model-${name}.png` });
+    await a.click('#mdSave');
+    await a.waitForFunction((name) => [...document.querySelectorAll('.impDone li.ok b')].some((x) => x.textContent === name), name);
+    return said;
+  };
+  const statue = await bring(STATUE, 'Snowman', 'figure', async () => { await a.click('#mdTurn'); await a.click('#mdMore'); });
+  const box = await bring(CRATE, 'Crate', 'thing');
+  const made = await a.evaluate(() => ({ said: [...document.querySelectorAll('.impDone li.ok span')].map((x) => x.textContent), pack: window.__ct.packs.listPacks()[0] }));
+  const man = made.pack.pieces.find((x) => x.entry.name === 'Snowman'), crate = made.pack.pieces.find((x) => x.entry.name === 'Crate');
+  const [, trisIn, trisOut] = /([\d,]+) → ([\d,]+) triangles/.exec(statue.stats).map((s) => +s.replace(/,/g, ''));
+  console.log(`      ${statue.stats} · ${statue.size} · ${box.stats}`);
+  assert(trisIn > 39_000 && trisOut <= 15_000 && trisOut > 8_000 && /animations/.test(statue.notes) && man?.group === 'minis' && man.entry.kind === 'model' && man.entry.tris === trisOut && man.entry.yaw === 1 && man.entry.h === 1 && !man.entry.tex
+    && man.entry.ref.m === 'model/gltf-binary' && man.bytes < 200_000 && /^image\//.test(man.entry.pic?.m ?? ''), `the GM imports a 40,000-triangle model as a figure: simplified on the device, turned and sized by touch, and it says what was left out (${statue.stats}; ${JSON.stringify(man?.entry)})`);
+  assert(crate?.group === 'props' && crate.entry.tex === true && crate.entry.tris === 14 && crate.entry.cells === 1 && made.said.every((t) => /Stored on 1 server/.test(t) && /triangles/.test(t)), `and one with a picture as a thing: its texture on one atlas, stored on the server (${made.said[0].slice(0, 60)})`);
+  // On the table: the other player has the pack as stand-ins until the pieces are drawn, then as the real models, fetched through blobs.
+  await a.evaluate(([m, p]) => { const s = window.__ct.store; s.set('m:man', { x: 1, y: 0, z: 6, k: m, c: '#3e63dd', n: 'Frosty', r: 0, s: 1 }); s.set('b:3,0,6', { i: p }); }, [man.id, crate.id]);
+  const drawn = ([m, p]) => {
+    const { board, packs } = window.__ct, fig = board.minis.get('man')?.group.children[0].children[2], thing = board.props.get('b:3,0,6')?.children[0];
+    return packs.pieceState(m) === 'ready' && packs.pieceState(p) === 'ready' && !!fig?.geometry.userData.model && !!thing?.geometry.userData.model;
+  };
+  await b.waitForFunction(drawn, [man.id, crate.id]);
+  await a.waitForFunction(drawn, [man.id, crate.id]);
+  const seen = await b.evaluate(([m, p, ref]) => {
+    const { board, blobs, catalog } = window.__ct, fig = board.minis.get('man').group.children[0].children[2], thing = board.props.get('b:3,0,6').children[0];
+    const box = fig.geometry.boundingBox, size = [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z];
+    return { via: blobs.source(ref.h), tris: fig.geometry.index.count / 3, said: fig.geometry.userData.model.tris, size: size.map((v) => +v.toFixed(2)), base: +box.min.y.toFixed(2), height: +catalog.MINIS[m].height.toFixed(2),
+      shadow: fig.castShadow, plain: !fig.material.map && fig.material.vertexColors, map: thing.material.map?.image?.width, crate: thing.geometry.index.count / 3, own: thing.material !== fig.material, icon: catalog.PROPS[p].name };
+  }, [man.id, crate.id, man.entry.ref]);
+  assert(seen.via === 'server' && seen.tris === trisOut && seen.tris <= 15_000 && seen.size[1] <= 1.01 && Math.max(seen.size[0], seen.size[2]) <= 0.97 && seen.base === 0.08 && seen.height > 0.5 && seen.shadow && seen.plain && seen.map >= 64 && seen.map <= 1024 && seen.crate === 14,
+    `the other player sees the real models, fetched through blobs, inside the budget: on the ground, to scale, casting shadows; the textured one with its own material ${JSON.stringify(seen)}`);
+  await b.waitForTimeout(500);
+  await b.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/models.png` });
+  // The library shows the picture taken at save, without loading the model.
+  const thumb = await b.evaluate((id) => new Promise((done) => { const { packs } = window.__ct; const look = () => (packs.packThumb(id) ? done(packs.packThumb(id)) : setTimeout(look, 100)); look(); }), man.id);
+  assert(/url\(blob:/.test(thumb), 'the library has its picture, taken once when it was saved');
+  // Hidden, selected and turned like any figure.
+  await a.evaluate(() => { const s = window.__ct.store; s.set('m:man', { ...s.get('m:man'), h: true }); });
+  await b.waitForFunction(() => window.__ct.board.minis.get('man').group.visible === false);
+  assert(await a.evaluate(() => { const f = window.__ct.board.minis.get('man').group.children[0].children[2]; return f.material.transparent && f.material.opacity < 0.5 && !f.castShadow; }), 'a hidden model leaves the player\'s table and is a ghost on the GM\'s');
+  await a.evaluate(() => { const s = window.__ct.store; s.set('m:man', null); s.set('b:3,0,6', null); s.set(`gm:${s.me}`, null); });
+  await b.waitForFunction(() => !document.body.classList.contains('player'));
+
+  // Draw calls: a copy of a model costs what a copy of a built-in piece costs.
+  const calls = (page) => page.evaluate(() => new Promise((done) => {
+    const { board } = window.__ct, info = board.renderer.info, was = board.hooks.onView;
+    info.autoReset = false;
+    board.touched();
+    info.reset();
+    board.hooks.onView = () => { board.hooks.onView = was; was(); const n = info.render.calls; info.autoReset = true; done(n); };
+  }));
+  const figures = (n, id) => b.evaluate(([n, id]) => { const s = window.__ct.store; for (let i = 0; i < 10; i++) s.set(`m:f${i}`, i < n ? { x: i % 5, y: 0, z: 6 + Math.floor(i / 5), k: id, c: '#3e63dd', n: '', r: 0, s: 1 } : null); }, [n, id]);
+  const things = (n, id) => b.evaluate(([n, id]) => { const s = window.__ct.store; for (let i = 0; i < 10; i++) s.set(`b:${i % 5},0,${Math.floor(i / 5)}`, i < n ? { i: id } : null); }, [n, id]);
+  const cost = {};
+  await b.evaluate(() => { window.__ct.board.adapt = () => {}; }); // the board steps its own quality down on a slow machine: not between two measurements
+  for (const [what, put, id] of [['model figures', figures, man.id], ['built-in knights', figures, 'knight'], ['model things', things, crate.id], ['built-in barrels', things, 'barrel']]) {
+    await put(1, id);
+    // (A built-in piece's own model comes with its kit pack: measure once it stands there.)
+    await b.waitForFunction(() => { const { board } = window.__ct, n = (o) => { let k = 0; o.traverse((x) => { if (x.isMesh && x.material.visible !== false) k++; }); return k; }; return [...board.minis.values()].every((m) => n(m.group) === 2) && [...board.props.values()].every((g) => !g.userData.pending && n(g) >= 1); });
+    await b.waitForTimeout(500);
+    const one = await calls(b);
+    await put(10, id); await b.waitForTimeout(500);
+    cost[what] = [one, await calls(b)];
+    if (what === 'model figures') await b.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/models-10.png` });
+    await put(0, id); await b.waitForTimeout(200);
+  }
+  const grew = (k) => cost[k][1] - cost[k][0];
+  console.log(`      draw calls a frame, 1 → 10 copies — ${Object.entries(cost).map(([k, v]) => `${k}: ${v[0]} → ${v[1]}`).join('; ')}`);
+  assert(grew('model figures') <= grew('built-in knights') && grew('model things') <= grew('built-in barrels'), `ten copies of a model cost no more draw calls than ten of a built-in piece (${grew('model figures')} against ${grew('built-in knights')} for figures, ${grew('model things')} against ${grew('built-in barrels')} for things)`);
+  // Many copies: the Packs page says when the board's models pass what a phone draws happily.
+  await a.evaluate(([id]) => { const s = window.__ct.store; s.set(`gm:${s.me}`, true); for (let i = 0; i < 12; i++) s.set(`m:h${i}`, { x: i, y: 0, z: 9, k: id, c: '#3e63dd', n: '', r: 0, s: 1 }); s.set('m:man', { x: 1, y: 0, z: 6, k: id, c: '#3e63dd', n: 'Frosty', r: 0, s: 1 }); }, [man.id]);
+  await a.click('#impPacks');
+  await a.waitForSelector('#pkHeavy');
+  await a.waitForSelector('.pkPiece i[style]');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/models-packs.png` });
+  assert(/triangles/.test(await a.evaluate(() => document.querySelector('#pkHeavy').textContent)), 'the Packs page warns when the models on the board pass 150,000 triangles');
+  // Removing the pack leaves stand-ins on every device.
+  await a.click('.pkDrop');
+  await a.click('.pkYes');
+  const standIn = (m) => { const { board, packs, registry } = window.__ct; return !registry.known.mini(m) && packs.pieceState(m) === null && board.minis.get('man')?.group.children[0].children[2].material.transparent === true && !board.minis.get('man').group.children[0].children[2].geometry.userData.model; };
+  await b.waitForFunction(standIn, man.id);
+  assert(await a.evaluate(standIn, man.id), 'with the pack removed its models are stand-ins again, for everyone');
   await a.context().close();
   await b.context().close();
 }

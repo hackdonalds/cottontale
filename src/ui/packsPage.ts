@@ -2,6 +2,7 @@
 // weighs against the table's budget, and the three things one does to a pack: rename it, take
 // a piece out, take all of it away. Anything that removes asks first, in the page itself.
 import { HARD_BYTES, SOFT_BYTES, budget, listPacks, onPacks, packThumbUrl, removePack, removePiece, renamePack, tableSize, type PackInfo, type PieceInfo } from '../packs';
+import { BOARD_TRIS, boardTriangles } from '../model';
 import { bytesText } from '../pixels';
 import { registerPrepPage, type PrepCtx } from './prep';
 
@@ -10,13 +11,15 @@ const ui = { rename: '', text: '', drop: '', piece: '', dropPiece: false, note: 
 let off: (() => void) | null = null;
 
 const ico = (id: string) => `<svg><use href="#i-${id}"/></svg>`;
-const sort = (p: PieceInfo) => (p.entry.kind === 'flat' ? 'Map tile' : p.entry.kind === 'standee' ? (p.group === 'minis' ? 'Figure' : 'Thing') : p.entry.kind);
+const sort = (p: PieceInfo) => (p.entry.kind === 'model' ? `${p.entry.set === true ? 'Set piece' : p.group === 'minis' ? 'Figure' : 'Thing'} (3D model, ${Number(p.entry.tris).toLocaleString('en-US')} triangles)` : p.entry.kind === 'flat' ? 'Map tile' : p.entry.kind === 'standee' ? (p.group === 'minis' ? 'Figure' : 'Thing') : p.entry.kind);
 const STATE: Record<string, string> = { failed: 'Its file cannot be found right now', unknown: 'A kind of piece this app does not know', loading: 'Fetching…' };
-const sigOf = (full: boolean) => JSON.stringify([full, listPacks().map((p) => [p.ns, p.name, p.pieces.map((x) => [x.id, x.entry.name, x.state, !!packThumbUrl(x.id)])])]);
+/** Triangles of imported models on the board in front of us, in steps coarse enough not to redraw the page for every piece placed. */
+const heavy = (store: PrepCtx['app']['store']) => Math.floor(boardTriangles(store) / 10_000);
+const sigOf = (full: boolean, store?: PrepCtx['app']['store']) => JSON.stringify([full, store ? heavy(store) : 0, listPacks().map((p) => [p.ns, p.name, p.pieces.map((x) => [x.id, x.entry.name, x.state, !!packThumbUrl(x.id)])])]);
 
 function draw(el: HTMLElement, ctx: PrepCtx): void {
   const full = ctx.app.full(), packs = listPacks(), at = el.scrollTop;
-  el.dataset.sig = sigOf(full);
+  el.dataset.sig = sigOf(full, ctx.app.store);
   el.innerHTML = '';
   const page = document.createElement('div');
   page.className = 'pkPage';
@@ -27,14 +30,22 @@ function draw(el: HTMLElement, ctx: PrepCtx): void {
   total.innerHTML = `<span><b>${bytesText(b.bytes)}</b> of ${bytesText(HARD_BYTES)} for this table’s own pieces</span><div class="pkBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(b.part * 100)}" aria-label="Space used"><i style="width:${Math.max(b.bytes ? 1 : 0, b.part * 100)}%"></i></div>`;
   if (b.level !== 'ok') total.insertAdjacentHTML('beforeend', `<p class="hint">${b.level === 'hard' ? 'Full: nothing more can be added until something is removed.' : `Over ${bytesText(SOFT_BYTES)}: players on a slow connection will wait for these.`}</p>`);
   page.append(total);
+  const tris = boardTriangles(ctx.app.store);
+  if (tris > BOARD_TRIS) {
+    const p = document.createElement('p');
+    p.className = 'hint bad';
+    p.id = 'pkHeavy';
+    p.textContent = `The 3D models on this board come to ${tris.toLocaleString('en-US')} triangles. Past ${BOARD_TRIS.toLocaleString('en-US')} or so a phone starts to struggle: use fewer copies, or simpler models.`;
+    page.append(p);
+  }
   if (ui.note) { const p = document.createElement('p'); p.className = 'hint bad'; p.setAttribute('role', 'alert'); p.textContent = ui.note; page.append(p); }
   for (const p of packs) page.append(pack(p, full, () => draw(el, ctx)));
-  if (!packs.length) page.insertAdjacentHTML('beforeend', `<div class="soon">${ico('cube')}<p>This table has no pieces of its own yet. Photos and pictures from this phone become figures, things and map tiles.</p></div>`);
+  if (!packs.length) page.insertAdjacentHTML('beforeend', `<div class="soon">${ico('cube')}<p>This table has no pieces of its own yet. Photos, pictures and 3D models from this phone become figures, things and map tiles.</p></div>`);
   if (full) {
     const add = document.createElement('button');
     add.className = 'primary';
     add.id = 'pkImport';
-    add.innerHTML = `${ico('open')}Add pictures`;
+    add.innerHTML = `${ico('open')}Add pictures or models`;
     add.onclick = () => ctx.open('import');
     page.append(add);
   }
@@ -123,9 +134,9 @@ export function registerPacksPage(): void {
     render(el, ctx) {
       off?.();
       // A picture arriving is not a change to the table: listen for it while the page is up.
-      off = onPacks(() => { if (el.isConnected && el.dataset.page === 'packs') { if (el.dataset.sig !== sigOf(ctx.app.full())) draw(el, ctx); } else { off?.(); off = null; } });
+      off = onPacks(() => { if (el.isConnected && el.dataset.page === 'packs') { if (el.dataset.sig !== sigOf(ctx.app.full(), ctx.app.store)) draw(el, ctx); } else { off?.(); off = null; } });
       draw(el, ctx);
     },
-    update(el, ctx) { if (el.dataset.sig !== sigOf(ctx.app.full())) draw(el, ctx); },
+    update(el, ctx) { if (el.dataset.sig !== sigOf(ctx.app.full(), ctx.app.store)) draw(el, ctx); },
   });
 }
