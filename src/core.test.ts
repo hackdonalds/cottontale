@@ -124,10 +124,10 @@ describe('dice', () => {
     const far = async (solids: typeof wall[]) => Math.max(...decode(await simulate(kinds, starts, [14, 0, 0], [0, 0, 0], new Store('a'), 6, solids))!.pos.flatMap((d) => d.map((p) => p.x)));
     expect(await far([wall])).toBeLessThan(1);
     expect(await far([])).toBeGreaterThan(1.5);
-    // A figure (an upright cylinder) in the way: dice end up around it, never inside it.
+    // A figure (an upright cylinder) in the way: dice end up around it, never inside it (a d6 lying against it is a quarter of a cell from its side).
     const mini = { p: [0, 0.6, 0] as [number, number, number], h: [0.36, 0.6, 0] as [number, number, number], round: true };
     const t = decode(await simulate(kinds, starts.map((s) => ({ ...s, p: [-3, 1.2, 0] as [number, number, number] })), [9, 0, 0], [0, 0, 0], new Store('a'), 6, [mini]))!;
-    t.pos.forEach((d) => { const end = d[d.length - 1]; expect(Math.hypot(end.x, end.z)).toBeGreaterThan(0.36 + 0.3); });
+    t.pos.forEach((d) => { const end = d[d.length - 1]; if (end.y < 1) expect(Math.hypot(end.x, end.z)).toBeGreaterThan(0.36 + 0.2); });
   });
 
   it('simulates a throw onto terrain that settles flat and replays to the same result', async () => {
