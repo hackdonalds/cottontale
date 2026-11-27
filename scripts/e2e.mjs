@@ -110,6 +110,8 @@ assert(await ok(b, (id) => document.body.classList.contains('player') && getComp
   && !window.__ct.board.hooks.canMove(id) && !!document.querySelector('#players svg'), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
+assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 4), 'selecting a piece shows a ring of actions on it, not a panel');
+await a.click('#ring [title="More"]');
 await a.selectOption('#miniOwner', { label: '🎮 Bo' });
 assert(await ok(b, (id) => window.__ct.board.hooks.canMove(id), id), 'GM hands a mini to a player, who can then move it');
 
@@ -175,14 +177,18 @@ assert(await ok(b, () => /Ada rolled in secret/.test(document.querySelector('#ms
 
 // Emotes and stats on a mini.
 await a.evaluate((id) => window.__ct.board.select(id), id);
-await a.click('#palette [title="attack"]');
+await a.click('#ring [title="Emote"]');
+await a.click('#ring [title="attack"]');
 assert(await ok(b, () => window.__ct.board.anims.length === 1) && await ok(b, () => window.__ct.board.anims.length === 0), 'an emote plays on the other player\'s table and ends');
-await a.click('#palette [title="Knock down"]');
+await a.click('#ring [title="Knock down"]');
+await a.click('#ring [title="Back"]');
+await a.click('#ring [title="More"]');
 await a.click('#miniMore');
 await a.fill('#stats .st', 'AC 15');
 await a.press('#stats .st', 'Tab');
 assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return v.d === true && v.st?.[0] === 'AC 15'; }, id), 'knocked-down state and extra stats sync');
-await a.click('#palette [title="Stand up"]');
+await a.click('#ring [title="Emote"]');
+await a.click('#ring [title="Stand up"]');
 
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
@@ -339,7 +345,26 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return bad;
   });
   let bad = await layout();
-  assert(await p.evaluate(() => !document.querySelector('#minipanel').hidden) && !bad.length, `mini editor layout clean ${bad.join('; ')}`);
+  // A selected piece keeps the table: a ring of full-size buttons on screen around it, and no panel.
+  const ring = await p.evaluate(() => {
+    const top = document.querySelector('#top').getBoundingClientRect().bottom, dock = document.querySelector('#tools').getBoundingClientRect().top;
+    return { panel: !document.querySelector('#minipanel').hidden, free: Math.round(((dock - top) / innerHeight) * 100),
+      buttons: [...document.querySelectorAll('#ring button')].map((b) => b.getBoundingClientRect()).filter((r) => r.left >= 0 && r.top >= top && r.right <= innerWidth && r.bottom <= innerHeight).length };
+  });
+  assert(!ring.panel && ring.buttons === 4 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
+  // Hit points from the ring, then the full editor on request, with the piece still in view above it.
+  await p.tap('#ring [title="Hit points"]');
+  await p.tap('#ring [title="Gain a hit point"]');
+  await p.tap('#ring [title="Back"]');
+  await p.tap('#ring [title="More"]');
+  await p.waitForTimeout(300);
+  bad = await layout();
+  const seen = await p.evaluate(() => {
+    const { board, store } = window.__ct, spot = board.spotOf(board.selected), panel = document.querySelector('#minipanel').getBoundingClientRect();
+    const beside = panel.left > spot.x || panel.right < spot.x; // on wide screens the editor sits beside the piece
+    return { hp: store.get(`m:${board.selected}`).hp, open: !document.querySelector('#minipanel').hidden, clear: beside || spot.y < panel.top };
+  });
+  assert(seen.hp === 1 && seen.open && seen.clear && !bad.length, `the ring changes hit points, and the editor opens without hiding the piece ${JSON.stringify(seen)} ${bad.join('; ')}`);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-mini.png` });
   // Build mode: every category's tray, then the tools that came with the redesign.
   await p.tap('[data-mode="build"]');

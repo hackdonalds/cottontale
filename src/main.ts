@@ -138,6 +138,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
     },
     onRuler: (r) => void send({ y: 'ruler', r }),
+    onView: () => placeRing(),
     onLight: (name) => say(`<span class="sys">Light: ${name}.</span>`),
     onSlab: (slab) => {
       board.brush = 'paste';
@@ -393,6 +394,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', (b.dataset.mode === 'build') === build);
     if (build) openSheet(null);
     renderPalette();
+    renderRing();
   }
   /** Open a category of the library, with a brush that belongs to it in hand. */
   function setCat(c: Cat): void {
@@ -424,30 +426,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const el = $('palette');
     el.innerHTML = '';
     el.classList.toggle('tray', building());
-    const add = (title: string, inner: string, on: boolean, click: () => void) => {
-      const b = document.createElement('button');
-      b.title = title;
-      b.setAttribute('aria-label', title);
-      b.innerHTML = inner;
-      b.classList.toggle('on', on);
-      b.onclick = () => {
-        click();
-        if (board.tool === 'build') board.setTool('build'); // the copy brush changes what a mouse drag does
-        renderPalette();
-      };
-      el.append(b);
-      return b;
-    };
-    const sep = () => el.insertAdjacentHTML('beforeend', '<span class="sep"></span>');
-    const v = sel();
-    if (board.tool === 'move') {
-      // Emotes for the selected mini sit where the palette is: right above the thumb.
-      if (v && canControl(store, meId, v)) {
-        for (const [kind, icon] of Object.entries(EMOTES)) add(kind, icon, false, () => emote(kind));
-        sep();
-        add(v.d ? 'Stand up' : 'Knock down', '💀', !!v.d, () => patch({ d: !v.d }));
-      }
-    } else if (building()) {
+    // In Play with the Move tool there is no palette: what you can do with the selected mini
+    // sits around the mini itself (see renderRing).
+    if (building()) {
       const chips = document.createElement('div'), tiles = document.createElement('div');
       el.append(chips, tiles);
       const press = (b: HTMLButtonElement, click: () => void) => {
@@ -791,11 +772,90 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const field = (id: string) => $<HTMLInputElement>(id);
   const FLY = [0, 1, 2, 3, 5, 8];
 
+  // What you do to a piece in play sits in a ring around it; the full editor only opens on request.
+  let ringMode: 'main' | 'emote' | 'hp' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
+  function renderRing(): void {
+    const el = $('ring'), v = sel();
+    el.innerHTML = '';
+    el.hidden = !v || board.tool !== 'move';
+    if (!v || el.hidden) return;
+    const mine = canControl(store, meId, v);
+    const button = (title: string, inner: string, click: () => void, on = false) => {
+      const b = document.createElement('button');
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.innerHTML = inner;
+      b.classList.toggle('on', on);
+      b.onclick = click;
+      return b;
+    };
+    const to = (mode: typeof ringMode) => () => { ringMode = mode; renderRing(); };
+    const more = button(mine ? 'More' : 'Details', ico('list'), () => { moreOpen = !moreOpen; showMiniPanel(board.selected); }, moreOpen);
+    if (!mine || ringMode === 'main') {
+      const items = mine ? [
+        button('Turn', ico('turn'), () => patch({ r: ((sel()?.r ?? 0) + 1) % 8 })),
+        button('Emote', '👋', to('emote')),
+        button('Hit points', `<span style="color:#ff6b7a;display:grid">${ico('heart')}</span>`, to('hp')),
+        more,
+      ] : [more];
+      // Two to each side of the piece: its name and hit points float above it and must stay readable.
+      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25];
+      items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
+    } else {
+      const pop = document.createElement('div');
+      pop.className = 'pop';
+      if (ringMode === 'emote') {
+        pop.style.gridTemplateColumns = 'repeat(5, 46px)';
+        for (const [kind, icon] of Object.entries(EMOTES)) pop.append(button(kind, icon, () => emote(kind)));
+        pop.append(button(v.d ? 'Stand up' : 'Knock down', '💀', () => patch({ d: !v.d }), !!v.d));
+      } else {
+        pop.style.gridTemplateColumns = '46px auto 46px 46px';
+        const count = document.createElement('b');
+        count.innerHTML = `<span style="color:#ff6b7a">${v.hp ?? v.mhp ?? '–'}</span>${v.mhp === undefined ? '' : `<span style="opacity:.6">/${v.mhp}</span>`}`;
+        pop.append(button('Lose a hit point', '−', () => bump(-1)), count, button('Gain a hit point', '+', () => bump(1)));
+      }
+      pop.append(button('Back', ico('x'), to('main')));
+      el.append(pop);
+    }
+    placeRing();
+  }
+  /** Keep the ring on its piece as the camera or the piece moves. */
+  function placeRing(): void {
+    const el = $('ring');
+    if (el.hidden || !board.selected) return;
+    const spot = board.spotOf(board.selected);
+    el.style.visibility = spot ? '' : 'hidden';
+    if (!spot) return;
+    const pop = el.querySelector<HTMLElement>('.pop'), r = Math.max(60, Math.min(104, spot.size * 0.7 + 40));
+    // Never let it slide under the top bar or off an edge: the ring shifts, the piece stays put.
+    const roof = $('top').getBoundingClientRect().bottom + 12, half = pop ? pop.offsetWidth / 2 + 8 : r + 26;
+    const x = Math.max(half, Math.min(innerWidth - half, spot.x));
+    const lift = pop ? spot.size * 0.55 + 14 : 0, reach = pop ? pop.offsetHeight + lift : r + 26;
+    const y = Math.max(roof + reach, spot.y);
+    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    if (pop) pop.style.top = `${-Math.round(lift)}px`;
+    for (const b of el.querySelectorAll<HTMLElement>(':scope > button')) {
+      const a = (+b.dataset.a! * Math.PI) / 180;
+      b.style.left = `${Math.round(Math.cos(a) * r)}px`;
+      b.style.top = `${Math.round(Math.sin(a) * r)}px`;
+    }
+  }
+
   function showMiniPanel(id: string | null): void {
-    $('minipanel').hidden = !id;
+    if (id !== ringFor) { ringFor = id; ringMode = 'main'; moreOpen = false; } // another piece: start from the ring
+    const wasOpen = !$('minipanel').hidden;
+    $('minipanel').hidden = !id || !moreOpen;
+    renderRing();
+    // A piece is never left behind the panel it is being edited in: the view slides to keep it clear.
+    if (id && (id !== shownFor || wasOpen !== moreOpen)) {
+      const roof = $('top').getBoundingClientRect().bottom + 110;
+      const floor = (moreOpen && !$('minipanel').hidden ? $('minipanel') : $('tools')).getBoundingClientRect().top - 70;
+      // On wide screens the panel sits beside the table, not under it: only the bars at top and bottom matter.
+      board.keepInView(id, roof, Math.max(roof + 40, innerWidth >= 700 ? innerHeight - 150 : floor));
+    }
+    shownFor = id;
     const v = sel();
     if (cutAuto) autoCut();
-    if (board.tool === 'move') renderPalette(); // the emote row follows the selection
     if (!v) return;
     const mine = canControl(store, meId, v);
     $('minipanel').classList.toggle('readonly', !mine);

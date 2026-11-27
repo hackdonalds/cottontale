@@ -40,6 +40,8 @@ export interface BoardHooks {
   onSlab(slab: Slab): void;
   /** A light was stepped to another strength with the light brush. */
   onLight(name: string): void;
+  /** The picture was just redrawn: anything pinned to a spot on the table should follow. */
+  onView(): void;
 }
 
 const LIMIT = 96;
@@ -1404,6 +1406,39 @@ export class Board {
   }
 
   /** Bring a mini to the middle of the view. */
+  /** Where a mini is on the screen, in CSS pixels: the middle of its figure, and how tall it looks. */
+  spotOf(id: string): { x: number; y: number; size: number } | null {
+    const m = this.minis.get(id);
+    if (!m || !m.group.visible) return null;
+    const h = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? 0.9) * (m.val.s || 1);
+    const mid = m.group.position.clone().setY(m.group.position.y + h * 0.5).project(this.camera);
+    const top = m.group.position.clone().setY(m.group.position.y + h).project(this.camera);
+    if (mid.z > 1) return null; // behind the camera
+    const w = this.canvas.clientWidth, ch = this.canvas.clientHeight;
+    return { x: ((mid.x + 1) / 2) * w, y: ((1 - mid.y) / 2) * ch, size: Math.abs(top.y - mid.y) * ch };
+  }
+  /**
+   * Slide the camera, if it must, so a mini sits between two heights on the screen (CSS pixels
+   * from the top): clear of the bar above it and of whatever has opened below.
+   */
+  keepInView(id: string, top: number, bottom: number): void {
+    const m = this.minis.get(id), spot = this.spotOf(id);
+    if (!m || !spot || bottom - top < 40) return;
+    const want = Math.max(top, Math.min(bottom, spot.y));
+    if (Math.abs(want - spot.y) < 2) return;
+    // Which spot on the mini's own level is under the place it should be? Move the view by the difference.
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, level = m.group.position.y;
+    this.ray.setFromCamera(new THREE.Vector2((spot.x / w) * 2 - 1, 1 - (want / h) * 2), this.camera);
+    const under = this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, -level), new THREE.Vector3());
+    this.ray.setFromCamera(new THREE.Vector2((spot.x / w) * 2 - 1, 1 - (spot.y / h) * 2), this.camera);
+    const now = this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, -level), new THREE.Vector3());
+    if (!under || !now || under.distanceTo(now) > 40) return;
+    const d = now.sub(under);
+    this.controls.target.add(d);
+    this.camera.position.add(d);
+    this.controls.update();
+    this.invalidate();
+  }
   focusMini(id: string): void {
     const m = this.minis.get(id);
     if (!m || !m.group.visible) return;
@@ -1960,6 +1995,7 @@ export class Board {
     this.shadowDirty = false;
     if (this.look) this.look.render(this.camera.position.distanceTo(this.controls.target));
     else this.renderer.render(this.scene, this.camera);
+    this.hooks.onView();
   }
   private wasBusy = false;
 }

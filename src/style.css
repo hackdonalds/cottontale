@@ -102,6 +102,15 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 .tile.on i.flat { box-shadow: inset 0 -12px 0 rgba(0, 0, 0, .22), inset 0 0 0 6px #232939, 0 0 0 2.5px var(--acc); }
 .tile span { max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; opacity: .85; }
 
+/* The ring of actions around a selected piece. It is a point on the screen (see placeRing);
+   its buttons hang off it, so the only table it hides is right beside the piece. */
+#ring { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 3; }
+#ring[hidden] { display: none; }
+#ring button { position: absolute; width: 46px; height: 46px; min-width: 0; min-height: 0; margin: -23px 0 0 -23px; padding: 0; border-radius: 50%; display: grid; place-items: center; font-size: 21px; background: rgba(20, 24, 34, .94); border: 1px solid rgba(255, 255, 255, .24); box-shadow: 0 4px 14px rgba(0, 0, 0, .5); }
+#ring button.on { background: var(--acc); border-color: var(--acc); color: #201a05; }
+#ring .pop { position: absolute; left: 0; transform: translate(-50%, -100%); display: grid; gap: 6px; padding: 6px; border-radius: 18px; background: rgba(20, 24, 34, .94); border: 1px solid rgba(255, 255, 255, .2); box-shadow: 0 6px 18px rgba(0, 0, 0, .5); }
+#ring .pop button { position: static; margin: 0; box-shadow: none; border-color: transparent; background: rgba(255, 255, 255, .08); border-radius: 12px; }
+#ring .pop b { min-width: 60px; text-align: center; align-self: center; font-size: 16px; }
 #minipanel { display: flex; flex-direction: column; gap: 4px; padding: 8px; min-width: 0; }
 #minipanel .row input { flex: 1; }
 #miniColors { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
@@ -173,7 +182,8 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 @keyframes pop { from { transform: scale(.2) rotate(-25deg); } }
 
 /* ---- phones held sideways: height is precious, so the dock becomes one row ---- */
-@media (orientation: landscape) and (max-height: 520px) {
+/* A phone on its side, and small unfolded or split screens: wide but not tall. */
+@media (orientation: landscape) and (max-height: 700px) {
   #dock { flex-direction: row; align-items: flex-end; }
   #tools { order: -1; flex: none; }
   #tools button { flex: none; width: 46px; height: 46px; }
