@@ -995,8 +995,11 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const camAfter = await target();
   assert(/Follow turns: off/.test(follow.text) && follow.h >= 44 && camBefore[0] === camAfter[0] && camBefore[2] === camAfter[2], 'with "Follow turns" off the camera stays where it is');
   // The GM's boulder trap, by touch alone: tap Boulder, press on the table, flick the way it should roll.
-  await p.tap('#menuBtn');
-  await p.tap('[data-act="gm"]');
+  if (!(await p.evaluate(() => document.body.classList.contains('gm')))) { // (an earlier check may have taken the GM's seat already)
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="gm"]');
+  }
+  if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn');
   await p.tap('#logToggle');
   bad = await layout();
   await p.tap('#boulder');
