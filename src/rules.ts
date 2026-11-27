@@ -30,6 +30,44 @@ export interface MiniVal {
 }
 export interface Turn { id: string; round: number }
 
+/**
+ * Thin walls stand on the edges between cells, not in them: `w:x,y,z,n` is the edge on the
+ * low-z side of cell (x, y, z) and `w:x,y,z,w` the one on its low-x side. The far sides of a
+ * cell are the near sides of its neighbours, so every edge has exactly one key.
+ */
+export type Side = 'n' | 'w';
+export interface EdgeVal { i: string }
+/** What can stand on an edge: `see` lets sight through (a window, a doorway), `timber` is the wooden build. */
+export const EDGES: Record<string, { see?: boolean; timber?: boolean }> = {
+  wall: {}, wallwin: { see: true }, walldoor: { see: true },
+  wallwood: { timber: true }, woodwin: { see: true, timber: true },
+};
+export const ek = (x: number, y: number, z: number, s: Side) => `w:${x},${y},${z},${s}`;
+export function parseEdge(key: string): [x: number, y: number, z: number, s: Side] {
+  const p = key.slice(2).split(',');
+  return [+p[0], +p[1], +p[2], p[3] as Side];
+}
+/** The key of the edge between two cells that share a side on level `y`. */
+export function edgeBetween(y: number, ax: number, az: number, bx: number, bz: number): string {
+  return ax !== bx ? ek(Math.max(ax, bx), y, az, 'w') : ek(ax, y, Math.max(az, bz), 'n');
+}
+/** The outline of a room, as edge keys with what to stand on each: a doorway in the middle of its high-z side, windows in a rhythm. */
+export function roomEdges(x0: number, x1: number, z0: number, z1: number, y: number, timber: boolean): [key: string, piece: string][] {
+  const solid = timber ? 'wallwood' : 'wall', win = timber ? 'woodwin' : 'wallwin';
+  // Never a window in the end stretch of a wall; spaced evenly about its middle.
+  const windowed = (i: number, n: number) => i > 0 && i < n - 1 && (n % 2 ? (i - (n - 1) / 2) % 2 === 0 : i === n / 2 - 1 || i === n / 2);
+  const out: [string, string][] = [], w = x1 - x0 + 1, d = z1 - z0 + 1, door = x0 + Math.floor((w - 1) / 2);
+  for (let x = x0; x <= x1; x++) {
+    out.push([ek(x, y, z0, 'n'), windowed(x - x0, w) ? win : solid]);
+    out.push([ek(x, y, z1 + 1, 'n'), x === door ? 'walldoor' : windowed(x - x0, w) && Math.abs(x - door) > 1 ? win : solid]);
+  }
+  for (let z = z0; z <= z1; z++) {
+    out.push([ek(x0, y, z, 'w'), windowed(z - z0, d) ? win : solid]);
+    out.push([ek(x1 + 1, y, z, 'w'), windowed(z - z0, d) ? win : solid]);
+  }
+  return out;
+}
+
 /** Short player id used inside the store (prefix of the Nostr public key). */
 export const pid = (pubkey: string) => pubkey.slice(0, 10);
 
@@ -55,6 +93,12 @@ function opaque(store: Store, x: number, y: number, z: number): boolean {
   return !!d && d.opacity === undefined;
 }
 
+/** Is there a wall you cannot see through between two neighbouring cells of one level? */
+function walled(store: Store, y: number, ax: number, az: number, bx: number, bz: number): boolean {
+  const v = store.get<EdgeVal>(edgeBetween(y, ax, az, bx, bz));
+  return !!v && !!EDGES[v.i] && !EDGES[v.i].see;
+}
+
 const eye = (v: MiniVal): [number, number, number] => [v.x + 0.5, v.y + (v.e ?? 0) + 0.75 * (v.s || 1), v.z + 0.5];
 const SIGHT = 60;
 
@@ -63,9 +107,20 @@ function clear(store: Store, a: [number, number, number], b: [number, number, nu
   const len = Math.hypot(d[0], d[1], d[2]);
   if (len > SIGHT) return false;
   const steps = Math.ceil(len / 0.2);
-  for (let i = 1; i < steps; i++) {
+  let px = Math.floor(a[0]), pz = Math.floor(a[2]);
+  for (let i = 1; i <= steps; i++) {
     const t = i / steps;
-    if (opaque(store, Math.floor(a[0] + d[0] * t), Math.floor(a[1] + d[1] * t), Math.floor(a[2] + d[2] * t))) return false;
+    const x = Math.floor(a[0] + d[0] * t), y = Math.floor(a[1] + d[1] * t), z = Math.floor(a[2] + d[2] * t);
+    if (i < steps && opaque(store, x, y, z)) return false;
+    if (x !== px || z !== pz) {
+      // Stepping into another cell: a wall on the edge crossed stops the eye. Across a corner,
+      // either way round it must be open.
+      if (x !== px && z !== pz) {
+        if ((walled(store, y, px, pz, x, pz) || walled(store, y, x, pz, x, z)) && (walled(store, y, px, pz, px, z) || walled(store, y, px, z, x, z))) return false;
+      } else if (walled(store, y, px, pz, x, z)) return false;
+      px = x;
+      pz = z;
+    }
   }
   return true;
 }

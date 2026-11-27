@@ -32,7 +32,9 @@ first, then enhance for larger screens.
 - `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis (and their shelves)
 - `src/kit.ts` loads the modelled pieces (`public/kit/*.glb`), built by the Blender scripts in `assets/blender`
 - `src/sound.ts` synthesised soundscapes and effects (no audio files)
-- Board-specific keys (`b:` `m:` `f:` `turn`) are scoped per board by the store;
+- Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
+  They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
+- Board-specific keys (`b:` `m:` `f:` `w:` `turn`) are scoped per board by the store;
   everything else is table-wide. Live messages carry the board id (`bd`).
 
 ## Commands

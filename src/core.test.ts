@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES } from './catalog';
 import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
-import { canControl, eyesOf, fullPowers, measure, miniShown, nextTurn, sees, turnOrder, type MiniVal } from './rules';
+import { canControl, edgeBetween, ek, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
 import { Store, type Row } from './store';
 
@@ -197,6 +197,61 @@ describe('table rules', () => {
     for (let i = 0; i < 4; i++) { const t = nextTurn(s)!; s.set('turn', t); seq.push(`${t.id}${t.round}`); }
     expect(seq).toEqual(['b1', 'a1', 'b2', 'a2']);
     expect(measure([0.5, 0, 0.5], [3.5, 0, 4.5])).toEqual({ cells: 5, feet: 25 });
+  });
+});
+
+describe('edge walls', () => {
+  const mini = (x: number, z: number): MiniVal => ({ x, y: 0, z, k: 'knight', c: '#fff', n: '', r: 0, s: 1 });
+
+  it('gives every edge one key, whichever side you come from', () => {
+    expect(edgeBetween(0, 2, 5, 3, 5)).toBe(ek(3, 0, 5, 'w'));
+    expect(edgeBetween(0, 3, 5, 2, 5)).toBe(ek(3, 0, 5, 'w'));
+    expect(edgeBetween(1, 2, 5, 2, 4)).toBe(ek(2, 1, 5, 'n'));
+  });
+
+  it('stops sight at a wall on the edge, but not at a window, a doorway or over the top', () => {
+    const s = new Store('gm');
+    const a = mini(0, 0), b = mini(1, 0);
+    expect(sees(s, a, b)).toBe(true);
+    s.set(ek(1, 0, 0, 'w'), { i: 'wall' });
+    expect(sees(s, a, b)).toBe(false); // neighbours, with a wall between them
+    expect(sees(s, b, a)).toBe(false);
+    expect(sees(s, a, mini(0, 1))).toBe(true); // nothing on that side
+    s.set(ek(1, 0, 0, 'w'), { i: 'wallwin' });
+    expect(sees(s, a, b)).toBe(true);
+    s.set(ek(1, 0, 0, 'w'), { i: 'walldoor' });
+    expect(sees(s, a, b)).toBe(true);
+    s.set(ek(1, 0, 0, 'w'), { i: 'wall' });
+    expect(sees(s, { ...a, e: 2 }, { ...b, e: 2 })).toBe(true);
+  });
+
+  it('cannot be peeked round at a closed corner', () => {
+    const s = new Store('gm');
+    s.set(ek(1, 0, 0, 'w'), { i: 'wall' });
+    s.set(ek(0, 0, 1, 'n'), { i: 'wall' });
+    expect(sees(s, mini(0, 0), mini(1, 1))).toBe(false);
+    s.set(ek(0, 0, 1, 'n'), null);
+    expect(sees(s, mini(0, 0), mini(1, 1))).toBe(true);
+  });
+
+  it('outlines a room with one doorway and no window beside a corner', () => {
+    const edges = roomEdges(0, 4, 0, 2, 1, false);
+    expect(edges.length).toBe(2 * 5 + 2 * 3);
+    expect(new Set(edges.map(([k]) => k)).size).toBe(edges.length);
+    expect(edges.filter(([, i]) => i === 'walldoor').map(([k]) => k)).toEqual([ek(2, 1, 3, 'n')]);
+    const at = new Map(edges);
+    for (const k of [ek(0, 1, 0, 'n'), ek(4, 1, 0, 'n'), ek(0, 1, 0, 'w'), ek(0, 1, 2, 'w'), ek(5, 1, 0, 'w')]) expect(at.get(k)).toBe('wall');
+    expect(at.get(ek(2, 1, 0, 'n'))).toBe('wallwin');
+    expect(roomEdges(0, 2, 0, 2, 1, true).every(([, i]) => ['wallwood', 'woodwin', 'walldoor'].includes(i))).toBe(true);
+  });
+
+  it('belongs to its board', () => {
+    const s = new Store('gm');
+    s.set(ek(0, 0, 0, 'n'), { i: 'wall' });
+    s.setBoard('cellar');
+    expect([...s.keys('w:')]).toEqual([]);
+    s.setBoard('');
+    expect([...s.keys('w:')]).toEqual([ek(0, 0, 0, 'n')]);
   });
 });
 

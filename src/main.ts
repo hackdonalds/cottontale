@@ -5,7 +5,7 @@ import { loadKit, type Season } from './kit';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
-import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn } from './rules';
+import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -418,6 +418,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       for (const id of BLOCK_SHELVES[buildShelf] ?? []) add(BLOCKS[id].name, `<i style="background:${BLOCKS[id].color}"></i>`, board.brush === id, () => { board.brush = id; });
       for (const id of PROP_SHELVES[buildShelf] ?? []) add(PROPS[id].name, PROPS[id].icon, board.brush === id, () => { board.brush = id; });
       const turn = () => add('Turn (R)', ['⬆️', '➡️', '⬇️', '⬅️'][board.rot], false, () => { board.rot = (board.rot + 1) % 4; });
+      if (buildShelf === 'Structures') {
+        // A whole room in one drag: floor, walls, windows and a doorway.
+        const room = (timber: boolean) => add(`${timber ? 'Timber' : 'Stone'} room: drag out its floor`, timber ? '🛖' : '🏠', board.brush === 'room' && board.roomTimber === timber,
+          () => { board.brush = 'room'; board.roomTimber = timber; });
+        sep(); room(false); room(true);
+      }
       if (PROP_SHELVES[buildShelf]) { sep(); turn(); }
       if (buildShelf === SLABS) {
         add('Copy: drag over an area', '✂️', board.brush === 'copy', () => { board.brush = 'copy'; });
@@ -491,7 +497,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     here = id;
     store.setBoard(id);
     board.clear();
-    for (const p of ['b:', 'f:', 'm:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
+    for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
     cutAuto = true;
     setCut(Infinity);
     emptyHand();
@@ -537,7 +543,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function newBoard(copy: boolean): void {
     if (!full()) return;
     const id = crypto.randomUUID().slice(0, 6);
-    if (copy) for (const p of ['b:', 'f:', 'm:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
+    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
     store.set(`bd:${id}`, { n: copy ? `${boardName(here)} copy`.slice(0, 24) : `Board ${boardList().length + 1}` });
     peek = id; // start on it alone; bring the players over when it is ready
     sync();
@@ -788,7 +794,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'import') $('file').click();
     if (act === 'clear' && confirm('Remove everything from the table, for everyone?')) {
-      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:')]) store.set(k, null);
+      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:'), ...store.keys('w:')]) store.set(k, null);
       store.set('turn', null);
     }
     if (act === 'leave') void net.stop().then(() => { location.hash = ''; location.reload(); });
@@ -797,8 +803,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const input = e.target as HTMLInputElement;
     try {
       const data = JSON.parse(await input.files![0].text());
-      for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmf]:/.test(k)) store.set(k, v);
-        else if (/^(@[\w-]+\/[bmf]:|bd:)/.test(k)) store.setRaw(k, v);
+      for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmfw]:/.test(k)) store.set(k, v);
+        else if (/^(@[\w-]+\/[bmfw]:|bd:)/.test(k)) store.setRaw(k, v);
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
@@ -829,27 +835,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         if (prop) put(x, high + 1, z, prop);
       }
     }
-    // Walls stand on the edge between the room and the ring of cells around it. The two
-    // sides away from the default camera are a storey taller, like an opened doll's house.
-    // Windows keep a rhythm: never in the end stretch of a wall, spaced evenly about its middle,
-    // and an upper window always stands over a lower one.
-    const windowed = (i: number, n: number) => i > 0 && i < n - 1 && (n % 2 ? (i - (n - 1) / 2) % 2 === 0 : i === n / 2 - 1 || i === n / 2);
-    for (let x = X0; x <= X1; x++) {
-      const win = windowed(x - X0, X1 - X0 + 1);
-      put(x, 1, Z0 - 1, win ? 'wallwin' : 'wall', 2);
-      put(x, 2, Z0 - 1, win ? 'woodwin' : 'wallwood', 2);
-      put(x, 1, Z1 + 1, x === DOOR ? 'walldoor' : 'wall');
+    // Thin walls on the edges of the room. The two sides away from the default camera are a
+    // storey taller and half-timbered, like an opened doll's house.
+    for (const [k, piece] of roomEdges(X0, X1, Z0, Z1, 1, false)) store.set(k, { i: piece });
+    for (const [k, piece] of roomEdges(X0, X1, Z0, Z1, 2, true)) {
+      const [x, , z, side] = parseEdge(k);
+      if (side === 'n' ? z === Z0 : x === X0) store.set(k, { i: piece });
     }
-    for (let z = Z0; z <= Z1; z++) {
-      const win = windowed(z - Z0, Z1 - Z0 + 1);
-      put(X0 - 1, 1, z, win ? 'wallwin' : 'wall', 3);
-      put(X0 - 1, 2, z, win ? 'woodwin' : 'wallwood', 3);
-      put(X1 + 1, 1, z, win ? 'wallwin' : 'wall', 1);
-    }
-    put(X0 - 1, 1, Z0 - 1, 'post', 2); put(X0 - 1, 2, Z0 - 1, 'post', 2);
-    put(X1 + 1, 1, Z0 - 1, 'post', 1); put(X1 + 1, 2, Z0 - 1, 'post', 1);
-    put(X0 - 1, 1, Z1 + 1, 'post', 3); put(X0 - 1, 2, Z1 + 1, 'post', 3);
-    put(X1 + 1, 1, Z1 + 1, 'post');
     put(-3, 1, -3, 'table'); put(-4, 1, -4, 'barrel'); put(-3, 1, -4, 'barrel'); put(0, 1, -4, 'crate'); put(0, 1, -2, 'chair', 1);
     put(2, 1, 1, 'campfire'); put(3, 1, 0, 'crate'); put(1, 1, 3, 'rock');
     const mini = (id: string, k: string, x: number, z: number, c: string, r: number) => store.set(`m:${id}`, { x, y: 1, z, k, c, n: '', r, s: 1 });

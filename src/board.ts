@@ -2,10 +2,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
-import { WILD, kit, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
+import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Kind, type Start } from './dice';
-import { eyesOf, fogged, measure, miniShown, type CellVal, type MiniVal } from './rules';
+import { EDGES, ek, eyesOf, fogged, measure, miniShown, parseEdge, roomEdges, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 
 export type { CellVal, MiniVal };
@@ -41,6 +41,12 @@ const LIMIT = 96;
 const MAX_Y = 40;
 const ck = (x: number, y: number, z: number) => `b:${x},${y},${z}`;
 const parse = (key: string) => key.slice(2).split(',').map(Number) as Vec;
+type Edge = [x: number, y: number, z: number, s: Side];
+// What an edge wall and its corner post look like if the kit could not be fetched. Like the
+// modelled pieces, they sit on the low-z side (the low corner) of a cell centred on the origin.
+const PLAIN_WALL = new THREE.BoxGeometry(1, 1, 0.11).translate(0, 0.5, -0.5);
+const PLAIN_POST = new THREE.BoxGeometry(0.26, 1, 0.26).translate(-0.5, 0.5, -0.5);
+const ROOM_MAX = 24;
 function noise(x: number, y: number, z: number): number {
   const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
   return s - Math.floor(s);
@@ -167,6 +173,8 @@ interface Gesture {
   /** Touch editing: what the first contact pointed at, and the flat layer a drag paints on. */
   first: Vec | null;
   stroke: { level: number; plane: number } | null;
+  /** Drawing a wall: the edge the finger started on. The run stays in line with it. */
+  edge?: Edge | null;
   press?: ReturnType<typeof setTimeout>;
 }
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
@@ -269,6 +277,12 @@ export class Board {
   private ground: THREE.Mesh;
   private layers = new Map<string, Layer>();
   private props = new Map<string, THREE.Group>();
+  /** Thin walls on cell edges (see rules.ts): what stands on each, drawn as one swarm per shape. */
+  private edges = new Map<string, string>();
+  private edgeSwarms = new Map<string, Swarm>();
+  private edgesDirty = false;
+  /** Rooms dragged out with the room brush are half-timbered rather than stone. */
+  roomTimber = false;
   private minis = new Map<string, Mini>();
   private rulers = new Map<string, THREE.Group>();
   private fog: THREE.InstancedMesh | null = null;
@@ -406,7 +420,7 @@ export class Board {
         m.sig = '';
         this.applyMini(id, m.val);
       }
-      this.coverDirty = true;
+      this.coverDirty = this.edgesDirty = true;
       this.touched();
     });
 
@@ -444,7 +458,7 @@ export class Board {
   /** Re-evaluate everything that depends on role, fog, cutaway or line-of-sight settings. */
   refresh(): void {
     for (const l of this.layers.values()) l.dirty = true;
-    this.coverDirty = this.terrainDirty = true;
+    this.coverDirty = this.terrainDirty = this.edgesDirty = true;
     for (const [key, g] of this.props) g.visible = !this.cellHidden(...parse(key));
     for (const [id, m] of this.minis) this.applyMini(id, m.val); // ghosting depends on the role
     this.fogDirty = this.visDirty = true;
@@ -554,6 +568,8 @@ export class Board {
     for (const p of this.pings) this.scene.remove(p.mesh);
     for (const a of this.anims) a.bubble.removeFromParent();
     this.props.clear();
+    this.edges.clear();
+    this.edgesDirty = true;
     this.minis.clear();
     this.rulers.clear();
     this.pings.length = this.anims.length = 0;
@@ -581,9 +597,65 @@ export class Board {
     } else if (key.startsWith('m:')) {
       this.applyMini(key.slice(2), value as MiniVal | null);
       this.visDirty = true;
+    } else if (key.startsWith('w:')) {
+      const v = value as EdgeVal | null;
+      if (v && EDGES[v.i]) this.edges.set(key, v.i);
+      else this.edges.delete(key);
+      this.edgesDirty = this.visDirty = this.terrainDirty = this.coverDirty = true;
     } else if (key.startsWith('f:')) {
       this.fogDirty = this.visDirty = true;
       if (!this.full) this.refresh();
+    }
+  }
+
+  /**
+   * Stand the edge walls up. Which member of its family each stretch is, which face it shows
+   * and its tint follow from where it stands; corner posts are not stored at all, they grow
+   * wherever stone walls meet at an angle or come to an end.
+   */
+  private rebuildEdges(): void {
+    this.edgesDirty = false;
+    const lots = new Map<string, { geo: THREE.BufferGeometry; at: [THREE.Matrix4, THREE.Color, string][] }>();
+    const add = (family: string, x: number, y: number, z: number, turn: number, cx: number, cz: number, key: string) => {
+      const shapes = kit.get(`p_${family}`) ?? (kitPending(`p_${family}`) ? null : [family === 'post' ? PLAIN_POST : PLAIN_WALL]);
+      if (!shapes) return; // its pack is on the way: the arrival rebuilds this
+      const i = Math.floor(rand(x, y, z, 31 + turn) * shapes.length), id = `${family}#${i}`;
+      let lot = lots.get(id);
+      if (!lot) lots.set(id, (lot = { geo: shapes[i], at: [] }));
+      lot.at.push([new THREE.Matrix4().makeRotationY((turn * Math.PI) / 2).setPosition(cx, y, cz), TINT_COLORS[Math.floor(rand(x, y, z, 41 + turn) * TINT_COLORS.length)], key]);
+    };
+    // Per grid corner: how many walls run into it along x and along z, and whether any is stone.
+    const corners = new Map<string, [nx: number, nz: number, stone: boolean]>();
+    const meet = (x: number, y: number, z: number, along: 0 | 1, stone: boolean) => {
+      const k = `${x},${y},${z}`, c = corners.get(k) ?? [0, 0, false];
+      c[along]++;
+      c[2] ||= stone;
+      corners.set(k, c);
+    };
+    for (const [key, piece] of this.edges) {
+      const [x, y, z, s] = parseEdge(key);
+      if (![x, y, z].every(Number.isInteger) || this.cellHidden(x, y, z)) continue;
+      const def = EDGES[piece], flip = !def.see && rand(x, y, z, s === 'n' ? 21 : 22) < 0.5;
+      if (s === 'n') {
+        add(piece, x, y, z, flip ? 2 : 0, x + 0.5, flip ? z - 0.5 : z + 0.5, key);
+        meet(x, y, z, 0, !def.timber); meet(x + 1, y, z, 0, !def.timber);
+      } else {
+        add(piece, x, y, z, flip ? 3 : 1, flip ? x - 0.5 : x + 0.5, z + 0.5, key);
+        meet(x, y, z, 1, !def.timber); meet(x, y, z + 1, 1, !def.timber);
+      }
+    }
+    for (const [k, [nx, nz, stone]] of corners) {
+      if (!stone || !((nx && nz) || nx + nz === 1)) continue;
+      const [x, y, z] = k.split(',').map(Number);
+      add('post', x, y, z, 0, x + 0.5, z + 0.5, '');
+    }
+    for (const [id, swarm] of this.edgeSwarms) if (!lots.has(id)) { swarm.begin(0); swarm.end(); }
+    for (const [id, lot] of lots) {
+      let swarm = this.edgeSwarms.get(id);
+      if (!swarm) this.edgeSwarms.set(id, (swarm = new Swarm(lot.geo, KIT, this.scene, true)));
+      swarm.begin(lot.at.length);
+      for (const [m, c, key] of lot.at) swarm.add(m, c, key);
+      swarm.end();
     }
   }
 
@@ -612,6 +684,8 @@ export class Board {
       const top = this.columns.get(`${x},${z}`)!;
       const on = this.what(x, top.y + 1, z);
       let w = on && (WILD[on] || /^(wall|wood|post|door|gate|fence)/.test(on)) ? (WILD[on] ? 0.55 : 1) : 0;
+      const lv = top.y + 1; // a wall along any side of the cell: bare earth at its foot
+      if (this.edges.has(ek(x, lv, z, 'n')) || this.edges.has(ek(x, lv, z, 'w')) || this.edges.has(ek(x, lv, z + 1, 'n')) || this.edges.has(ek(x + 1, lv, z, 'w'))) w = Math.max(w, 0.8);
       for (let dx = -1; dx <= 1 && w < 1; dx++) for (let dz = -1; dz <= 1; dz++) {
         if (!dx && !dz) continue;
         const beside = this.columns.get(`${x + dx},${z + dz}`);
@@ -973,6 +1047,87 @@ export class Board {
   private get erasing(): boolean { return this.tool === 'build' && this.brush === 'erase'; }
   private get copying(): boolean { return this.tool === 'build' && this.brush === 'copy'; }
   private get pasting(): boolean { return this.tool === 'build' && this.brush === 'paste' && !!this.slab; }
+  /** The brush is a wall piece: it goes on the edge of a cell, not in it. */
+  private get edging(): boolean { return this.tool === 'build' && !!EDGES[this.brush]; }
+  private get rooming(): boolean { return this.tool === 'build' && this.brush === 'room'; }
+
+  /** The wall under the pointer, if there is one. */
+  private pickWall(): { key: string; dist: number } | null {
+    if (this.edgesDirty) this.rebuildEdges();
+    const meshes = [...this.edgeSwarms.values()].filter((w) => w.mesh.count).map((w) => w.mesh);
+    for (const hit of this.ray.intersectObjects(meshes, false)) {
+      const key = (hit.object.userData.swarm as Swarm).keys[hit.instanceId!];
+      if (key) return { key, dist: hit.distance }; // posts have no key: look past them
+    }
+    return null;
+  }
+  /** The edge a wall would go on: the wall being pointed at, or else the nearest side of the cell touched. */
+  private pickEdge(): Edge | null {
+    const s = this.pickSurface(), w = this.pickWall();
+    if (w && (!s || w.dist <= s.point.distanceTo(this.ray.ray.origin))) return parseEdge(w.key);
+    if (!s) return null;
+    const [cx, y, cz] = s.place;
+    if (y < 0 || y >= Math.min(MAX_Y, this.cut)) return null;
+    const fx = Math.min(1, Math.max(0, s.point.x - cx)), fz = Math.min(1, Math.max(0, s.point.z - cz));
+    const d = [fz, 1 - fz, fx, 1 - fx], i = d.indexOf(Math.min(...d));
+    return i === 0 ? [cx, y, cz, 'n'] : i === 1 ? [cx, y, cz + 1, 'n'] : i === 2 ? [cx, y, cz, 'w'] : [cx + 1, y, cz, 'w'];
+  }
+  private setEdge([x, y, z, s]: Edge): void {
+    if (Math.abs(x) >= LIMIT || Math.abs(z) >= LIMIT || y < 0 || y >= MAX_Y) return;
+    const key = ek(x, y, z, s);
+    if (this.store.get<EdgeVal>(key)?.i !== this.brush) this.edit(key, { i: this.brush });
+  }
+  private edgeGhost([x, y, z, s]: Edge, color: string): void {
+    (this.ghost.material as THREE.MeshBasicMaterial).color.set(color);
+    this.ghost.scale.set(s === 'n' ? 1 : 0.16, 1, s === 'n' ? 0.16 : 1);
+    this.ghost.position.set(s === 'n' ? x + 0.5 : x, y, s === 'n' ? z : z + 0.5);
+    this.ghost.visible = true;
+    this.invalidate();
+  }
+  /** Where the pointer is on the level a drag started on. */
+  private onLevel(y: number): THREE.Vector3 | null {
+    const pt = this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, -y), new THREE.Vector3());
+    return pt && pt.distanceTo(this.camera.position) <= 120 ? pt : null;
+  }
+  /** Dragging a finger draws a straight run of wall from the edge it started on. */
+  private paintEdges(g: Gesture): void {
+    if (!g.edge) return;
+    const [x0, y, z0, s] = g.edge;
+    if (!g.stroke) {
+      g.stroke = { level: y, plane: y };
+      this.batch = [];
+      this.undoStack.push(this.batch);
+    }
+    const pt = this.onLevel(y);
+    if (!pt) return;
+    const from = s === 'n' ? x0 : z0, to = Math.max(from - ROOM_MAX, Math.min(from + ROOM_MAX, Math.floor(s === 'n' ? pt.x : pt.z)));
+    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) this.setEdge(s === 'n' ? [i, y, z0, s] : [x0, y, i, s]);
+    this.edgeGhost(s === 'n' ? [to, y, z0, s] : [x0, y, to, s], '#ffffff');
+  }
+  /** Drag out a room: on release it gets a floor, walls with windows in a rhythm, and a doorway. */
+  private stretchRoom(g: Gesture, done: boolean): void {
+    const a = g.first, pt = a && this.onLevel(a[1]);
+    if (!a || !pt) { if (done) this.marquee.visible = false; return; }
+    const clamp = (v: number, c: number) => Math.max(c - ROOM_MAX + 1, Math.min(c + ROOM_MAX - 1, v));
+    const bx = clamp(Math.floor(pt.x), a[0]), bz = clamp(Math.floor(pt.z), a[2]), y = a[1];
+    const x0 = Math.min(a[0], bx), x1 = Math.max(a[0], bx), z0 = Math.min(a[2], bz), z1 = Math.max(a[2], bz);
+    this.marquee.position.set(x0, y, z0);
+    this.marquee.scale.set(x1 - x0 + 1, 1.02, z1 - z0 + 1);
+    this.marquee.visible = !done;
+    this.invalidate();
+    if (!done || !g.moved || y >= Math.min(MAX_Y, this.cut)) return;
+    this.batch = [];
+    this.undoStack.push(this.batch);
+    if (y > 0) {
+      // The floor replaces the ground it is laid on (and bridges any gap under the room).
+      for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
+        const k = ck(x, y - 1, z), cur = this.store.get<CellVal>(k);
+        if (!cur || GROUND[cur.i]) this.edit(k, { i: this.roomTimber ? 'wood' : 'stone' });
+      }
+    }
+    for (const [k, piece] of roomEdges(x0, x1, z0, z1, y, this.roomTimber)) this.edit(k, { i: piece });
+    this.batch = null;
+  }
 
   /** Footprint of the slab as it would be pasted with the current rotation. */
   private slabSize(): Vec {
@@ -1025,7 +1180,7 @@ export class Board {
     // In every tool but Move, one finger is the tool and two fingers are the camera.
     this.controls.touches.ONE = t === 'move' ? THREE.TOUCH.ROTATE : (-1 as THREE.TOUCH);
     // Ruler, fog and the copy marquee are drag tools for the mouse as well (right-drag and wheel still move the camera).
-    this.controls.mouseButtons.LEFT = t === 'ruler' || t === 'fog' || this.copying ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
+    this.controls.mouseButtons.LEFT = t === 'ruler' || t === 'fog' || this.copying || this.rooming ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
     this.marquee.visible = false;
     this.canvas.style.cursor = t === 'move' ? 'grab' : 'crosshair';
   }
@@ -1165,7 +1320,7 @@ export class Board {
     const g: Gesture = {
       id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button, touch, moved: false, done: false,
       mini: null, tapMini: null, throwing: null, measure: null, first: null, stroke: null,
-      drags: this.tool === 'ruler' || this.tool === 'fog' || this.copying || (touch && this.tool !== 'move'),
+      drags: this.tool === 'ruler' || this.tool === 'fog' || this.copying || this.rooming || (touch && this.tool !== 'move'),
     };
     this.gesture = g;
     if (e.button !== 0) return;
@@ -1219,11 +1374,17 @@ export class Board {
           this.canvas.setPointerCapture(e.pointerId);
           break;
         }
+        if (this.rooming) {
+          g.first = this.pickSurface()?.place ?? null;
+          this.canvas.setPointerCapture(e.pointerId);
+          break;
+        }
         if (!touch) break;
         // No hover on touch: show where the edit will land as soon as the finger is down.
         this.updateGhost();
         if (this.pasting) break;
-        if (this.erasing) { const t = this.eraseTarget(); g.first = t ? parse(t) : null; }
+        if (this.edging) { g.edge = this.pickEdge(); break; }
+        if (this.erasing) { const t = this.eraseTarget(); g.first = t && !t.startsWith('w:') ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
   }
@@ -1282,6 +1443,8 @@ export class Board {
     if (this.tool === 'ruler') this.stretchRuler(g, false);
     else if (this.tool === 'fog') { if (g.moved) this.paintFog(); }
     else if (this.copying) this.stretchCopy(g, false);
+    else if (this.rooming) this.stretchRoom(g, false);
+    else if (this.edging) { if (g.moved) this.paintEdges(g); }
     else if (this.tool === 'mini' || this.pasting) this.updateGhost();
     else if (this.tool === 'build' && g.moved) this.paint(g);
   }
@@ -1342,7 +1505,12 @@ export class Board {
 
   private updateGhost(): void {
     this.hideGhost();
-    if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying) return;
+    if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying || this.rooming) return;
+    if (this.edging) {
+      const e = this.pickEdge();
+      if (e) this.edgeGhost(e, '#ffffff');
+      return;
+    }
     const mat = this.ghost.material as THREE.MeshBasicMaterial;
     if (this.pasting) {
       const p = this.pickSurface()?.place;
@@ -1354,6 +1522,7 @@ export class Board {
     } else if (this.erasing) {
       const t = this.eraseTarget();
       if (!t) return;
+      if (t.startsWith('w:')) { this.edgeGhost(parseEdge(t), '#ff5a5a'); return; }
       const [x, y, z] = parse(t);
       mat.color.set('#ff5a5a');
       this.ghost.scale.setScalar(1.04);
@@ -1370,9 +1539,10 @@ export class Board {
   }
 
   private eraseTarget(): string | null {
-    const s = this.pickSurface();
-    const p = this.pickProp();
-    if (p && (!s || p.dist <= s.point.distanceTo(this.ray.ray.origin))) return p.key;
+    const s = this.pickSurface(), far = s ? s.point.distanceTo(this.ray.ray.origin) : Infinity;
+    const p = this.pickProp(), w = this.pickWall();
+    if (w && w.dist <= far && (!p || w.dist <= p.dist)) return w.key;
+    if (p && p.dist <= far) return p.key;
     return s?.cell ? ck(...s.cell) : null;
   }
 
@@ -1419,6 +1589,7 @@ export class Board {
       return;
     }
     if (this.copying) { this.stretchCopy(g, true); return; }
+    if (this.rooming) { this.stretchRoom(g, true); return; }
     if (g.stroke) { // the drag already did the editing
       this.batch = null;
       this.hideGhost();
@@ -1438,6 +1609,11 @@ export class Board {
           break;
         }
         if (this.brush === 'paste') break;
+        if (this.edging) {
+          const edge = this.pickEdge();
+          if (edge) this.setEdge(edge);
+          break;
+        }
         if (this.erasing) {
           const t = this.eraseTarget();
           if (t) this.edit(t, null);
@@ -1535,6 +1711,7 @@ export class Board {
     if (this.visDirty) { this.refreshMinis(); changed = true; }
     if (this.terrainDirty) { this.rebuildTerrain(); changed = true; }
     for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); changed = true; }
+    if (this.edgesDirty) { this.rebuildEdges(); changed = true; }
     if (this.coverDirty) { this.rebuildCover(); changed = true; }
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {

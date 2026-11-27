@@ -158,7 +158,9 @@ SHADOW.onBeforeCompile = (shader) => {
 };
 
 /** The kit's one material, in a few slightly different mixes of paint: each copy of a piece takes one. */
-const TINTS = ['#ffffff', '#f3ede2', '#e9efe6', '#fff6e4', '#e4e0dc', '#f0f4ea'].map((color) =>
+/** The same mixes as plain colours, for pieces drawn as instances of one material. */
+export const TINT_COLORS = ['#ffffff', '#f3ede2', '#e9efe6', '#fff6e4', '#e4e0dc', '#f0f4ea'].map((c) => new THREE.Color(c));
+const TINTS = TINT_COLORS.map((color) =>
   withDetail(new THREE.MeshStandardMaterial({ color, vertexColors: true, roughness: 0.86 })));
 export const KIT = TINTS[0];
 
