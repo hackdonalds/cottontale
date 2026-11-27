@@ -27,7 +27,14 @@ type Body =
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }
-  | { y: 'mv'; id: string; p: [number, number, number] };
+  | { y: 'mv'; id: string; p: [number, number, number] }
+  // Files passed between players (src/blobpeer.ts): who has a blob, WebRTC signalling, small blobs in pieces.
+  | { y: 'bq'; h: string }
+  | { y: 'bh'; h: string; to: string }
+  | { y: 'bo' | 'ba'; to: string; id: string; sdp: string }
+  | { y: 'bi'; to: string; id: string; c: RTCIceCandidateInit[] }
+  | { y: 'br'; to: string; h: string }
+  | { y: 'bc'; to: string; h: string; i: number; d: string };
 
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */
 export type Msg = Body & { bd?: string };
@@ -176,6 +183,8 @@ export class Net {
   peers = new Map<string, Peer>();
   tag = '';
   synced = false;
+  /** Other modules listening for live messages (file transfers); one that returns true has dealt with it. */
+  taps: Array<(msg: Msg, from: string) => boolean | void> = [];
   private key!: CryptoKey;
   private relays: Relay[] = [];
   private seen = new Set<string>();
@@ -311,7 +320,7 @@ export class Net {
         if (this.peers.delete(ev.pubkey)) this.o.onPeers();
         break;
       default:
-        this.o.onMsg(msg, ev.pubkey);
+        if (!this.taps.some((tap) => tap(msg, ev.pubkey))) this.o.onMsg(msg, ev.pubkey);
     }
   }
 

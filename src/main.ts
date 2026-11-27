@@ -6,6 +6,7 @@ import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
 import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
+import { Blobs, deriveBlobKey, pickIce, pickServers } from './blob';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
@@ -180,6 +181,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
+  // The GM's own files (src/blob.ts). Servers: this device's list (local storage `cottontale:blossom`), else the table's (`set:blossom`), else the defaults.
+  const blobs = new Blobs({
+    key: deriveBlobKey(code), sk, net,
+    servers: () => pickServers(ls.get('blossom'), store.get('set:blossom')),
+    ice: () => pickIce(ls.get('stun')),
+  });
+  Object.assign((window as unknown as { __ct: object }).__ct, { blobs });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;

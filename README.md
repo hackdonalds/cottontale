@@ -80,6 +80,16 @@ with HTTPS (the browser's crypto API requires it).
   in any order and all players converge.
 - Your Nostr key is generated on first visit and stays in the browser.
 
+- Files a GM brings (images, models, sounds) never pass through a server of
+  ours (`src/blob.ts`). Each is encrypted with a second key derived from the
+  table code and named by the SHA-256 of the ciphertext; the table only stores
+  that small reference. The blob itself is kept in the browser's cache, offered
+  to public [Blossom](https://github.com/hzrd149/blossom) servers (table
+  setting `set:blossom`, per-device override in `localStorage`), and when no
+  server has it, fetched from another player at the table over WebRTC
+  (signalling goes through the encrypted room channel). Whatever arrives is
+  checked against its hash before it is decrypted.
+
 Relays are editable on the join screen. For offline/LAN play, run the bundled
 dev relay (`npm run relay`, `ws://<your-ip>:7777`) and use that instead.
 

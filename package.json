@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "relay": "node scripts/relay.mjs",
-    "test": "vitest run",
+    "blossom": "node scripts/blossom.mjs",
+    "test": "vitest run src",
     "e2e": "node scripts/e2e.mjs",
     "kit": "node scripts/kit.mjs",
     "thumbs": "/Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P assets/blender/thumbs.py -- sample public/ui/thumbs.webp src/thumbs.json"
