@@ -1,0 +1,27 @@
+{
+ "id": "crypt",
+ "name": "Crypt",
+ "icon": "moon",
+ "algo": "dungeon",
+ "sliders": ["Size", "Vaults", "Clutter"],
+ "palette": {
+  "floor": "slate",
+  "corridor": "cobble",
+  "walls": [{"solid": "wall", "door": "walldoor"}],
+  "light": "candles"
+ },
+ "rooms": [
+  {"kind": "antechamber", "name": "Antechamber", "centre": "statue", "walls": ["candles", "pillar", "bench"], "floor": ["rug"]},
+  {"kind": "vault", "name": "Burial vault", "centre": "coffin", "walls": ["coffin", "coffin", "tombstone", "candles"], "floor": ["bones"]},
+  {"kind": "ossuary", "name": "Ossuary", "walls": ["bones", "bones", "cage", "candles"], "floor": ["bones"]},
+  {"kind": "chapel", "name": "Chapel", "centre": "altar", "walls": ["candles", "pillar", "banner"], "floor": ["rug"]},
+  {
+      "kind": "graves",
+      "name": "Graves",
+      "centre": "tombstone",
+      "walls": ["tombstone", "tombstone", "deadtree", "candles"],
+      "floor": ["tombstone", "bones"]
+     },
+  {"kind": "reliquary", "name": "Reliquary", "centre": "hoard", "walls": ["chest", "potion", "candles"], "floor": ["spikes"]}
+ ]
+}

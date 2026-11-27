@@ -7,7 +7,7 @@
   "sky": "day",
   "season": "summer",
   "glow": 1,
-  "amb": "wind"
+  "amb": "sea"
  },
  "gen": "tavern",
  "pieces": {
@@ -51,5 +51,29 @@
    "flag",
    "cross"
   ]
+ },
+ "sounds": {
+  "effects": {
+   "ping": {
+    "voices": [
+     {
+      "kind": "note",
+      "wave": "triangle",
+      "freq": 1320,
+      "gain": 0.16,
+      "dur": 0.9,
+      "attack": 0.003
+     },
+     {
+      "kind": "note",
+      "wave": "sine",
+      "freq": 2640,
+      "gain": 0.05,
+      "dur": 0.5,
+      "attack": 0.003
+     }
+    ]
+   }
+  }
  }
 }

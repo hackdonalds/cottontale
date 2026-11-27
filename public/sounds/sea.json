@@ -1,0 +1,53 @@
+{
+ "name": "🌊 Sea",
+ "layers": [
+  {
+   "filters": [{"type": "lowpass", "freq": 520}],
+   "gain": 0.26,
+   "mod": {"every": 3600, "freq": [300, 900], "gain": [0.08, 0.46]}
+  },
+  {
+   "filters": [{"type": "highpass", "freq": 2400}, {"type": "lowpass", "freq": 6500}],
+   "gain": 0.04,
+   "mod": {"every": 4300, "gain": [0.01, 0.11]}
+  }
+ ],
+ "drones": [
+  {"wave": "triangle", "freq": 98, "gain": 0.03, "lp": 500},
+  {"wave": "triangle", "freq": 146.8, "gain": 0.02, "lp": 500}
+ ],
+ "patterns": [
+  {
+   "every": 2600,
+   "voices": [
+    {
+     "kind": "note",
+     "wave": "sine",
+     "freq": [1500, 2100],
+     "gain": 0.05,
+     "dur": 0.35,
+     "attack": 0.05,
+     "glide": 0.7,
+     "p": 0.2,
+     "echo": true
+    }
+   ]
+  },
+  {
+   "every": 3100,
+   "voices": [
+    {
+     "kind": "note",
+     "wave": "sawtooth",
+     "freq": [70, 95],
+     "gain": 0.05,
+     "dur": 0.5,
+     "attack": 0.1,
+     "glide": 1.25,
+     "p": 0.3,
+     "lp": 300
+    }
+   ]
+  }
+ ]
+}

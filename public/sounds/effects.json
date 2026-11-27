@@ -1,0 +1,41 @@
+{
+ "clack": {
+  "voices": [{"kind": "burst", "type": "bandpass", "freq": [2200, 3700], "gain": 0.1, "dur": 0.035, "vel": 0.35}]
+ },
+ "thud": {
+  "voices": [
+   {
+    "kind": "note",
+    "wave": "sine",
+    "freq": [150, 180],
+    "gain": 0.3,
+    "dur": 0.09,
+    "attack": 0.002,
+    "glideTo": 70
+   },
+   {"kind": "burst", "type": "bandpass", "freq": [900, 1400], "gain": 0.12, "dur": 0.03}
+  ]
+ },
+ "ping": {
+  "voices": [{"kind": "note", "wave": "sine", "freq": 880, "gain": 0.18, "dur": 0.5, "attack": 0.005, "glideTo": 1320}]
+ },
+ "emote": {
+  "voices": [{"kind": "note", "wave": "sine", "freq": 700, "gain": 0.1, "dur": 0.25, "attack": 0.01, "glideTo": 560}]
+ },
+ "emote:attack": {"voices": [{"kind": "burst", "freq": 3000, "gain": 0.25, "dur": 0.12}]},
+ "emote:hurt": {
+  "voices": [
+   {"kind": "note", "wave": "sawtooth", "freq": 220, "gain": 0.14, "dur": 0.22, "attack": 0.005, "glideTo": 90}
+  ]
+ },
+ "emote:cheer": {
+  "voices": [
+   {"kind": "note", "wave": "triangle", "freq": 523, "gain": 0.14, "dur": 0.25},
+   {"kind": "note", "wave": "triangle", "freq": 659, "gain": 0.14, "dur": 0.25, "at": 90},
+   {"kind": "note", "wave": "triangle", "freq": 784, "gain": 0.14, "dur": 0.25, "at": 180}
+  ]
+ },
+ "emote:think": {
+  "voices": [{"kind": "note", "wave": "sine", "freq": 520, "gain": 0.1, "dur": 0.25, "attack": 0.01, "glideTo": 780}]
+ }
+}

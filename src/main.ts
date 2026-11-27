@@ -4,10 +4,10 @@ import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_
 import { loadKit, type Season } from './kit';
 import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
-import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
+import { PRESETS, addPresets, generate, loadPresets, parsePreset, roomName, type GenOpts, type GenRoom, type KnownPiece, type Preset, type Theme } from './gen';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
-import { SOUNDSCAPES, Sound } from './sound';
+import { SOUNDSCAPES, Sound, addSounds, loadSounds } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
 import { activeTheme, loadThemes, moodEdits, type GameTheme, type Known } from './theme';
@@ -432,11 +432,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // The table's theme (see theme.ts) puts a shelf of its own in front of the others and its
   // ground and building blocks first on theirs: more to choose from, and no more chrome.
   const MINE = '★';
-  const known: Known = { block: (id) => id in BLOCKS, prop: (id) => id in PROPS, mini: (id) => id in MINIS, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in THEMES };
+  const known: Known = { block: (id) => id in BLOCKS, prop: (id) => id in PROPS, mini: (id) => id in MINIS, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in PRESETS, edge: (id) => id in EDGES };
   const gameTheme = (): GameTheme | null => activeTheme(store.get('set:theme'), known);
   /** The themes on offer (public/themes): data that arrives after the table is up, never part of the app. */
   let gameThemes: GameTheme[] = [];
-  void loadThemes('./themes', known).then((list) => { gameThemes = list; renderThemes(); });
+  // Sound recipes and generator presets are files too (public/sounds, public/gens). Themes name them, so they come first.
+  const knownPiece: KnownPiece = (kind, id) => known[kind]!(id);
+  void Promise.all([loadSounds('./sounds').then(addSounds), loadPresets('./gens', knownPiece).then(addPresets)])
+    .then(() => { sound.refresh(); later(); if (!$('gen').classList.contains('closed')) renderGen(); return loadThemes('./themes', known); })
+    .then((list) => { gameThemes = list; renderThemes(); });
   const thingIds = (): string[] => (thingShelf === MINE ? gameTheme()?.pieces.props : PROP_SHELVES[thingShelf]) ?? [];
   const miniIds = (): string[] => (miniShelf === MINE ? gameTheme()?.pieces.minis : MINI_SHELVES[miniShelf]) ?? [];
   const themed = (shelf: string[]): string[] => {
@@ -745,7 +749,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderThemes();
     choices($('skies'), SKY_NAMES, 'sky', 'day');
     choices($('seasons'), SEASON_NAMES, 'season', 'summer');
-    choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
+    // The soundscapes this device has loaded, and the ones the table's theme brings, each by its own name.
+    choices($('scapes'), { ...SOUNDSCAPES, ...Object.fromEntries(Object.entries(gameTheme()?.sounds?.scapes ?? {}).map(([id, r]) => [id, r.name])) }, 'amb', 'off');
     const glow = $<HTMLInputElement>('glow');
     if (document.activeElement !== glow) glow.value = String(setting(store, 'glow', 1));
     glow.disabled = !full();
@@ -791,6 +796,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
     act('gm').innerHTML = `${ico('crown')}${amGM ? 'Stop being the GM' : 'Become the GM'}`;
     act('los').innerHTML = `${ico(l ? 'eye' : 'eyeoff')}Line of sight: ${l ? 'on' : 'off'}`;
+    sound.theme(gameTheme()?.sounds);
     sound.scape(setting(store, 'amb', 'off'));
     renderAtmo();
     renderPlayers();
@@ -1071,26 +1077,37 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   // ---- scene generator ----
   const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0] % 100000;
-  let genOpts: GenOpts = { theme: 'forest', seed: newSeed(), size: 2, density: 2, detail: 2 };
+  let genOpts: GenOpts = { theme: '', seed: newSeed(), size: 2, density: 2, detail: 2 }; // the first preset on offer, until one is picked
   let genRecent: GenOpts[] = [];
   try { genRecent = JSON.parse(ls.get('genRecent') ?? '[]'); } catch { /* start with none */ }
   /** The scene on this board, remembered with the table so its rooms can be redone or locked later. */
-  interface SceneRec { o: GenOpts; rooms: GenRoom[] }
+  // `p` is its preset, when that came with a theme and not with the app: the scene can still be redone once the theme is gone.
+  interface SceneRec { o: GenOpts; rooms: GenRoom[]; p?: unknown }
   const sceneRec = () => store.get<SceneRec>('gen');
+  /** The generator presets on offer: the loaded ones (public/gens), and the ones the table's theme brings. */
+  const presets = (): Preset[] => {
+    const own = gameTheme()?.gens ?? [];
+    return [...Object.values(PRESETS).filter((p) => !own.some((q) => q.id === p.id)), ...own];
+  };
+  const presetOf = (id: Theme): Preset | undefined => gameTheme()?.gens?.find((p) => p.id === id) ?? PRESETS[id];
+  const presetFor = (rec: SceneRec): Preset | undefined => (rec.p ? parsePreset(rec.p, knownPiece) : null) ?? presetOf(rec.o.theme);
+  const genIcon = (p: Preset) => ico(document.getElementById(`i-${p.icon}`) ? p.icon : 'spark');
   function renderGen(): void {
     const themes = $('genThemes'), sliders = $('genSliders'), recent = $('genRecent'), list = $('genRooms');
     themes.innerHTML = sliders.innerHTML = recent.innerHTML = list.innerHTML = '';
-    for (const [id, t] of Object.entries(THEMES) as [Theme, (typeof THEMES)[Theme]][]) {
+    const cur = presetOf(genOpts.theme) ?? presets()[0];
+    if (cur) genOpts = { ...genOpts, theme: cur.id };
+    for (const t of presets()) {
       const b = document.createElement('button');
-      b.innerHTML = `${ico(t.icon)}${t.name}`;
-      b.classList.toggle('on', id === genOpts.theme);
-      b.onclick = () => { genOpts = { ...genOpts, theme: id }; renderGen(); };
+      b.innerHTML = `${genIcon(t)}${esc(t.name)}`;
+      b.classList.toggle('on', t.id === genOpts.theme);
+      b.onclick = () => { genOpts = { ...genOpts, theme: t.id }; renderGen(); };
       themes.append(b);
     }
     (['size', 'density', 'detail'] as const).forEach((key, i) => {
       const row = document.createElement('label'), name = document.createElement('span'), input = document.createElement('input');
       row.className = 'slider';
-      name.textContent = THEMES[genOpts.theme].sliders[i];
+      name.textContent = cur?.sliders[i] ?? '';
       Object.assign(input, { type: 'range', min: '0', max: '4', step: '1', value: String(genOpts[key]) });
       input.oninput = () => { genOpts = { ...genOpts, [key]: +input.value }; };
       row.append(name, input);
@@ -1104,24 +1121,26 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const row = document.createElement('span'), name = document.createElement('button'), dice = document.createElement('button'), lock = document.createElement('button');
         row.className = 'row';
         name.className = 'grow';
-        name.textContent = ROOM_NAMES[q.kind] ?? q.kind;
+        name.textContent = roomName(presetFor(rec), q.kind);
         name.onclick = () => board.lookAt((q.x0 + q.x1 + 1) / 2, 1, (q.z0 + q.z1 + 1) / 2);
         dice.innerHTML = ico('dice');
         dice.title = dice.ariaLabel = 'Refurnish this room';
         dice.disabled = !!q.lock;
-        dice.onclick = () => buildScene(rec.o, rec.rooms.map((r, j) => (j === i ? { ...r, seed: newSeed() } : r)), true);
+        dice.onclick = () => buildScene(rec.o, rec.rooms.map((r, j) => (j === i ? { ...r, seed: newSeed() } : r)), true, presetFor(rec));
         lock.innerHTML = ico(q.lock ? 'lock' : 'unlock');
         lock.title = lock.ariaLabel = q.lock ? 'Locked: unlock this room' : 'Lock this room';
         lock.classList.toggle('on', !!q.lock);
-        lock.onclick = () => store.set('gen', { o: rec.o, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock: !r.lock } : r)) });
+        lock.onclick = () => store.set('gen', { ...rec, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock: !r.lock } : r)) });
         row.append(name, dice, lock);
         list.append(row);
       });
     }
     for (const o of genRecent) {
+      const t = presetOf(o.theme);
+      if (!t) continue; // from a preset this table does not have
       const b = document.createElement('button');
-      b.innerHTML = `${ico(THEMES[o.theme].icon)}#${o.seed}`;
-      b.title = `${THEMES[o.theme].name}, seed ${o.seed}`;
+      b.innerHTML = `${genIcon(t)}#${+o.seed}`;
+      b.title = `${t.name}, seed ${o.seed}`;
       b.onclick = () => { genOpts = { ...o }; buildScene(genOpts); };
       recent.append(b);
     }
@@ -1130,13 +1149,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
    * Build a scene in place of the one on the table. `prior` rooms that are locked are kept;
    * with `fixed` every room stays where it is and only what changed in them is rebuilt.
    */
-  function buildScene(o: GenOpts, prior: GenRoom[] = [], fixed = false): void {
-    if (!full()) return;
-    const old = sceneRec();
+  function buildScene(o: GenOpts, prior: GenRoom[] = [], fixed = false, preset = presetOf(o.theme)): void {
+    if (!full() || !preset) return;
+    const old = sceneRec(), was = old && presetFor(old);
     // What the old scene put on the table follows from its numbers, so it can be cleared exactly.
-    const gone = new Set(old ? generate(old.o, old.rooms, true).edits.map(([k]) => k) : []);
-    const scene = generate(o, prior, fixed);
-    board.applyScene([...scene.edits, ['gen', { o, rooms: scene.rooms }]], scene.bounds, gone, !fixed);
+    const gone = new Set(old && was ? generate(old.o, was, old.rooms, true).edits.map(([k]) => k) : []);
+    const scene = generate(o, preset, prior, fixed);
+    board.applyScene([...scene.edits, ['gen', { o, rooms: scene.rooms, ...(PRESETS[preset.id] === preset ? {} : { p: preset }) }]], scene.bounds, gone, !fixed);
     const same = (p: GenOpts) => JSON.stringify(p) === JSON.stringify(o);
     genRecent = [{ ...o }, ...genRecent.filter((p) => !same(p))].slice(0, 6);
     ls.set('genRecent', JSON.stringify(genRecent));
@@ -1146,9 +1165,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('genGo').onclick = () => buildScene(genOpts, sceneRec()?.rooms.filter((q) => q.lock) ?? []);
   $('genAgain').onclick = () => {
     const rec = sceneRec(), locked = rec?.o.theme === genOpts.theme ? rec.rooms.filter((q) => q.lock) : [];
-    if (genOpts.theme === 'tavern' && rec && locked.length) {
+    if (presetOf(genOpts.theme)?.algo === 'building' && rec && locked.length) {
       // A tavern is one building: with a room locked it stays standing and the other rooms are refurnished.
-      buildScene(rec.o, rec.rooms.map((q) => (q.lock ? q : { ...q, seed: newSeed() })), true);
+      buildScene(rec.o, rec.rooms.map((q) => (q.lock ? q : { ...q, seed: newSeed() })), true, presetFor(rec));
       return;
     }
     genOpts = { ...genOpts, seed: newSeed() };

@@ -9,6 +9,8 @@
 // Either way it is somebody else's data and untrusted: `parseTheme` keeps what it understands, clamps the numbers and
 // drops ids this build does not know. That is also what lets a newer app share a
 // theme with an older one.
+import { parsePreset, type Preset } from './gen';
+import { parseSounds, type SoundBank } from './sound';
 
 export const SKY_IDS = ['day', 'dusk', 'night'] as const;
 export const SEASON_IDS = ['summer', 'spring', 'autumn', 'winter'] as const;
@@ -30,10 +32,16 @@ export interface GameTheme {
   pieces: Pieces;
   /** The scene generator that suits it (see gen.ts), or '' for none in particular. */
   gen: string;
+  /** Soundscapes and effects of its own, as recipes (sound.ts): `mood.amb` may name one of the scapes, and an effect of a known name re-voices it. */
+  sounds?: SoundBank;
+  /** Scene generators of its own, as presets (gen.ts): `gen` may name one. */
+  gens?: Preset[];
 }
+/** Most generator presets a theme may carry: it travels with the table. */
+export const MAX_GENS = 4;
 
 /** What this build of the app has: asked about every id a theme mentions. */
-export type Known = Record<'block' | 'prop' | 'mini' | 'amb' | 'gen', (id: string) => boolean>;
+export type Known = Record<'block' | 'prop' | 'mini' | 'amb' | 'gen', (id: string) => boolean> & { /** Wall pieces, for the generators a theme brings; without it they build no walls. */ edge?: (id: string) => boolean };
 
 const text = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const pick = <T extends string>(v: unknown, from: readonly T[]): T => (from.includes(v as T) ? (v as T) : from[0]);
@@ -51,13 +59,22 @@ export function parseTheme(raw: unknown, known: Known): GameTheme | null {
   const p = (r.pieces && typeof r.pieces === 'object' ? r.pieces : {}) as Record<string, unknown>;
   const glow = typeof m.glow === 'number' && Number.isFinite(m.glow) ? Math.min(2, Math.max(0, Math.round(m.glow * 4) / 4)) : 1;
   const amb = text(m.amb, 24), gen = text(r.gen, 24);
-  return {
+  const t: GameTheme = {
     v: THEME_FORMAT, id, name,
     icon: [...text(r.icon, 16)].slice(0, 4).join('') || '🎲',
     mood: { sky: pick(m.sky, SKY_IDS), season: pick(m.season, SEASON_IDS), glow, amb: known.amb(amb) ? amb : 'off' },
     pieces: { blocks: ids(p.blocks, known.block), props: ids(p.props, known.prop), minis: ids(p.minis, known.mini) },
     gen: known.gen(gen) ? gen : '',
   };
+  // ---- what the theme brings with it: sound recipes and generator presets (sound.ts, gen.ts) ----
+  const sounds = parseSounds(r.sounds), piece = (kind: 'block' | 'prop' | 'edge', i: string) => known[kind]?.(i) ?? false;
+  const gens = (Array.isArray(r.gens) ? r.gens.slice(0, MAX_GENS) : []).map((g) => parsePreset(g, piece)).filter((g): g is Preset => !!g);
+  if (sounds) t.sounds = sounds;
+  if (gens.length) t.gens = gens;
+  if (sounds?.scapes?.[amb]) t.mood.amb = amb; // its own soundscape
+  if (gens.some((g) => g.id === gen)) t.gen = gen; // its own generator
+  // ---- end of what the theme brings ----
+  return t;
 }
 
 /** The table's theme, read from `set:theme`. */

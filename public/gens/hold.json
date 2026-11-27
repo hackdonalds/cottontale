@@ -1,0 +1,22 @@
+{
+ "id": "hold",
+ "name": "Ship's hold",
+ "icon": "map",
+ "algo": "building",
+ "sliders": ["Size", "Mess tables", "Cargo"],
+ "palette": {
+  "ground": [["water", 256]],
+  "path": "wood",
+  "floor": "darkwood",
+  "walls": [{"solid": "wallwood", "window": "woodwin", "door": "walldoor"}],
+  "light": "torch",
+  "table": "table",
+  "seat": "bench",
+  "seat2": "barrel"
+ },
+ "rooms": [
+  {"kind": "hold", "name": "Hold", "walls": ["barrel", "crate", "sacks", "crate", "barrel", "cage"], "floor": ["crate", "sacks"], "extra": 1},
+  {"kind": "galley", "name": "Galley", "walls": ["cauldron", "barrel", "sacks", "crate"], "floor": ["sacks"]},
+  {"kind": "cabin", "name": "Captain's cabin", "corner": "bed", "walls": ["chest", "bookshelf", "candles", "banner"], "floor": ["rug"]}
+ ]
+}

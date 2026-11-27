@@ -1,0 +1,22 @@
+{
+ "id": "dungeon",
+ "name": "Dungeon",
+ "icon": "key",
+ "algo": "dungeon",
+ "sliders": ["Size", "Rooms", "Clutter"],
+ "palette": {
+  "floor": "stone",
+  "corridor": "cobble",
+  "walls": [{"solid": "wall", "door": "walldoor"}],
+  "light": "torch"
+ },
+ "rooms": [
+  {"kind": "guard", "name": "Guard room", "centre": "table", "walls": ["barrel", "crate", "bench"], "floor": ["chair"]},
+  {"kind": "store", "name": "Store", "walls": ["crate", "barrel", "sacks", "barrel", "crate"], "floor": ["crate"]},
+  {"kind": "crypt", "name": "Crypt", "centre": "coffin", "walls": ["coffin", "bones", "candles"], "floor": ["bones"]},
+  {"kind": "shrine", "name": "Shrine", "centre": "altar", "walls": ["candles", "pillar", "candles"], "floor": ["rug"]},
+  {"kind": "treasure", "name": "Treasury", "centre": "hoard", "walls": ["chest", "chest", "potion"], "floor": ["spikes"]},
+  {"kind": "cell", "name": "Cells", "walls": ["cage", "bones", "cage"], "floor": ["bones"]},
+  {"kind": "lair", "name": "Lair", "centre": "campfire", "walls": ["bones", "sacks", "crate"], "floor": ["bones"]}
+ ]
+}

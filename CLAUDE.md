@@ -31,8 +31,8 @@ first, then enhance for larger screens.
 - `src/board.ts` 3D view and pointer input · `src/dice.ts` physics dice
 - `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis (and their shelves)
 - `src/kit.ts` loads the modelled pieces (`public/kit/*.glb`), built by the Blender scripts in `assets/blender`
-- `src/gen.ts` seeded scene generators (wilderness, dungeon, cave, tavern): pure, whole numbers only, return ordinary edits — unit-test here
-- `src/sound.ts` synthesised soundscapes and effects (no audio files)
+- `src/gen.ts` seeded scene generators: four ways of laying a scene out (wilderness, dungeon, cave, building) are code — pure, whole numbers only, return ordinary edits. Everything thematic is a *preset*, data (`public/gens/*.json`, listed in `index.json`; a theme may carry its own in `gens`): pieces, room kinds and their furnishing, names, slider labels, icon. `generate(opts, preset, …)` is handed its preset and never looks one up; `parsePreset(raw, known)` reads untrusted ones. Never name a piece in the engine — unit-test here (old seeds are pinned by hash)
+- `src/sound.ts` one Web Audio engine that plays *recipes*, data (`public/sounds/*.json` + `index.json` for soundscapes, `effects.json` for the dice clack, ping, emote stings; a theme may carry its own in `sounds`): noise layers, drones, timed patterns. No audio files are shipped; a recipe may name a recording (`file`), played only through `Sound.resolver` when the app sets one. `parseRecipe`/`parseEffect` clamp everything (untrusted). `SOUNDSCAPES` and `PRESETS` fill as the files load: `id in …` is how "known" is asked
 - `src/theme.ts` themes: plain data, never code — a mood, the pieces shown first, a generator. None is written into the app: the ones on offer are files (`public/themes/*.json`, listed in `index.json`), and picking one copies it whole into `set:theme`. Everything goes through `parseTheme` — unit-test here
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.

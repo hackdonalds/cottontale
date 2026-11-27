@@ -1,0 +1,21 @@
+{
+ "id": "cave",
+ "name": "Cave",
+ "icon": "cave",
+ "algo": "cave",
+ "sliders": ["Size", "Openness", "Clutter"],
+ "palette": {
+  "ground": [["mud", 70], ["gravel", 151], ["dirt", 256]],
+  "water": "water",
+  "rock": "basalt",
+  "clutter": {
+   "rim": "stalagmite",
+   "gem": "crystal",
+   "rubble": "rock",
+   "damp": "mushroom",
+   "dry": "rock",
+   "relic": "bones"
+  }
+ },
+ "rooms": []
+}
