@@ -1495,7 +1495,11 @@ export class Board {
     this.zoomGoal = null;
     if (this.pointers.size > 1) {
       // A second finger means a camera gesture, never an edit.
+      const claimed = !this.controls.enabled;
       this.abortGesture();
+      // The first finger was ours (dragging a mini, holding dice), so the camera never saw it
+      // land: hand it over now, or the pinch reads as a one-finger drag.
+      if (claimed) this.handToCamera(e.pointerId);
       this.twist = this.twistAngle();
       this.twistSlack = 0.14;
       return;
@@ -1571,6 +1575,15 @@ export class Board {
         if (this.shaping || this.lighting) break;
         if (this.erasing) { const t = this.eraseTarget(); g.first = t && !t.startsWith('w:') ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
+    }
+  }
+
+  /** Replay the other fingers' pointerdown to OrbitControls (it ignores pointers that land while it is disabled). */
+  private handToCamera(except: number): void {
+    const c = this.controls as unknown as { _pointers: number[]; _onPointerDown(e: object): void };
+    for (const [id, p] of this.pointers) {
+      if (id === except || c._pointers.includes(id)) continue;
+      c._onPointerDown({ pointerId: id, pointerType: 'touch', button: 0, clientX: p.x, clientY: p.y, pageX: p.x + scrollX, pageY: p.y + scrollY });
     }
   }
 
