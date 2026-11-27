@@ -436,6 +436,9 @@ await a.click('#ring [title="Stand up"]');
   await a.click('#rulesList button:has-text("No rules")');
   assert(await ok(b, () => !document.body.classList.contains('sys') && !window.__ct.rules.system()), 'clearing the rules puts the table back as it was');
   await a.click('#rules [data-close]');
+  // Leave the piece as the checks after this one expect it: selected, its ring one step in.
+  await a.evaluate((id) => window.__ct.board.select(id), id);
+  await a.click('#ring [title="Emote"]');
 }
 // Breaking: the GM smashes a statue. It is one edit (rubble is left, undo restores it), and the
 // debris and the rocking are worked out on each device; under fog a player gets none of it.
