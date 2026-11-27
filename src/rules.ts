@@ -278,8 +278,8 @@ const DRESSING: Record<string, [prop: string, share: number][]> = {
  * spot alone, so everyone grows the same wood and brushing twice changes nothing. Woods
  * gather by kind, and reeds crowd the water's edge.
  */
-export function dressing(ground: string, x: number, z: number, wet: boolean): string | null {
-  const r = chance(x, z, 1);
+export function dressing(ground: string, x: number, z: number, wet: boolean, salt = 0): string | null {
+  const r = chance(x, z, 1 + salt);
   if (wet && (ground === 'grass' || ground === 'meadow' || ground === 'mud' || ground === 'dirt')) return r < 0.4 ? 'reeds' : null;
   let acc = 0;
   for (const [prop, share] of DRESSING[ground] ?? []) {

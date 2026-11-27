@@ -5,6 +5,8 @@ import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } fr
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
+import { THEMES, generate, type GenOpts, type Theme } from './gen';
+import { EDGES, edgeBetween as between } from './rules';
 import { Store, type Row } from './store';
 
 describe('Store', () => {
@@ -321,6 +323,91 @@ describe('shaping the land', () => {
     const first = JSON.stringify(s.dump().map(([k, v]) => [k, v]).sort());
     for (let x = 0; x < 3; x++) for (let z = 0; z < 3; z++) grow(s, x, z, put);
     expect(JSON.stringify(s.dump().map(([k, v]) => [k, v]).sort())).toBe(first);
+  });
+});
+
+describe('scene generators', () => {
+  const themes = Object.keys(THEMES) as Theme[];
+  const opts = (theme: Theme, seed = 7, v = 2): GenOpts => ({ theme, seed, size: v, density: v, detail: v });
+  /** Cells you can walk to from a start, over floor, not through walls. */
+  const reach = (edits: Map<string, { i: string }>, start: string, floors: (id: string) => boolean): Set<string> => {
+    const seen = new Set([start]), todo = [start];
+    while (todo.length) {
+      const [x, z] = todo.pop()!.split(',').map(Number);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const k = `${x + dx},${z + dz}`, ground = edits.get(`b:${x + dx},0,${z + dz}`);
+        if (seen.has(k) || !ground || !floors(ground.i)) continue;
+        const wall = edits.get(between(1, x, z, x + dx, z + dz));
+        if (wall && wall.i !== 'walldoor') continue;
+        seen.add(k);
+        todo.push(k);
+      }
+    }
+    return seen;
+  };
+
+  it('builds the same scene from the same numbers, and another from another seed', () => {
+    for (const t of themes) {
+      const a = JSON.stringify(generate(opts(t)).edits);
+      expect(JSON.stringify(generate(opts(t)).edits)).toBe(a);
+      expect(JSON.stringify(generate(opts(t, 8)).edits)).not.toBe(a);
+    }
+  });
+
+  it('uses only pieces the library has, inside its bounds, at every slider setting', () => {
+    for (const t of themes) for (const v of [0, 2, 4]) for (const seed of [1, 2, 3]) {
+      const { edits, bounds: [x0, x1, z0, z1] } = generate(opts(t, seed, v));
+      expect(edits.length).toBeGreaterThan(20);
+      expect(edits.length).toBeLessThan(6000);
+      for (const [k, val] of edits) {
+        const id = (val as { i: string }).i, [x, , z] = k.slice(2).split(',').map(Number);
+        if (k.startsWith('w:')) expect(EDGES[id], `${t} ${id}`).toBeTruthy();
+        else expect(BLOCKS[id] ?? PROPS[id], `${t} ${id}`).toBeTruthy();
+        expect(x >= x0 && x <= x1 + 1 && z >= z0 && z <= z1 + 1, `${t} ${k}`).toBe(true);
+      }
+    }
+  });
+
+  it('never stands a prop in mid-air or inside a block', () => {
+    for (const t of themes) {
+      const map = new Map(generate(opts(t, 5, 4)).edits) as Map<string, { i: string }>;
+      for (const [k, v] of map) {
+        if (!k.startsWith('b:') || !PROPS[v.i]) continue;
+        const [x, y, z] = k.slice(2).split(',').map(Number), under = map.get(`b:${x},${y - 1},${z}`);
+        expect(under && BLOCKS[under.i], `${t} ${k} ${v.i}`).toBeTruthy();
+      }
+    }
+  });
+
+  it('joins every dungeon room to every other through its doorways', () => {
+    for (const seed of [1, 2, 3, 4, 5, 6]) {
+      const { edits, rooms } = generate(opts('dungeon', seed, seed % 5));
+      const map = new Map(edits) as Map<string, { i: string }>;
+      expect(rooms.length).toBeGreaterThan(2);
+      const seen = reach(map, `${rooms[0].x0},${rooms[0].z0}`, () => true);
+      for (const q of rooms) for (let x = q.x0; x <= q.x1; x++) for (let z = q.z0; z <= q.z1; z++) expect(seen.has(`${x},${z}`), `seed ${seed}`).toBe(true);
+      expect(edits.some(([, v]) => (v as { i: string }).i === 'walldoor')).toBe(true);
+    }
+  });
+
+  it('digs one cave you can walk the whole of', () => {
+    for (const seed of [1, 2, 3]) {
+      const map = new Map(generate(opts('cave', seed)).edits) as Map<string, { i: string }>;
+      const walk = (id: string) => id !== 'basalt';
+      const open = [...map].filter(([k, v]) => /^b:-?\d+,0,/.test(k) && walk(v.i)).map(([k]) => k.slice(2).split(',')).map(([x, , z]) => `${x},${z}`);
+      expect(open.length).toBeGreaterThan(60);
+      expect(reach(map, open[0], walk).size).toBe(open.length);
+    }
+  });
+
+  it('builds a tavern you can enter, with every room reachable from the yard', () => {
+    for (const seed of [1, 2, 3, 4]) {
+      const { edits, rooms, bounds } = generate(opts('tavern', seed, seed));
+      const map = new Map(edits) as Map<string, { i: string }>;
+      const seen = reach(map, `${bounds[0]},${bounds[2]}`, () => true);
+      for (const q of rooms) expect(seen.has(`${q.x0},${q.z0}`), `${q.kind} seed ${seed}`).toBe(true);
+      expect(rooms.map((q) => q.kind)).toEqual(['hall', 'store', 'bedroom']);
+    }
   });
 });
 

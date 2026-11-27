@@ -47,6 +47,7 @@
         <button data-act="boards">🗺️ Boards</button>
         <button data-act="atmo">🌗 Atmosphere &amp; sound</button>
         <button data-act="redo" data-gm>↪️ Redo</button>
+        <button data-act="gen" data-gm>✨ Generate a scene</button>
         <button data-act="meadow" data-gm>🏡 Add a starter scene</button>
         <button data-act="export">💾 Export table</button>
         <button data-act="import" data-gm>📂 Import table</button>
@@ -134,6 +135,18 @@
         <button id="boardNew" class="grow">＋ New board</button>
         <button id="boardCopy" class="grow">⧉ Copy this one</button>
       </span>
+    </div>
+
+    <div id="gen" class="panel sheet closed">
+      <span class="row"><b class="grow">✨ Generate a scene</b><button data-close aria-label="Close">✕</button></span>
+      <div id="genThemes" class="choices"></div>
+      <div id="genSliders"></div>
+      <span class="row">
+        <button id="genGo" class="primary grow">Build it</button>
+        <button id="genAgain" class="grow">🎲 Another</button>
+      </span>
+      <p class="hint">Recent — tap to bring one back. Building replaces the last scene; Undo brings it back.</p>
+      <div id="genRecent" class="choices"></div>
     </div>
 
     <div id="atmo" class="panel sheet closed">

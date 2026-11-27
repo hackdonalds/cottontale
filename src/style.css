@@ -107,6 +107,11 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 #boardList .tag { font-size: 11px; opacity: .7; align-self: center; flex: none; }
 .choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
 .choices button { padding: 4px; white-space: nowrap; }
+.slider { display: flex; align-items: center; gap: 10px; }
+.slider span { flex: 0 0 5.5em; font-size: 14px; }
+.slider input { flex: 1; min-width: 0; height: 44px; margin: 0; accent-color: var(--accent, #ffd166); }
+#gen { overflow-y: auto; }
+#genThemes { grid-template-columns: repeat(2, 1fr); }
 #stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 #palette select { flex: none; width: auto; max-width: 132px; height: 50px; }
 #msgs { flex: 1; min-height: 44px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; font-size: 14px; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; overscroll-behavior: contain; }

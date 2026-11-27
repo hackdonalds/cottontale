@@ -2,6 +2,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
 import { loadKit, type Season } from './kit';
+import { THEMES, generate, type GenOpts, type Theme } from './gen';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
@@ -790,6 +791,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'los' && full()) store.set('set:los', !setting(store, 'los', false));
     if (act === 'boards' || act === 'atmo') openSheet(act);
+    if (act === 'gen' && full()) { renderGen(); openSheet('gen'); }
     if (act === 'redo') board.redo();
     if (act === 'meadow') meadow();
     if (act === 'export') {
@@ -816,6 +818,53 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
+
+  // ---- scene generator ----
+  const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0] % 100000;
+  let genOpts: GenOpts = { theme: 'forest', seed: newSeed(), size: 2, density: 2, detail: 2 };
+  let genRecent: GenOpts[] = [];
+  try { genRecent = JSON.parse(ls.get('genRecent') ?? '[]'); } catch { /* start with none */ }
+  /** What the last scene built here put on the table, so the next one can take its place. */
+  let genLast = new Set<string>();
+  function renderGen(): void {
+    const themes = $('genThemes'), sliders = $('genSliders'), recent = $('genRecent');
+    themes.innerHTML = sliders.innerHTML = recent.innerHTML = '';
+    for (const [id, t] of Object.entries(THEMES) as [Theme, (typeof THEMES)[Theme]][]) {
+      const b = document.createElement('button');
+      b.textContent = `${t.icon} ${t.name}`;
+      b.classList.toggle('on', id === genOpts.theme);
+      b.onclick = () => { genOpts = { ...genOpts, theme: id }; renderGen(); };
+      themes.append(b);
+    }
+    (['size', 'density', 'detail'] as const).forEach((key, i) => {
+      const row = document.createElement('label'), name = document.createElement('span'), input = document.createElement('input');
+      row.className = 'slider';
+      name.textContent = THEMES[genOpts.theme].sliders[i];
+      Object.assign(input, { type: 'range', min: '0', max: '4', step: '1', value: String(genOpts[key]) });
+      input.oninput = () => { genOpts = { ...genOpts, [key]: +input.value }; };
+      row.append(name, input);
+      sliders.append(row);
+    });
+    for (const o of genRecent) {
+      const b = document.createElement('button');
+      b.textContent = `${THEMES[o.theme].icon} #${o.seed}`;
+      b.title = `${THEMES[o.theme].name}, seed ${o.seed}`;
+      b.onclick = () => { genOpts = { ...o }; buildScene(); };
+      recent.append(b);
+    }
+  }
+  function buildScene(): void {
+    if (!full()) return;
+    const scene = generate(genOpts);
+    board.applyScene(scene.edits, scene.bounds, genLast);
+    genLast = new Set(scene.edits.map(([k]) => k));
+    const same = (o: GenOpts) => JSON.stringify(o) === JSON.stringify(genOpts);
+    genRecent = [{ ...genOpts }, ...genRecent.filter((o) => !same(o))].slice(0, 6);
+    ls.set('genRecent', JSON.stringify(genRecent));
+    renderGen();
+  }
+  $('genGo').onclick = buildScene;
+  $('genAgain').onclick = () => { genOpts = { ...genOpts, seed: newSeed() }; buildScene(); };
 
   /** A starter scene: a cottage in a clearing, with something to fight. */
   function meadow(): void {

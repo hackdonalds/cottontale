@@ -1225,6 +1225,31 @@ export class Board {
     this.canvas.style.cursor = t === 'move' ? 'grab' : 'crosshair';
   }
 
+  /**
+   * Put a generated scene on the table as one undo step: everything built inside its
+   * bounds, and whatever is left of the scene it replaces (`old`), makes way for it.
+   */
+  applyScene(edits: [string, unknown][], [x0, x1, z0, z1]: number[], old: Set<string>): void {
+    if (!this.full) return;
+    const scene = new Map(edits);
+    this.batch = [];
+    this.undoStack.push(this.batch);
+    for (const prefix of ['b:', 'w:']) for (const k of [...this.store.keys(prefix)]) {
+      if (scene.has(k)) continue;
+      const [x, , z] = k.slice(2).split(',').map(Number);
+      if (old.has(k) || (x >= x0 && x <= x1 + 1 && z >= z0 && z <= z1 + 1)) this.edit(k, null);
+    }
+    for (const [k, v] of edits) if (JSON.stringify(this.store.get(k)) !== JSON.stringify(v)) this.edit(k, v);
+    this.batch = null;
+    // Stand back far enough to see all of it, looking the way the camera already looks.
+    const t = this.controls.target, away = this.camera.position.clone().sub(t).normalize();
+    t.set((x0 + x1 + 1) / 2, 0.5, (z0 + z1 + 1) / 2);
+    const half = Math.tan((this.camera.fov * Math.PI) / 360) * Math.min(1, this.camera.aspect); // a phone held upright sees a narrow slice
+    this.camera.position.copy(t).addScaledVector(away, Math.min(this.controls.maxDistance, (Math.max(x1 - x0, z1 - z0) + 2) * 0.62 / half));
+    this.controls.update();
+    this.touched();
+  }
+
   /** Undo the last edit; a whole painted stroke counts as one. */
   undo(): void { this.replay(this.undoStack, this.redoStack); }
   redo(): void { this.replay(this.redoStack, this.undoStack); }

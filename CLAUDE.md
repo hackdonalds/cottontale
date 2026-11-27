@@ -31,6 +31,7 @@ first, then enhance for larger screens.
 - `src/board.ts` 3D view and pointer input · `src/dice.ts` physics dice
 - `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis (and their shelves)
 - `src/kit.ts` loads the modelled pieces (`public/kit/*.glb`), built by the Blender scripts in `assets/blender`
+- `src/gen.ts` seeded scene generators (wilderness, dungeon, cave, tavern): pure, whole numbers only, return ordinary edits — unit-test here
 - `src/sound.ts` synthesised soundscapes and effects (no audio files)
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
