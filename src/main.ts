@@ -128,6 +128,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const board = new Board($<HTMLCanvasElement>('c'), store, {
     onSelect: showMiniPanel,
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
+    onLand: (mine) => { sound.thud(); if (mine) navigator.vibrate?.(8); },
     onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
     canMove: (id) => {
