@@ -945,7 +945,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const on = await flip('ambient');
   await p.waitForTimeout(300);
   const stir = await frames(3000);
-  const fire = await p.evaluate(() => { const { board } = window.__ct; return { lit: board.lamps.some((l) => l.visible && l.intensity !== l.userData.base), shadows: board.renderer.shadowMap.needsUpdate, alive: board.alive }; });
+  const fire = await p.evaluate(() => { const { board } = window.__ct; return { lit: board.lamps.some((l) => l.visible && l.intensity !== l.userData.base), shadows: board.renderer.shadowMap.enabled && board.renderer.shadowMap.needsUpdate /* (with shadows switched off for speed, nothing ever clears the flag) */, alive: board.alive }; });
   assert(/: on/.test(on.text) && fire.alive && stir.n >= 1 && stir.rate < 20 && fire.lit && !fire.shadows, `with it on, leaves and firelight stir at a throttled rate, shadows left alone (${stir.rate.toFixed(1)} frames/s) ${JSON.stringify([on.text, fire, stir, await p.evaluate(() => { const b = window.__ct.board; return { lamps: b.lamps.map((l) => [l.visible, l.intensity, l.userData.base]), target: b.controls.target.toArray(), glow: b.glow, wob: b.wobbles.size, dice: b.dice.playing.length, loose: b.loose.playing.length }; })])}`);
   await p.evaluate(() => { window.__ct.board.slowed = true; });
   const tired = await frames(700);
