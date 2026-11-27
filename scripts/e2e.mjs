@@ -456,7 +456,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
-    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
+    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init', '.sheet:not(.closed)', '#prepPages'].map((q) => document.querySelector(q)).filter((e) => e && !e.hidden && vis(e))
       .map((e) => ({ id: e.id, r: e.getBoundingClientRect() }));
     const bad = [];
     for (const a of boxes) {
@@ -468,6 +468,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
       if (b.offsetParent && (r.width < 43.5 || r.height < 43.5)) bad.push(`small target ${b.id || b.title || b.textContent} ${Math.round(r.width)}x${Math.round(r.height)}`);
     }
     for (const i of document.querySelectorAll('input, textarea')) if (parseFloat(getComputedStyle(i).fontSize) < 16) bad.push(`input ${i.id} under 16px`);
+    if (document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth) bad.push('the page scrolls sideways');
     return bad;
   });
   let bad = await layout();
@@ -515,6 +516,75 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   bad.push(...await layout());
   assert(mine.chip?.includes('Pirates') && mine.palm && crew === 'Pirate' && !bad.length, `a theme picked by touch puts its own shelf first ${JSON.stringify(mine)} ${crew} ${bad.join('; ')}`);
   await p.evaluate(() => { const s = window.__ct.store; s.set('at:theme', ''); s.set('at:amb', 'off'); });
+
+  // ---- the hotbar and the library: recents, favourites, search and a grid, all by touch ----
+  const saved = (k) => p.evaluate((k) => JSON.parse(localStorage.getItem(`cottontale:${k}`) ?? '{}').things ?? [], k);
+  const sheetAt = (id) => p.evaluate((id) => { const e = document.getElementById(id), r = e.getBoundingClientRect(); return { h: e.dataset.h ?? 'half', tall: Math.round(r.height), closed: e.classList.contains('closed') }; }, id);
+  await p.tap('[data-cat="things"]');
+  await p.tap('#palette [title="Bush"]');
+  await touch('touchStart', [[cx, cy - 60]]);
+  await touch('touchEnd', []);
+  await settle();
+  await p.waitForSelector('#palette [title="Recent pieces"]');
+  assert((await saved('recent'))[0] === 'p_bush', 'a piece put on the table leads the recents, kept on this device');
+  await p.tap('#undo');
+  await settle();
+  await p.tap('#palette [title="Nature"]');
+  await p.tap('#palette [title="Recent pieces"]');
+  const recent = await p.evaluate(() => ({ brush: window.__ct.board.brush, tiles: [...document.querySelectorAll('#palette .tile')].map((t) => t.title) }));
+  bad = await layout();
+  assert(recent.brush === 'bush' && recent.tiles.join() === 'Bush' && !bad.length, `the recents shelf puts the last piece back in hand in one tap ${JSON.stringify(recent)} ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-recents.png` });
+  // Search: the library opens at half height, and finds a piece that is on another shelf.
+  await p.tap('#palette [title="Search the library"]');
+  await settle();
+  bad = await layout();
+  const lib = await p.evaluate(() => ({ h: document.querySelector('#lib').dataset.h ?? 'half', rows: new Set([...document.querySelectorAll('#libGrid .tile')].map((t) => Math.round(t.getBoundingClientRect().top))).size, heads: [...document.querySelectorAll('#libGrid h3')].map((e) => e.textContent) }));
+  assert(lib.h === 'half' && lib.rows > 2 && lib.heads[0] === 'Recent' && lib.heads.includes('Furniture') && !bad.length, `the library opens at half height as a grid, shelf by shelf ${JSON.stringify(lib)} ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-library.png` });
+  await p.fill('#libQ', 'barr');
+  await settle();
+  const found = await p.evaluate(() => [...document.querySelectorAll('#libGrid .tile')].map((t) => t.title));
+  bad = await layout();
+  assert(found.join() === 'Barrel' && !bad.length, `search finds a piece on another shelf by name (${found}) ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-search.png` });
+  // The handle is a button: each tap is another height, and every height is clean.
+  const steps = [await sheetAt('lib')];
+  for (let i = 0; i < 3 && (i === 0 || steps.at(-1).h !== 'half'); i++) {
+    await p.tap('#lib .grab');
+    await settle();
+    steps.push(await sheetAt('lib'));
+    bad.push(...await layout());
+    if (steps.at(-1).h !== 'half') await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-library-${steps.at(-1).h}.png` });
+  }
+  const tall = Object.fromEntries(steps.map((x) => [x.h, x.tall]));
+  assert(steps.at(-1).h === 'half' && tall.peek <= 64 && tall.peek < tall.half && (label === 'landscape' || tall.full > tall.half) && steps.every((x, i) => !i || x.tall !== steps[i - 1].tall) && !bad.length,
+    `tapping the handle steps the sheet through its heights ${JSON.stringify(steps.map((x) => `${x.h} ${x.tall}`))} ${bad.join('; ')}`);
+  // Favourites by tap: the star turns taps into pins. Then a pick arms the piece and folds the sheet away.
+  await p.tap('#libPin');
+  await p.tap('#libGrid [title="Barrel"]');
+  await settle();
+  const pinned = await p.evaluate(() => ({ brush: window.__ct.board.brush, star: !!document.querySelector('#libGrid .tile.fav[title="Barrel"]') }));
+  assert((await saved('favs')).join() === 'p_barrel' && pinned.star && pinned.brush === 'bush', `with the star on, tapping a piece pins it and leaves the piece in hand alone ${JSON.stringify(pinned)}`);
+  await p.tap('#libPin');
+  await p.tap('#libGrid [title="Barrel"]');
+  await settle();
+  bad = await layout();
+  const picked = await p.evaluate(() => ({ brush: window.__ct.board.brush, cur: document.querySelector('#palette .cur')?.textContent, shelf: document.querySelector('#palette .chip.on:not([title="Search the library"])')?.textContent, h: document.querySelector('#lib').dataset.h }));
+  assert(picked.brush === 'barrel' && picked.cur === 'Barrel' && picked.shelf === 'Furniture' && picked.h === 'peek' && !bad.length, `picking in the library arms the piece and folds the sheet to its search row ${JSON.stringify(picked)} ${bad.join('; ')}`);
+  await p.tap('#lib [data-close]');
+  await settle();
+  // The favourites shelf, and the long-press shortcut that lets a favourite go.
+  await p.tap('#palette [title="Favourites"]');
+  await settle();
+  const star = await p.evaluate(() => { const t = document.querySelector('#palette .tile.fav[title="Barrel"]'); t.scrollIntoView({ inline: 'center' }); const r = t.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; });
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-favourites.png` });
+  await touch('touchStart', [star]);
+  await p.waitForTimeout(700);
+  await touch('touchEnd', []);
+  await settle();
+  assert((await saved('favs')).length === 0 && !bad.length && await p.evaluate(() => !document.querySelector('#palette [title="Favourites"]') && document.querySelector('#lib').classList.contains('closed')), `a long press unpins, and an empty favourites shelf goes away ${bad.join('; ')}`);
   await p.tap('[data-cat="land"]');
   const keys = (prefix) => p.evaluate((q) => [...window.__ct.store.keys(q)], prefix);
   const drag = async (x0, y0, x1, y1) => {
@@ -604,8 +674,55 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     const fits = await p.evaluate((id) => { const r = document.querySelector(`#${id}`).getBoundingClientRect(); return r.width > 200 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }, sheet);
     assert(fits && !bad.length, `${sheet} sheet opens on screen ${bad.join('; ')}`);
     await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${sheet}.png` });
+    // A finger on the table folds the sheet to one row; its handle brings it back.
+    await touch('touchStart', [[cx - 100, viewport.height * 0.3]]);
+    await touch('touchEnd', []);
+    await settle();
+    bad = await layout();
+    const row = await p.evaluate((id) => { const e = document.querySelector(`#${id}`); return { h: e.dataset.h, tall: e.getBoundingClientRect().height, closed: e.classList.contains('closed') }; }, sheet);
+    assert(row.h === 'peek' && row.tall <= 64 && !row.closed && !bad.length, `touching the table drops the ${sheet} sheet to a single row ${JSON.stringify(row)} ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${sheet}-peek.png` });
+    await p.tap(`#${sheet} .grab`);
+    if (sheet === 'boards') {
+      // Drilling down stays in the sheet: a page with Back takes the place of its content.
+      await p.evaluate(() => window.__ct.ui.pushSheetPage('boards', 'A board', (el) => { el.innerHTML = '<p class="hint">Details</p>'; }));
+      bad = await layout();
+      const page = await p.evaluate(() => ({ sheets: document.querySelectorAll('.sheet:not(.closed)').length, list: document.querySelector('#boardList').offsetParent !== null, title: document.querySelector('#boards .page b')?.textContent }));
+      await p.tap('#boards .page [aria-label="Back"]');
+      const back = await p.evaluate(() => document.querySelector('#boardList').offsetParent !== null && !document.querySelector('#boards .page'));
+      assert(page.sheets === 1 && !page.list && page.title === 'A board' && back && !bad.length, `a drill-down is a page inside the same sheet, and Back returns ${JSON.stringify(page)} ${bad.join('; ')}`);
+    }
     await p.tap(`#${sheet} [data-close]`);
   }
+
+  // ---- Prep: full-screen pages with a title bar and Back; the phone's own back button works too ----
+  await p.tap('[data-mode="prep"]');
+  await settle();
+  bad = await layout();
+  const prep = await p.evaluate(() => ({ title: document.querySelector('#prepTitle').textContent, rows: [...document.querySelectorAll('.prepRow b')].map((b) => b.textContent), dock: document.querySelector('#tools').offsetParent !== null, focus: document.activeElement?.id }));
+  assert(prep.title === 'Prep' && prep.rows.join() === 'Theme,Packs,Import,Rules,Sound' && !prep.dock && prep.focus === 'prepTitle' && !bad.length, `Prep opens as a full-screen list of pages, in place of the dock ${JSON.stringify(prep)} ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-prep.png` });
+  await p.tap('.prepRow[data-page="theme"]');
+  await p.waitForSelector('.card[data-theme="pirate"]');
+  await p.tap('.card[data-theme="pirate"]');
+  await p.waitForFunction(() => window.__ct.store.get('at:theme')?.id === 'pirate' && document.querySelector('.card.on')?.dataset.theme === 'pirate');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-prep-theme.png` });
+  await p.tap('.card[data-theme="pirate"]');
+  await p.waitForFunction(() => window.__ct.store.get('at:theme') === '' && !document.querySelector('.card.on'));
+  assert(await p.textContent('#prepTitle') === 'Theme' && await p.evaluate(() => document.querySelectorAll('.card').length >= 4) && !bad.length, `the Theme page is a gallery; a card picks a theme and lets go of it, as the Atmosphere sheet does ${bad.join('; ')}`);
+  await p.evaluate(() => window.__ct.store.set('set:amb', 'off'));
+  await p.tap('#prepPageBack');
+  await p.waitForFunction(() => document.querySelector('#prepTitle').textContent === 'Prep');
+  await p.tap('.prepRow[data-page="packs"]');
+  await p.waitForFunction(() => document.querySelector('#prepTitle').textContent === 'Packs');
+  bad = await layout();
+  await p.goBack();
+  await p.waitForFunction(() => document.querySelector('#prepTitle').textContent === 'Prep');
+  await p.goBack();
+  await p.waitForFunction(() => document.querySelector('#prepPages').hidden);
+  bad.push(...await layout());
+  assert(await p.evaluate(() => !window.__ct.ui.prep.isOpen && document.querySelector('#tools').offsetParent !== null && location.hash.includes('room=')) && !bad.length, `Back walks out of Prep a page at a time, by the button and by the phone's own, and the table is as it was ${bad.join('; ')}`);
 
   await p.tap('#logToggle');
   bad = await layout();

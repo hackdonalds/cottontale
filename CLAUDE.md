@@ -21,6 +21,8 @@ first, then enhance for larger screens.
   resource: pieces are baked into shared merged geometry (`makeProp`/`makeMini`
   in `src/catalog.ts`) — never add per-instance geometry or materials. Shadows
   redraw only when the table changes (`touched()`), not when the camera moves.
+- **Replace, never stack:** the dock shows at most five or six slots in any mode; a sheet takes
+  the place of what it would cover; Prep pages take the whole screen. New states go into `layout()` in `scripts/e2e.mjs`.
 - **Verify on a phone viewport:** `npm run e2e` runs phone portrait/landscape
   checks (touch gestures, overlap, target sizes). Extend them with new UI.
 
@@ -39,6 +41,10 @@ first, then enhance for larger screens.
 - `src/blob.ts` the GM's own files without a server of ours: encrypted, named by the SHA-256 of the ciphertext, kept in a
   local cache, offered to Blossom servers (`set:blossom`), else passed between players (`src/blobpeer.ts`, WebRTC).
   The store only ever holds the small reference `{h,n,m,s?}`; read it back with `parseRef` — use `blobs.put/get/objectUrl`.
+- `src/ui/` the chrome that is not the table, wired into `main.ts` by small hooks — new UI logic goes here, not into `main.ts`:
+  - `sheets.ts` sheet heights. Every `.sheet` has three (`data-h`: peek = its first row, half = as it opens, full = forms) and a grab handle that is a real button (`setSheetHeight(id, 'peek'|'half'|'full')`, `sheetHeight`, `cycleSheetHeight`). One sheet at a time; a sheet sits on top of the dock (`--dock`) and drops to peek when a finger lands on the table; `#hud[data-sheet]` hides what a sheet would cover. Drill down with `pushSheetPage(id, title, render)` (a page with Back in the same sheet), never a second sheet
+  - `library.ts` (pure: recents, favourites, search — unit-test here) and `hotbar.ts` (the Recent / Favourites shelves, the `#lib` sheet with search and a grid). Pieces are named by key (`b_grass`, `p_barrel`, `m_knight`) and looked up at draw time, never assumed to exist; long-press pins, but the star in the library is the tap path
+  - `prep.ts` Prep, the third mode: full-screen pages with a title bar and Back (button, Escape and the phone's back button share the history). Add a page with `registerPrepPage({ id, title, icon, order, hint, render(el, ctx), update?(el, ctx) })`; `prepPages.ts` has the Theme gallery and placeholders that a page with the same id replaces
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
 - Board-specific keys (`b:` `m:` `f:` `w:` `at:` `turn`) are scoped per board by the store;

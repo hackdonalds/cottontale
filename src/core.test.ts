@@ -10,6 +10,7 @@ import { MAX_ROOM_KINDS, PRESETS, THEMES, addPresets, generate as build, loadPre
 import { EDGES, edgeBetween as between, nextLight } from './rules';
 import { SOUNDSCAPES, SOUND_LIMITS, Sound, addSounds, loadSounds, parseEffect, parseRecipe, parseSounds, type Scape } from './sound';
 import { Store, type Row } from './store';
+import { MAX_RECENT, fold, matchScore, parseLists, pushRecent, searchPieces, toggleFav } from './ui/library';
 
 describe('Store', () => {
   it('converges regardless of delivery order', () => {
@@ -892,5 +893,50 @@ describe('sound recipes', () => {
     expect(sound.effect('nonesuch')).toBe(false);
     sound.theme(null);
     expect(sound.knows('crypt')).toBe(false);
+  });
+});
+
+describe('library lists and search (ui/library.ts)', () => {
+  it('keeps the most recent pieces first, once each, and only so many', () => {
+    let list: readonly string[] = [];
+    for (const k of ['p_tree', 'p_rock', 'p_tree', 'p_bush']) list = pushRecent(list, k);
+    expect(list).toEqual(['p_bush', 'p_tree', 'p_rock']);
+    expect(pushRecent(list, 'p_bush')).toBe(list); // nothing changed: nothing to save or redraw
+    expect(pushRecent(list, '')).toBe(list);
+    for (let i = 0; i < 20; i++) list = pushRecent(list, `p_ada:piece${i}`);
+    expect(list).toHaveLength(MAX_RECENT);
+    expect(list[0]).toBe('p_ada:piece19');
+  });
+
+  it('pins and unpins favourites, keeping their order', () => {
+    let favs = toggleFav(toggleFav([], 'm_knight'), 'p_ada:crate');
+    expect(favs).toEqual(['m_knight', 'p_ada:crate']);
+    favs = toggleFav(favs, 'm_knight');
+    expect(favs).toEqual(['p_ada:crate']);
+    expect(toggleFav(favs, '')).toBe(favs);
+  });
+
+  it('reads saved lists defensively', () => {
+    expect(parseLists('{"things":["p_tree","p_tree",7,null,"x"],"bad":"no","figures":[]}', 8)).toEqual({ things: ['p_tree'] });
+    expect(parseLists('{"things":["p_a1","p_a2","p_a3"]}', 2)).toEqual({ things: ['p_a1', 'p_a2'] });
+    for (const junk of [null, '', 'not json', '[1,2]', '"text"', '7']) expect(parseLists(junk, 8)).toEqual({});
+  });
+
+  it('finds pieces by name: every word typed, any case, accents or punctuation aside', () => {
+    expect(matchScore('Dead tree', 'tree dead')).toBeGreaterThan(0);
+    expect(matchScore('Dead tree', 'dead-TREE')).toBeGreaterThan(0);
+    expect(matchScore('Château', 'chateau')).toBeGreaterThan(0);
+    expect(matchScore('Dead tree', 'tree oak')).toBe(0);
+    expect(matchScore('', 'x')).toBe(0);
+    expect(fold('  Giant—Mushroom! ')).toBe('giant mushroom');
+  });
+
+  it('puts the best matches first and keeps shelf order among equals', () => {
+    const names = ['Tree', 'Dead tree', 'Stump', 'Street lamp', 'Treasure', 'Bar stool'];
+    const items = names.map((name) => ({ name }));
+    expect(searchPieces(items, 'tre').map((p) => p.name)).toEqual(['Tree', 'Treasure', 'Dead tree', 'Street lamp']);
+    expect(searchPieces(items, 'st').map((p) => p.name)).toEqual(['Stump', 'Street lamp', 'Bar stool']);
+    expect(searchPieces(items, '  ')).toEqual(items);
+    expect(searchPieces(items, 'zzz')).toEqual([]);
   });
 });
