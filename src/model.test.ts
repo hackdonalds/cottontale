@@ -303,6 +303,18 @@ describe('a model is made into a piece', () => {
     const plain = await ingest(src);
     expect(plain.stats.atlas).toBe(0);
     expect(plain.stats.notes.join()).toMatch(/plain colours/);
+    // A textured model is written twice (bare first, to see what room its picture has): the second
+    // writing must be of the same shape. Its skin is as large as the plain one's, triangle for triangle.
+    const skin = (o: Awaited<ReturnType<typeof read>>) => {
+      let sum = 0;
+      for (let t = 0; t < o.idx.length; t += 3) {
+        const [a, b, c] = [0, 1, 2].map((k) => [0, 1, 2].map((x) => o.pos.data[o.idx[t + k] * 3 + x]));
+        const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        sum += Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2;
+      }
+      return sum;
+    };
+    expect(skin(out) / skin(await read(plain.glb))).toBeCloseTo(1, 2);
   });
   it('halves the atlas when the picture will not fit the bytes, and gives up with the reason', async () => {
     const src = model([{ ...sphere(16), image: 0 }], [pngHead(4096, 4096)]), sizes: number[] = [];
