@@ -5,6 +5,7 @@ import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, setWind, withDetail, type Season } from './kit';
 import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, safeArea, type Ambience } from './glide';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
+import { BoulderView } from './boulder';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
 import { Debris } from './debris';
 import { BREAK_KEY, broken, debrisOf, seedOf, shatter } from './breaking';
@@ -42,6 +43,8 @@ export interface BoardHooks {
   onGrab(): void;
   /** The dice left the hand at these poses with this velocity (units/s). */
   onThrow(starts: Start[], vel: Vec): void;
+  /** The GM let a boulder go here with this velocity (units/s). */
+  onBoulder(start: Vec, vel: Vec): void;
   /** The local ruler changed (null = put away). Called often while measuring. */
   onRuler(r: Ruler | null): void;
   /** An area was copied with the copy brush. */
@@ -361,6 +364,9 @@ export class Board {
   /** Dice picked up and waiting to be thrown: while set, a drag on the table throws them. */
   hand: Kind[] = [];
   diceColor = '#ffffff';
+  readonly boulder: BoulderView;
+  /** The GM has a boulder ready: while set, a drag on the table lets it go (as with dice in hand). */
+  boulderArmed = false;
   /** Cutaway: blocks, props and minis at this height or above are not drawn (Infinity = show all). */
   cut = Infinity;
 
@@ -581,6 +587,8 @@ export class Board {
     this.dice.onBump = (at, dv) => this.bump(at, dv);
     this.debris = new Debris(this.scene);
     this.shots = new ShotsView(this.scene);
+    this.boulder = new BoulderView(this.scene, (x, z) => !this.full && fogged(this.store, x, z));
+    this.boulder.onPass = (at, dir) => this.shake(at, dir);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
     onKitPack(() => {
       for (const [key, g] of this.props) {
@@ -758,6 +766,7 @@ export class Board {
     this.breaking.clear();
     this.offer(null);
     this.shots.clear();
+    this.boulder.clear();
     this.undoStack.length = this.redoStack.length = 0;
     this.fogDirty = this.visDirty = true;
     this.touched();
@@ -1196,9 +1205,9 @@ export class Board {
   // (the recorded throw, the moves), so nothing extra is sent and nothing on the table changes.
 
   /** What thrown dice can run into around a spot: the minis, props and walls this player can see. */
-  solidsNear(c: Vec, reach: number): Solid[] {
+  solidsNear(c: Vec, reach: number, minis = true): Solid[] {
     const out: Solid[] = [], near = (x: number, z: number) => Math.abs(x - c[0]) <= reach && Math.abs(z - c[2]) <= reach;
-    for (const m of this.minis.values()) {
+    for (const m of minis ? this.minis.values() : []) {
       const v = m.val, s = v.s || 1, h = MINIS[v.k].height * s, y = v.y + Math.max(0, Math.min(12, v.e || 0));
       if (!m.group.visible || v.h || !near(v.x + 0.5, v.z + 0.5)) continue; // a hidden mini must not give itself away
       out.push(v.d ? { p: [v.x + 0.5, y + 0.2 * s, v.z + 0.5], h: [0.5 * s, 0.2 * s, 0], round: true } : { p: [v.x + 0.5, y + h / 2, v.z + 0.5], h: [0.36 * s, h / 2, 0], round: true });
@@ -1230,6 +1239,16 @@ export class Board {
       const hit = ((g.userData.solids as Solid[] | undefined) ?? (this.wobbles.has(key) ? [] : (g.userData.solids = propSolids(g))))
         .some((b) => Math.abs(at.x - b.p[0]) < b.h[0] + DIE + 0.12 && Math.abs(at.y - b.p[1]) < b.h[1] + DIE + 0.12 && Math.abs(at.z - b.p[2]) < b.h[2] + DIE + 0.12);
       if (hit) this.kick(key, -dv.x * push * 0.35, -dv.z * push * 0.35); // furniture is heavier than a figure
+    }
+  }
+
+  /** A boulder is rolling past here: the figures it brushes are set rocking, the way it is going. */
+  private shake(at: THREE.Vector3, dir: THREE.Vector3): void {
+    const k = 2.4 / Math.hypot(dir.x, dir.z);
+    for (const [id, m] of this.minis) {
+      const v = m.val, y = v.y + (v.e || 0);
+      if (!m.group.visible || v.d || this.wobbles.has(id) || at.y < y - 1 || at.y > y + MINIS[v.k].height * (v.s || 1) + 1) continue;
+      if (Math.hypot(at.x - v.x - 0.5, at.z - v.z - 0.5) < 1.6) this.kick(id, dir.x * k, dir.z * k);
     }
   }
 
@@ -1555,14 +1574,6 @@ export class Board {
     }
     for (const k of keys) this.edit(k, null);
   }
-  /** Write several edits as one undo step (the resting places of a pour). */
-  commit(edits: [string, unknown][]): void {
-    if (!edits.length || !this.full) return;
-    const mine = !this.batch;
-    if (mine) { this.batch = []; this.undoStack.push(this.batch); }
-    for (const [k, v] of edits) this.edit(k, v);
-    if (mine) this.batch = null;
-  }
   private stepLight(): void {
     const p = this.pickProp(), v = p && this.store.get<CellVal>(p.key);
     if (!p || !v || !GLOWS[v.i]) return;
@@ -1790,6 +1801,20 @@ export class Board {
       this.store.set(u.k, u.prev);
     }
     to.push(inverse);
+  }
+  /**
+   * Edits made by something on the table rather than a brush (a trap going off). They join one
+   * undo step: pass back the step this returned to add later edits to it.
+   */
+  commit(edits: [key: string, value: unknown][], step: Undo[] = []): Undo[] {
+    if (!this.full || !edits.length) return step;
+    if (!this.undoStack.includes(step)) this.undoStack.push(step);
+    this.redoStack.length = 0;
+    for (const [k, v] of edits) {
+      step.push({ k, prev: this.store.get(k) });
+      this.store.set(k, v);
+    }
+    return step;
   }
   private edit(k: string, v: unknown): void {
     if (!this.full) return; // building and fog are the GM's once a table has one
@@ -2066,14 +2091,15 @@ export class Board {
     };
     this.gesture = g;
     if (e.button !== 0) return;
-    if (this.hand.length) {
-      // Dice in hand: this finger holds them over the table until it lets go.
+    if (this.hand.length || this.boulderArmed) {
+      // Dice in hand (or a boulder ready): this finger holds them over the table until it lets go.
       g.throwing = [];
       this.controls.enabled = false;
       this.canvas.setPointerCapture(e.pointerId);
       this.hooks.onGrab();
       const at = this.holdPoint(e, g);
-      if (at) this.dice.hold(this.hand, this.diceColor, at);
+      if (at && this.boulderArmed) this.boulder.hold(at);
+      else if (at) this.dice.hold(this.hand, this.diceColor, at);
       return;
     }
     this.aim(e);
@@ -2174,7 +2200,7 @@ export class Board {
     if (g.done) return;
     if (g.throwing) {
       const at = this.holdPoint(e, g);
-      if (at) this.dice.moveHold(at);
+      if (at) { this.dice.moveHold(at); this.boulder.moveHold(at); }
       return;
     }
     if (g.mini) {
@@ -2331,6 +2357,14 @@ export class Board {
       const from = s.find((x) => last.t - x.t <= 120) ?? last;
       const dt = Math.max((last?.t - from?.t) / 1000, 0.03);
       const vel: Vec = last && from !== last ? [(last.p.x - from.p.x) / dt, 0, (last.p.z - from.p.z) / dt] : [0, 0, 0];
+      const rock = this.boulder.holdAt();
+      if (rock && this.boulderArmed && last) {
+        // A slow, deliberate drag counts as well as a flick (and is all a struggling phone can measure):
+        // the push is then along the drag, harder the longer it was.
+        const drag = last.p.clone().sub(s[0].p).setY(0).multiplyScalar(2);
+        this.hooks.onBoulder(rock, Math.hypot(vel[0], vel[2]) >= drag.length() ? vel : [drag.x, 0, drag.z]);
+        return;
+      }
       const starts = this.dice.holdStarts();
       if (starts.length) this.hooks.onThrow(starts, vel);
       return;
@@ -2444,7 +2478,7 @@ export class Board {
     clearTimeout(g?.press);
     const m = g?.mini ? this.minis.get(g.mini) : null;
     if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
-    if (g?.throwing) this.dice.endHold(); // back in the hand
+    if (g?.throwing) { this.dice.endHold(); this.boulder.endHold(); } // back in the hand
   }
 
   /** Where held dice hover for this pointer: above the surface under it (and above the fingertip). */
@@ -2517,6 +2551,7 @@ export class Board {
     // Things that change the table (and so its shadows), as opposed to the view of it.
     let changed = this.shadowDirty;
     if (this.dice.update(dt)) changed = true;
+    if (this.boulder.update(dt)) changed = true;
     if (this.animate(dt)) changed = true;
     if (this.wobble(dt)) changed = true;
     if (this.debris.update(dt)) this.dirty = true; // drawn, but it casts no shadow to redraw

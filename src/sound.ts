@@ -199,6 +199,27 @@ export class Sound {
   clack(strength: number): void {
     if (this.ready()) this.burst(this.master!, 2200 + Math.random() * 1500, 0.1 + strength * 0.35, 0.035, 'bandpass');
   }
+  private roll?: { g: GainNode; s: AudioBufferSourceNode };
+  /** A boulder rolling: a low growl that follows how fast it goes (0 lets it die away). */
+  rumble(level: number): void {
+    if (!this.roll && (!level || !this.ready())) return;
+    const t = this.ctx!.currentTime;
+    if (!this.ready()) level = 0; // sound was switched off mid-roll
+    if (!this.roll) {
+      const s = this.src(), g = this.gain(0);
+      this.chain(s, this.filter('lowpass', 110, 1.2), g, this.master!);
+      s.start(0, Math.random());
+      this.roll = { g, s };
+    }
+    this.roll.g.gain.setTargetAtTime(level * 1.6, t, 0.08);
+    if (!level) { this.roll.s.stop(t + 0.6); this.roll = undefined; }
+  }
+  /** Something heavy coming down. */
+  thud(strength: number): void {
+    if (!this.ready()) return;
+    this.note(this.master!, 'sine', 90, 0.25 + strength * 0.5, 0.28, 0.004, 34);
+    this.burst(this.master!, 240, 0.2 + strength * 0.4, 0.12, 'lowpass');
+  }
   ping(): void {
     if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
   }

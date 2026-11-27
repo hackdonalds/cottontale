@@ -192,6 +192,42 @@ await fling(a);
 assert(await ok(b, () => /Ada rolled in secret/.test(document.querySelector('#msgs').textContent) && window.__ct.board.dice.playing.some((p) => p.blank))
   && await ok(a, () => /rolled 1d6: \d/.test(document.querySelector('#msgs').textContent)), 'a secret GM roll shows players blank dice and no result');
 
+// The boulder trap: rolled on the GM's device, replayed for the player, who never sees it under fog.
+// The figures in its way go down and are shoved on (the hidden one too, still unseen); one undo puts them back.
+await b.evaluate(() => {
+  const { board } = window.__ct, seen = (window.__seen = { fog: 0, clear: 0, leak: 0, rocked: false });
+  const watch = () => {
+    for (const r of board.boulder.rolling) {
+      const fog = Math.floor(r.mesh.position.x) === 26;
+      if (fog && r.mesh.visible) seen.leak++;
+      else if (fog) seen.fog++;
+      else if (r.mesh.visible) seen.clear++;
+    }
+    if (board.wobbles.has('near')) seen.rocked = true;
+    requestAnimationFrame(watch);
+  };
+  watch();
+});
+await a.evaluate(() => {
+  const { store, board } = window.__ct, fig = (x, z, more) => ({ x, y: 0, z, k: 'knight', c: '#ffffff', n: '', r: 0, s: 1, ...more });
+  store.set('m:pin', fig(24, 20));
+  store.set('m:near', fig(23, 21)); // beside the path: rocks, but stays standing
+  store.set('m:sly', fig(28, 20, { h: true }));
+  store.set('f:26,20', true);
+  board.hooks.onBoulder([20.5, 1.5, 20.5], [9, 0, 0]);
+});
+assert(await ok(b, () => window.__ct.board.boulder.rolling.length === 1), 'the GM\'s boulder rolls on the player\'s table too');
+const down = (page) => ok(page, () => { const s = window.__ct.store, p = s.get('m:pin'), y = s.get('m:sly'), n = s.get('m:near'); return p.d && p.x === 25 && y.d && y.x === 29 && !n.d && n.x === 23; });
+assert(await down(a) && await down(b), 'figures in the boulder\'s way are knocked down and pushed a cell on; one beside it is not');
+const gone = (page) => page.waitForFunction(() => window.__ct.board.boulder.rolling.length === 0, null, { timeout: 25000 }).then(() => true, () => false);
+assert(await gone(b) && await gone(a), 'the boulder goes once it has stopped');
+const seen = await b.evaluate(() => ({ ...window.__seen, sly: window.__ct.board.minis.get('sly').group.visible }));
+assert(seen.clear > 0 && seen.fog > 0 && !seen.leak && !seen.sly && seen.rocked, `the player sees it roll, but not under fog, and the hidden figure stays hidden ${JSON.stringify(seen)}`);
+await a.evaluate(() => window.__ct.board.undo());
+assert(await ok(b, () => { const s = window.__ct.store, p = s.get('m:pin'), y = s.get('m:sly'); return !p.d && p.x === 24 && !y.d && y.x === 28; }), 'one undo stands them all back up');
+await a.evaluate(() => { for (const k of ['m:pin', 'm:near', 'm:sly', 'f:26,20']) window.__ct.store.set(k, null); });
+assert(await ok(b, () => !window.__ct.store.get('m:pin') && !window.__ct.store.get('f:26,20')), 'trap cleared away');
+
 // Emotes and stats on a mini.
 await a.evaluate((id) => window.__ct.board.select(id), id);
 await a.click('#ring [title="Emote"]');
@@ -919,6 +955,26 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForTimeout(200);
   const camAfter = await target();
   assert(/Follow turns: off/.test(follow.text) && follow.h >= 44 && camBefore[0] === camAfter[0] && camBefore[2] === camAfter[2], 'with "Follow turns" off the camera stays where it is');
+  // The GM's boulder trap, by touch alone: tap Boulder, press on the table, flick the way it should roll.
+  await p.tap('#menuBtn');
+  await p.tap('[data-act="gm"]');
+  await p.tap('#logToggle');
+  bad = await layout();
+  await p.tap('#boulder');
+  assert(await p.evaluate(() => window.__ct.board.boulderArmed && document.querySelector('#log').classList.contains('closed')) && !bad.length, `the GM picks up a boulder from the dice sheet ${bad.join('; ')}`);
+  await touch('touchStart', [[cx, cy - 80]]);
+  await touch('touchStart', [[cx, cy - 80], [cx + 80, cy - 80]]);
+  await touch('touchEnd', []);
+  await settle();
+  assert(await p.evaluate(() => { const { board } = window.__ct; return !board.boulder.held && board.boulder.rolling.length === 0 && board.boulderArmed; }), 'a second finger cancels the boulder without rolling it');
+  await touch('touchStart', [[cx - 60, cy - 40]]);
+  await p.waitForFunction(() => window.__ct.board.boulder.held);
+  for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 60 + i * 12, cy - 40 - i * 4]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', []);
+  await p.waitForFunction(() => { const { board } = window.__ct; return board.boulder.rolling.length === 1 && !board.boulder.held && !board.boulderArmed; });
+  await p.waitForTimeout(400);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-boulder.png` });
+  assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === 1, 'a flick sends the boulder rolling, and edits no terrain');
   await p.context().close();
 }
 
