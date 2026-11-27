@@ -161,6 +161,65 @@ await fling(a);
 assert(await ok(b, () => /Ada rolled in secret/.test(document.querySelector('#msgs').textContent) && window.__ct.board.dice.playing.some((p) => p.blank))
   && await ok(a, () => /rolled 1d6: \d/.test(document.querySelector('#msgs').textContent)), 'a secret GM roll shows players blank dice and no result');
 
+// Emotes and stats on a mini.
+await a.evaluate((id) => window.__ct.board.select(id), id);
+await a.click('#palette [title="attack"]');
+assert(await ok(b, () => window.__ct.board.anims.length === 1) && await ok(b, () => window.__ct.board.anims.length === 0), 'an emote plays on the other player\'s table and ends');
+await a.click('#palette [title="Knock down"]');
+await a.click('#miniMore');
+await a.fill('#stats .st', 'AC 15');
+await a.press('#stats .st', 'Tab');
+assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return v.d === true && v.st?.[0] === 'AC 15'; }, id), 'knocked-down state and extra stats sync');
+await a.click('#palette [title="Stand up"]');
+
+// Boards: the GM prepares a second map alone, then brings everyone over.
+await a.click('#menuBtn');
+await a.click('[data-act="boards"]');
+await a.click('#boardNew');
+assert(await ok(a, () => !document.querySelector('#prep').hidden && [...window.__ct.store.keys('b:')].length === 0), 'a new board opens empty, for the GM alone');
+await a.click('#boards [data-close]');
+await a.keyboard.press('2');
+await a.mouse.click(640, 430);
+await a.waitForFunction(() => [...window.__ct.store.keys('b:')].length === 1);
+await b.waitForTimeout(600);
+assert((await count(b, 'b:')) === 2 && await b.evaluate(() => [...window.__ct.store.entries.keys()].some((k) => k.startsWith('@'))), 'players stay on their board while the GM builds another');
+await a.click('#prepGo');
+assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 1 && [...window.__ct.board.layers.values()].reduce((n, l) => n + l.mesh.count, 0) === 1 && window.__ct.board.minis.size === 0), 'the GM brings everyone to the new board');
+await a.click('#menuBtn');
+await a.click('[data-act="boards"]');
+await a.click('#boardList .row:first-child button[title="Bring everyone here"]');
+assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 2 && window.__ct.board.minis.size === 1), 'and back to the main board, with everything still there');
+await a.click('#boards [data-close]');
+
+// Copy an area and paste it elsewhere.
+await a.keyboard.press('2');
+await a.selectOption('#palette select', 'Copy & paste');
+await a.click('#palette [title^="Copy"]');
+await a.mouse.move(top[0] - 30, top[1]);
+await a.mouse.down();
+await a.mouse.move(top[0] + 30, top[1], { steps: 6 });
+await a.mouse.up();
+assert(await ok(a, () => window.__ct.board.slab?.cells.length === 2 && window.__ct.board.brush === 'paste'), 'dragging the copy brush lifts the blocks under it into a slab');
+await a.mouse.click(300, 560);
+assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 4), 'pasting stamps the slab for everyone');
+await a.keyboard.press('Control+z');
+assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 2), 'one undo removes the whole paste');
+await a.keyboard.press('1');
+
+// Atmosphere: every soundscape starts without error, and the choice reaches the table.
+await a.click('#menuBtn');
+await a.click('[data-act="atmo"]');
+for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Rain']) {
+  await a.click(`#scapes button:has-text("${name}")`);
+  await a.waitForTimeout(350);
+}
+await a.click('#skies button:has-text("Night")');
+const playing = await a.evaluate(() => window.__ct.sound.playing);
+assert(await ok(b, () => window.__ct.store.get('set:amb') === 'rain' && window.__ct.store.get('set:sky') === 'night') && ['rain', 'off'].includes(playing), `sky and soundscape are shared (this device is playing: ${playing})`);
+await a.click('#scapes button:has-text("Silence")');
+await a.click('#skies button:has-text("Day")');
+await a.click('#atmo [data-close]');
+
 await a.click('#menuBtn');
 await a.click('[data-act="gm"]');
 assert(await ok(b, () => !document.body.classList.contains('player')), 'when the GM steps down the table is free play again');
@@ -274,6 +333,16 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const pg = await p.evaluate(() => ({ pings: window.__ct.board.pings.length, rulers: window.__ct.board.rulers.size, sel: window.__ct.board.selected, tool: window.__ct.board.tool }));
   assert(pg.pings === 1 && !pg.rulers, `press and hold pings; leaving the ruler tool puts the ruler away ${JSON.stringify(pg)}`);
 
+  for (const sheet of ['boards', 'atmo']) {
+    await p.tap('#menuBtn');
+    await p.tap(`[data-act="${sheet}"]`);
+    bad = await layout();
+    const fits = await p.evaluate((id) => { const r = document.querySelector(`#${id}`).getBoundingClientRect(); return r.width > 200 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }, sheet);
+    assert(fits && !bad.length, `${sheet} sheet opens on screen ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${sheet}.png` });
+    await p.tap(`#${sheet} [data-close]`);
+  }
+
   await p.tap('#logToggle');
   bad = await layout();
   const sheet = await p.evaluate(() => { const r = document.querySelector('#log').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; });
@@ -305,6 +374,24 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
   await p.context().close();
 }
+
+// Every piece in the library, laid out for a look (and to prove each one renders).
+const sheet = await join('Zed', 'library-1234', { viewport: { width: 1600, height: 1000 } });
+const lib = await sheet.evaluate(() => {
+  const { store, board, catalog } = window.__ct;
+  const pieces = [...Object.keys(catalog.BLOCKS), ...Object.keys(catalog.PROPS)];
+  pieces.forEach((id, i) => store.set(`b:${(i % 14) * 2 - 14},0,${Math.floor(i / 14) * 2 - 12}`, { i: id }));
+  const minis = Object.keys(catalog.MINIS);
+  minis.forEach((k, i) => store.set(`m:lib${i}`, { x: (i % 14) * 2 - 14, y: 0, z: Math.floor(i / 14) * 2 + 2, k, c: '#3e63dd', n: '', r: 0, s: 1 }));
+  board.camera.position.set(-1, 17, 17);
+  board.controls.target.set(-1, 0, -1);
+  return { pieces: pieces.length, minis: minis.length, drawn: () => 0 };
+});
+await sheet.waitForTimeout(700);
+await sheet.click('#log', { position: { x: 5, y: 5 } }).catch(() => {});
+await sheet.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/library.png` });
+const shown = await sheet.evaluate(() => ({ props: window.__ct.board.props.size, minis: [...window.__ct.board.minis.values()].filter((m) => m.group.visible).length }));
+assert(shown.minis === lib.minis && shown.props > 45 && lib.pieces > 75, `library renders: ${lib.pieces} blocks and props, ${lib.minis} minis`);
 
 await browser.close();
 console.log('all good');

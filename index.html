@@ -44,7 +44,8 @@
       <div id="menu" class="panel" hidden>
         <button data-act="gm"></button>
         <button data-act="los" data-gm></button>
-        <button data-act="sky" data-gm></button>
+        <button data-act="boards">🗺️ Boards</button>
+        <button data-act="atmo">🌗 Atmosphere &amp; sound</button>
         <button data-act="redo" data-gm>↪️ Redo</button>
         <button data-act="meadow" data-gm>🌱 Add a starter meadow</button>
         <button data-act="export">💾 Export table</button>
@@ -56,11 +57,19 @@
     </div>
 
     <!-- Turn order: who acts now, who is next. Shown to everyone while a fight is on. -->
+    <div id="strips">
+    <!-- The GM is looking at a board the players are not on. -->
+    <div id="prep" class="panel" hidden>
+      <span id="prepText" class="grow"></span>
+      <button id="prepGo" title="Bring everyone to this board">▶ Bring everyone</button>
+      <button id="prepBack" title="Back to the players' board" aria-label="Back to the players' board">↩</button>
+    </div>
     <div id="init" class="panel" hidden>
       <span id="round"></span>
       <span id="order"></span>
       <button id="nextTurn" title="End turn" aria-label="End turn">⏭️</button>
       <button id="endFight" title="End the fight" aria-label="End the fight" data-gm>✕</button>
+    </div>
     </div>
 
     <!-- Cutaway: hide everything above a floor to look inside buildings. -->
@@ -95,6 +104,13 @@
           <button id="miniFly" title="Flying height" aria-label="Flying height"></button>
           <button id="miniHide" title="Hide from players" aria-label="Hide from players" data-gm></button>
           <select id="miniOwner" title="Who may move it" aria-label="Who may move it" data-gm></select>
+          <button id="miniMore" title="More stats" aria-label="More stats">📊</button>
+        </span>
+        <span id="stats" hidden>
+          <input class="st" maxlength="14" placeholder="AC 15" aria-label="Stat 1" />
+          <input class="st" maxlength="14" placeholder="Speed 30" aria-label="Stat 2" />
+          <input class="st" maxlength="14" placeholder="Stat" aria-label="Stat 3" />
+          <input class="st" maxlength="14" placeholder="Stat" aria-label="Stat 4" />
         </span>
         <span id="miniColors" class="swatches"></span>
       </div>
@@ -111,7 +127,24 @@
       </div>
     </div>
 
-    <div id="log" class="panel closed">
+    <div id="boards" class="panel sheet closed">
+      <span class="row"><b class="grow">🗺️ Boards</b><button data-close aria-label="Close">✕</button></span>
+      <div id="boardList"></div>
+      <span class="row" data-gm>
+        <button id="boardNew" class="grow">＋ New board</button>
+        <button id="boardCopy" class="grow">⧉ Copy this one</button>
+      </span>
+    </div>
+
+    <div id="atmo" class="panel sheet closed">
+      <span class="row"><b class="grow">🌗 Atmosphere</b><button data-close aria-label="Close">✕</button></span>
+      <div id="skies" class="choices"></div>
+      <p class="hint">Soundscape — the GM picks it for the whole table</p>
+      <div id="scapes" class="choices"></div>
+      <button id="soundOn"></button>
+    </div>
+
+    <div id="log" class="panel sheet closed">
       <div id="msgs"></div>
       <span class="row"><p id="hand" class="hint grow"></p><button id="secret" title="Roll in secret" aria-label="Roll in secret" data-gm data-gmonly>🙈</button></span>
       <div id="dice">

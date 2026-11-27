@@ -16,8 +16,8 @@ others. Everyone with the same code sits at the same table.
 
 | | |
 |---|---|
-| ✋ Move | drag minis; tap one for its panel; press and hold the table to ping |
-| 🧱 Build | tap or drag to place the selected block or prop; ⛏️ in the palette erases |
+| ✋ Move | drag minis; tap one for its panel and emotes (⚔️ 💥 🎉 …); press and hold the table to ping |
+| 🧱 Build | tap or drag to place the selected block or prop; ⛏️ erases; pick a shelf (Terrain, Nature, Furniture…) from the picker; *Copy & paste* lifts an area and stamps it elsewhere, or shares it as a text code |
 | ♟️ Minis | tap to place the selected mini |
 | 📏 Measure | drag for distance, radius or cone; everyone sees it; tap to put it away |
 | 🌫️ Fog (GM) | drag to hide areas from players, or to reveal them |
@@ -32,8 +32,13 @@ places minis, and moves everything; players move the minis the GM hands them
   see creatures their own minis can see;
 - track hit points (❤️) and initiative (⚔️): minis with an initiative number
   form the turn order shown at the top, and players move on their own turn;
-- make a mini fly (🕊️), roll in secret (🙈 in the dice sheet: players see blank
-  dice), and set the sky (day, dusk, night).
+- make a mini fly (🕊️), knock it down (💀), give it extra stat lines (📊), and
+  roll in secret (🙈 in the dice sheet: players see blank dice);
+- keep several **boards** on one table (☰ → Boards): prepare a map on your own,
+  then bring everyone over with ▶;
+- set the **atmosphere** (☰ → Atmosphere): day, dusk or night, and a soundscape
+  — rain, wind, campfire, cave, calm music, battle drums. All sound is
+  synthesised on the device (nothing to download) and each player can mute it.
 
 With no GM the table is free play: everyone can do everything. These rules
 decide what each player's app shows — everyone at the table holds the same key,
@@ -86,5 +91,5 @@ npm run build && npm run e2e  # two desktop players + phone portrait/landscape
                               # touch checks, on a local relay (needs Playwright)
 ```
 
-`src/catalog.ts` holds every block, prop and mini — all built from primitives,
-so adding one is a few lines. Development is mobile first; see `CLAUDE.md`.
+`src/catalog.ts` holds every block, prop and mini (about 30, 50 and 40 of them)
+— all built from primitives, so adding one is a few lines plus a shelf entry. Development is mobile first; see `CLAUDE.md`.

@@ -18,15 +18,19 @@ const LIVE = 21420;
 const SNAP = 30078;
 const CHUNK_ROWS = 1000;
 
-export type Msg =
+type Body =
   | { y: 'ops'; o: Row[] }
   | { y: 'hi'; n: string; c: string; re?: boolean }
   | { y: 'bye' }
   | { y: 'chat'; m: string; to?: string }
   | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw; s?: boolean }
   | { y: 'ruler'; r: Ruler | null }
+  | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] };
+
+/** `bd` says which board a live action happened on, so it is only shown to players who are there. */
+export type Msg = Body & { bd?: string };
 
 export interface Peer { name: string; color: string; last: number }
 
@@ -45,6 +49,14 @@ const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 async function pipe(data: Uint8Array, t: CompressionStream | DecompressionStream): Promise<Uint8Array> {
   const stream = new Blob([data as BlobPart]).stream().pipeThrough(t as unknown as TransformStream<Uint8Array, Uint8Array>);
   return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Compact text form of any JSON value (for codes people copy and paste to each other). */
+export async function pack(data: unknown): Promise<string> {
+  return b64(await pipe(te.encode(JSON.stringify(data)), new CompressionStream('gzip')));
+}
+export async function unpack<T = unknown>(text: string): Promise<T> {
+  return JSON.parse(td.decode(await pipe(unb64(text.trim()), new DecompressionStream('gzip')))) as T;
 }
 
 export async function deriveRoom(code: string): Promise<{ key: CryptoKey; tag: string }> {

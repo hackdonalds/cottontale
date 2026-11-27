@@ -23,6 +23,10 @@ export interface MiniVal {
   e?: number;
   /** Who may move it besides the GM: a player id, '*' for everyone, absent for nobody. */
   o?: string;
+  /** Knocked down: drawn lying on its side. */
+  d?: boolean;
+  /** Up to four free-form stat lines, e.g. "AC 15". */
+  st?: string[];
 }
 export interface Turn { id: string; round: number }
 

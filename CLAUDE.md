@@ -26,7 +26,10 @@ first, then enhance for larger screens.
 - `src/store.ts` shared last-writer-wins state · `src/net.ts` Nostr transport
 - `src/rules.ts` pure table rules (GM, visibility, line of sight, turns) — unit-test here
 - `src/board.ts` 3D view and pointer input · `src/dice.ts` physics dice
-- `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis
+- `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis (and their shelves)
+- `src/sound.ts` synthesised soundscapes and effects (no audio files)
+- Board-specific keys (`b:` `m:` `f:` `turn`) are scoped per board by the store;
+  everything else is table-wide. Live messages carry the board id (`bd`).
 
 ## Commands
 

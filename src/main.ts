@@ -1,8 +1,9 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { Board, type MiniVal, type RulerMode, type Sky, type Tool, type Vec } from './board';
-import { BLOCKS, MINIS, PLAYER_COLORS, PROPS } from './catalog';
+import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
+import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
-import { DEFAULT_RELAYS, Net, deriveRoom, hex, unhex, type Msg } from './net';
+import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
+import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn } from './rules';
 import { Store, type Row } from './store';
 
@@ -96,6 +97,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const invite = `${location.origin}${location.pathname}#room=${encodeURIComponent(code)}${customRelays ? `&relays=${relays.join(',')}` : ''}`;
   history.replaceState(null, '', invite);
 
+  const sound = new Sound();
+  sound.enabled = ls.get('sound') !== 'off';
+  // Browsers only let a page make sound after a tap.
+  addEventListener('pointerdown', () => sound.unlock(), true);
+
+  /** The board this device is showing ('' is the main one). Live actions are tagged with it. */
+  let here = '';
+  const send = (m: Msg) => net.send({ ...m, bd: here });
+
   // The store starts changing (restored from disk, then the relays) before the UI below is wired up.
   const ui = { ready: false, syncing: false };
 
@@ -105,8 +115,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   const board = new Board($<HTMLCanvasElement>('c'), store, {
     onSelect: showMiniPanel,
-    onLiveMove: (id, p) => void net.send({ y: 'mv', id, p }),
-    onPing: (p) => { board.ping(p, myColor); void net.send({ y: 'ping', p }); },
+    onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
+    onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
     canMove: (id) => {
       const v = store.get<MiniVal>(`m:${id}`);
@@ -115,7 +125,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const turn = store.get<Turn>('turn');
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
     },
-    onRuler: (r) => void net.send({ y: 'ruler', r }),
+    onRuler: (r) => void send({ y: 'ruler', r }),
+    onSlab: (slab) => {
+      board.brush = 'paste';
+      board.setTool('build');
+      renderPalette();
+      say(`<span class="sys">Copied ${slab.cells.length} pieces. Tap where to put them; ↻ turns them.</span>`);
+    },
     onGrab: () => { if (phoneSheet()) closeSheet(); },
     onThrow: (starts, vel) => void throwHand(starts, vel),
   });
@@ -144,7 +160,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     },
   });
   await net.start();
-  Object.assign(window, { __ct: { store, net, board } });
+  board.dice.onHit = (strength) => sound.clack(strength);
+  Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
@@ -156,13 +173,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   function handle(msg: Msg, from: string): void {
     const who = `<b style="color:${net.colorOf(from)}">${esc(net.nameOf(from))}</b>`;
+    const elsewhere = (msg.bd ?? '') !== here; // it happened on a board this device is not showing
     switch (msg.y) {
+      case 'emote':
+        if (!elsewhere && typeof msg.id === 'string') { board.emote(msg.id, String(msg.e)); sound.emote(String(msg.e)); }
+        break;
       case 'chat':
         if (msg.to && msg.to !== meId) break; // a whisper for someone else
         say(`${who}${msg.to ? ' <span class="sys">whispers</span>' : ''}: ${esc(String(msg.m).slice(0, 300))}`);
         break;
       case 'ruler': {
-        const r = msg.r;
+        const r = elsewhere ? null : msg.r;
         const ok = r && Array.isArray(r.a) && Array.isArray(r.b) && r.a.length === 3 && r.b.length === 3 && ['line', 'circle', 'cone'].includes(r.m);
         board.showRuler(from, ok ? r : null, net.colorOf(from));
         break;
@@ -170,19 +191,19 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       case 'roll': {
         if (msg.s && !full()) {
           // The GM rolled in secret: players see blank dice tumble, and no result.
-          if (msg.t) void board.dice.play(msg.t, net.colorOf(from), from, true);
+          if (msg.t && !elsewhere) void board.dice.play(msg.t, net.colorOf(from), from, true);
           say(`🎲 ${who} rolled in secret`);
           break;
         }
         // With a recorded throw, watch the dice land first; what they show is the result.
         const labels = msg.t ? results(msg.t) : null;
-        if (!msg.t || !labels) { showRoll(who, msg, false); break; }
+        if (!msg.t || !labels || elsewhere) { showRoll(who, msg, false); break; }
         const shown = { ...msg, r: rollValues(msg.t.k, labels) };
         void board.dice.play(msg.t, net.colorOf(from), from).then(() => showRoll(who, shown, false));
         break;
       }
-      case 'ping': if (Array.isArray(msg.p) && msg.p.every(Number.isFinite)) board.ping(msg.p, net.colorOf(from)); break;
-      case 'mv': if (Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
+      case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
     }
   }
 
@@ -263,15 +284,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const t = await simulate(kinds, starts, vel, target, store, tray);
     board.dice.endHold();
     const r = rollValues(kinds, results(t)!);
-    void net.send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
+    void send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
     navigator.vibrate?.(12);
     await board.dice.play(t, myColor, me);
     showRoll(meTag, { d, r, mod }, true);
   }
-  function closeSheet(): void {
-    $('log').classList.add('closed');
-    $('logToggle').classList.remove('on');
-  }
+  function closeSheet(): void { openSheet(null); }
 
   let secret = false;
   $('secret').onclick = () => {
@@ -327,12 +345,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     say(`${meTag}: ${esc(text)}`);
     void net.send({ y: 'chat', m: text });
   };
-  $('logToggle').onclick = () => {
-    const closed = $('log').classList.toggle('closed');
-    $('logToggle').classList.toggle('on', !closed);
-    $('logToggle').classList.remove('unread');
-    if (!closed) $('msgs').scrollTop = $('msgs').scrollHeight;
-  };
+  /** Show one sheet (or none). On a phone they share the same spot, so only one is open at a time. */
+  function openSheet(id: string | null): void {
+    for (const el of document.querySelectorAll<HTMLElement>('.sheet')) el.classList.toggle('closed', el.id !== id);
+    $('logToggle').classList.toggle('on', id === 'log');
+    if (id === 'log') {
+      $('logToggle').classList.remove('unread');
+      $('msgs').scrollTop = $('msgs').scrollHeight;
+    }
+  }
+  $('logToggle').onclick = () => openSheet($('log').classList.contains('closed') ? 'log' : null);
+  for (const b of document.querySelectorAll<HTMLElement>('[data-close]')) b.onclick = () => openSheet(null);
   $('undo').onclick = () => board.undo();
 
   // ---- tools & palette ----
@@ -344,30 +367,62 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.onclick = () => setTool(b.dataset.tool as Tool);
 
+  let buildShelf = 'Terrain', miniShelf = 'Heroes';
+  const SLABS = 'Copy & paste';
+
   function renderPalette(): void {
     const el = $('palette');
     el.innerHTML = '';
-    el.hidden = board.tool === 'move';
     const add = (title: string, inner: string, on: boolean, click: () => void) => {
       const b = document.createElement('button');
       b.title = title;
       b.setAttribute('aria-label', title);
       b.innerHTML = inner;
       b.classList.toggle('on', on);
-      b.onclick = () => { click(); renderPalette(); };
+      b.onclick = () => {
+        click();
+        if (board.tool === 'build') board.setTool('build'); // the copy brush changes what a mouse drag does
+        renderPalette();
+      };
       el.append(b);
+      return b;
     };
     const sep = () => el.insertAdjacentHTML('beforeend', '<span class="sep"></span>');
-    if (board.tool === 'build') {
+    // A long library is shelved: pick a shelf with the phone's own picker, then scroll just that shelf.
+    const shelves = (names: string[], current: string, pick: (name: string) => void) => {
+      const sel = document.createElement('select');
+      sel.setAttribute('aria-label', 'Shelf');
+      sel.innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join('');
+      sel.value = current;
+      sel.onchange = () => { pick(sel.value); renderPalette(); };
+      el.append(sel);
+    };
+    const v = sel();
+    if (board.tool === 'move') {
+      // Emotes for the selected mini sit where the palette is: right above the thumb.
+      if (v && canControl(store, meId, v)) {
+        for (const [kind, icon] of Object.entries(EMOTES)) add(kind, icon, false, () => emote(kind));
+        sep();
+        add(v.d ? 'Stand up' : 'Knock down', '💀', !!v.d, () => patch({ d: !v.d }));
+      }
+    } else if (board.tool === 'build') {
       add('Eraser', '⛏️', board.brush === 'erase', () => { board.brush = 'erase'; });
-      sep();
-      for (const [id, d] of Object.entries(BLOCKS)) add(d.name, `<i style="background:${d.color}"></i>`, board.brush === id, () => { board.brush = id; });
-      sep();
-      for (const [id, d] of Object.entries(PROPS)) add(d.name, d.icon, board.brush === id, () => { board.brush = id; });
-      sep();
-      add('Rotate prop (R)', ['⬆️', '➡️', '⬇️', '⬅️'][board.rot], false, () => { board.rot = (board.rot + 1) % 4; });
+      shelves([...Object.keys(BLOCK_SHELVES), ...Object.keys(PROP_SHELVES), SLABS], buildShelf, (n) => { buildShelf = n; });
+      for (const id of BLOCK_SHELVES[buildShelf] ?? []) add(BLOCKS[id].name, `<i style="background:${BLOCKS[id].color}"></i>`, board.brush === id, () => { board.brush = id; });
+      for (const id of PROP_SHELVES[buildShelf] ?? []) add(PROPS[id].name, PROPS[id].icon, board.brush === id, () => { board.brush = id; });
+      const turn = () => add('Turn (R)', ['⬆️', '➡️', '⬇️', '⬅️'][board.rot], false, () => { board.rot = (board.rot + 1) % 4; });
+      if (PROP_SHELVES[buildShelf]) { sep(); turn(); }
+      if (buildShelf === SLABS) {
+        add('Copy: drag over an area', '✂️', board.brush === 'copy', () => { board.brush = 'copy'; });
+        add('Paste: tap where it goes', '📋', board.brush === 'paste', () => { board.brush = 'paste'; }).disabled = !board.slab;
+        turn();
+        sep();
+        add('Share what you copied', '📤', false, () => void shareSlab()).disabled = !board.slab;
+        add('Paste a shared code', '📥', false, () => void importSlab());
+      }
     } else if (board.tool === 'mini') {
-      for (const [id, d] of Object.entries(MINIS)) add(d.name, d.icon, miniKind === id, () => { miniKind = id; });
+      shelves(Object.keys(MINI_SHELVES), miniShelf, (n) => { miniShelf = n; });
+      for (const id of MINI_SHELVES[miniShelf]) add(MINIS[id].name, MINIS[id].icon, miniKind === id, () => { miniKind = id; });
       sep();
       add('Base colour', `<i style="background:${miniColor};border-radius:50%"></i>`, false, () => {
         miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length];
@@ -376,14 +431,140 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const modes: [RulerMode, string, string][] = [['line', '📏', 'Distance'], ['circle', '⭕', 'Radius'], ['cone', '🔺', 'Cone']];
       for (const [m, icon, title] of modes) add(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
       sep();
-      add('Put the ruler away', '✕', false, () => { board.showRuler('me', null, ''); void net.send({ y: 'ruler', r: null }); });
+      add('Put the ruler away', '✕', false, () => { board.showRuler('me', null, ''); void send({ y: 'ruler', r: null }); });
     } else if (board.tool === 'fog') {
       add('Hide: drag to cover an area', '🌫️', board.fogHide, () => { board.fogHide = true; });
       add('Reveal: drag to uncover', '👁️', !board.fogHide, () => { board.fogHide = false; });
       sep();
       add('Reveal everything', '☀️', false, () => { for (const k of [...store.keys('f:')]) store.set(k, null); });
     }
+    el.hidden = !el.childElementCount;
   }
+
+  function emote(kind: string): void {
+    if (!board.selected) return;
+    board.emote(board.selected, kind);
+    sound.emote(kind);
+    void send({ y: 'emote', id: board.selected, e: kind });
+  }
+
+  // Slabs travel as text, so they can be sent over any chat app.
+  const SLAB_TAG = 'cottontale-slab:';
+  async function shareSlab(): Promise<void> {
+    if (!board.slab) return;
+    const text = SLAB_TAG + await pack(board.slab);
+    if (coarse && navigator.share) { try { await navigator.share({ text }); } catch { /* dismissed */ } return; }
+    try { await navigator.clipboard.writeText(text); say('<span class="sys">Slab code copied. Paste it to a friend, or into 📥 on another table.</span>'); }
+    catch { prompt('Copy this slab code:', text); }
+  }
+  async function importSlab(): Promise<void> {
+    const text = prompt('Paste a slab code:')?.trim();
+    if (!text) return;
+    try {
+      const s = await unpack<Slab>(text.replace(SLAB_TAG, ''));
+      const ok = Array.isArray(s.cells) && s.cells.length > 0 && s.cells.length <= 4000 && [s.w, s.h, s.d].every((n) => Number.isInteger(n) && n > 0 && n <= 200)
+        && s.cells.every((c) => Array.isArray(c) && c.slice(0, 3).every(Number.isInteger) && (BLOCKS[c[3]?.i] || PROPS[c[3]?.i]));
+      if (!ok) throw new Error('bad slab');
+      board.slab = s;
+      board.brush = 'paste';
+      board.setTool('build');
+      renderPalette();
+      say(`<span class="sys">Slab loaded (${s.cells.length} pieces). Tap where to put it.</span>`);
+    } catch { alert('That is not a Cottontale slab code.'); }
+  }
+
+  // ---- boards: one table, several maps ----
+
+  let peek: string | null = null; // a board the GM is preparing while the players are elsewhere
+  const boardList = () => [{ id: '', n: 'Main' }, ...[...store.keys('bd:')].map((k) => ({ id: k.slice(3), n: String(store.get<{ n: string }>(k)?.n ?? 'Board') }))];
+  const boardName = (id: string) => boardList().find((b) => b.id === id)?.n ?? 'Main';
+
+  /** Point this device at another board and redraw the table from it. */
+  function enter(id: string): void {
+    here = id;
+    store.setBoard(id);
+    board.clear();
+    for (const p of ['b:', 'f:', 'm:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
+    cutAuto = true;
+    setCut(Infinity);
+    emptyHand();
+  }
+  function renderBoards(active: string): void {
+    const f = full(), list = $('boardList');
+    if (list.contains(document.activeElement)) return; // someone is typing a name
+    list.innerHTML = '';
+    for (const b of boardList()) {
+      const row = document.createElement('span');
+      row.className = `row${b.id === here ? ' here' : ''}`;
+      const name = document.createElement('input');
+      name.value = b.n;
+      name.maxLength = 24;
+      name.disabled = !f || !b.id;
+      name.setAttribute('aria-label', 'Board name');
+      name.onchange = () => store.set(`bd:${b.id}`, { n: name.value.trim().slice(0, 24) || 'Board' });
+      row.append(name);
+      if (b.id === active) row.insertAdjacentHTML('beforeend', '<span class="tag">players<br />here</span>');
+      const btn = (label: string, title: string, click: () => void) => {
+        const x = document.createElement('button');
+        x.textContent = label;
+        x.title = title;
+        x.setAttribute('aria-label', title);
+        x.onclick = click;
+        row.append(x);
+      };
+      if (f) {
+        if (b.id !== here) btn('👁️', 'Look at it yourself (players stay where they are)', () => { peek = b.id === active ? null : b.id; sync(); });
+        if (b.id !== active) btn('▶', 'Bring everyone here', () => { peek = null; store.set('set:board', b.id); });
+        if (b.id) btn('🗑️', 'Delete this board', () => {
+          if (!confirm(`Delete “${b.n}” and everything on it?`)) return;
+          for (const [k, e] of [...store.entries]) if (e.v !== null && k.startsWith(`@${b.id}/`)) store.setRaw(k, null);
+          store.set(`bd:${b.id}`, null);
+        });
+      }
+      list.append(row);
+    }
+    const prepping = f && here !== active;
+    $('prep').hidden = !prepping;
+    $('prepText').textContent = prepping ? `👁️ Preparing “${boardName(here)}” — players are on “${boardName(active)}”` : '';
+  }
+  function newBoard(copy: boolean): void {
+    if (!full()) return;
+    const id = crypto.randomUUID().slice(0, 6);
+    if (copy) for (const p of ['b:', 'f:', 'm:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
+    store.set(`bd:${id}`, { n: copy ? `${boardName(here)} copy`.slice(0, 24) : `Board ${boardList().length + 1}` });
+    peek = id; // start on it alone; bring the players over when it is ready
+    sync();
+  }
+  $('boardNew').onclick = () => newBoard(false);
+  $('boardCopy').onclick = () => newBoard(true);
+  $('prepGo').onclick = () => { const id = here; peek = null; store.set('set:board', id); };
+  $('prepBack').onclick = () => { peek = null; sync(); };
+
+  // ---- atmosphere: sky and sound ----
+
+  const SKY_NAMES: Record<Sky, string> = { day: '☀️ Day', dusk: '🌇 Dusk', night: '🌙 Night' };
+  function choices(el: HTMLElement, items: Record<string, string>, key: string, fallback: string): void {
+    const f = full(), cur = setting(store, key, fallback);
+    el.innerHTML = '';
+    for (const [id, label] of Object.entries(items)) {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.classList.toggle('on', id === cur);
+      b.disabled = !f;
+      b.onclick = () => store.set(`set:${key}`, id);
+      el.append(b);
+    }
+  }
+  function renderAtmo(): void {
+    choices($('skies'), SKY_NAMES, 'sky', 'day');
+    choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
+    $('soundOn').textContent = sound.enabled ? '🔊 Sound on this device: on' : '🔈 Sound on this device: off';
+  }
+  $('soundOn').onclick = () => {
+    sound.setEnabled(!sound.enabled);
+    ls.set('sound', sound.enabled ? 'on' : 'off');
+    renderAtmo();
+  };
 
   // ---- role, settings, turn order: all derived from the store ----
 
@@ -404,6 +585,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       if (!f && board.tool !== 'move' && board.tool !== 'ruler') setTool('move');
       if (!f) { secret = false; $('secret').classList.remove('on'); }
     }
+    // Follow the table to its active board, unless the GM is off preparing another one.
+    const ids = boardList().map((b) => b.id);
+    const active = ids.includes(setting(store, 'board', '')) ? setting(store, 'board', '') : '';
+    if (!f || (peek !== null && !ids.includes(peek))) peek = null;
+    if ((peek ?? active) !== here) enter(peek ?? active);
+    renderBoards(active);
     const l = setting(store, 'los', false);
     if (l !== los) { los = l; board.refresh(); }
     const sky = setting<Sky>(store, 'sky', 'day');
@@ -411,7 +598,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
     act('gm').textContent = amGM ? '🎩 Stop being the GM' : '🎩 Become the GM';
     act('los').textContent = `👁️ Line of sight: ${l ? 'on' : 'off'}`;
-    act('sky').textContent = `🌗 Sky: ${sky}`;
+    sound.scape(setting(store, 'amb', 'off'));
+    renderAtmo();
     renderPlayers();
     renderInit();
     if (board.selected) showMiniPanel(board.selected);
@@ -482,6 +670,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('minipanel').hidden = !id;
     const v = sel();
     if (cutAuto) autoCut();
+    if (board.tool === 'move') renderPalette(); // the emote row follows the selection
     if (!v) return;
     const mine = canControl(store, meId, v);
     $('minipanel').classList.toggle('readonly', !mine);
@@ -491,6 +680,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     put('hp', v.hp === undefined ? '' : String(v.hp));
     put('mhp', v.mhp === undefined ? '' : String(v.mhp));
     put('ini', v.ini === undefined ? '' : String(v.ini));
+    const stats = [...document.querySelectorAll<HTMLInputElement>('#stats .st')];
+    stats.forEach((f, i) => { if (document.activeElement !== f) f.value = v.st?.[i] ?? ''; f.disabled = !mine; });
+    // Other people's minis show their stats if they have any; your own on request.
+    $('stats').hidden = mine ? !statsOpen : !v.st?.some(Boolean);
+    $('miniMore').classList.toggle('on', statsOpen);
     $('miniFly').textContent = `🕊️ ${v.e || 0}`;
     $('miniHide').textContent = v.h ? '🙈 Hidden' : '👁️ Visible';
     $('miniHide').classList.toggle('on', !!v.h);
@@ -513,6 +707,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (!v || !canControl(store, meId, v)) return;
     const { [key]: _, ...rest } = v;
     store.set(`m:${board.selected}`, value === undefined || value === '' ? rest : { ...rest, [key]: value });
+  }
+  let statsOpen = false;
+  $('miniMore').onclick = () => { statsOpen = !statsOpen; showMiniPanel(board.selected); };
+  for (const f of document.querySelectorAll<HTMLInputElement>('#stats .st')) {
+    f.onchange = () => {
+      const v = sel();
+      if (!v || !canControl(store, meId, v)) return;
+      const st = [...document.querySelectorAll<HTMLInputElement>('#stats .st')].map((x) => x.value.trim().slice(0, 14));
+      const { st: _, ...rest } = v;
+      store.set(`m:${board.selected}`, st.some(Boolean) ? { ...rest, st } : rest);
+    };
   }
   field('miniName').onchange = () => patch({ n: field('miniName').value.trim().slice(0, 20) });
   field('hp').onchange = () => setOpt('hp', num('hp', -999, 9999));
@@ -560,7 +765,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       }
     }
     if (act === 'los' && full()) store.set('set:los', !setting(store, 'los', false));
-    if (act === 'sky' && full()) store.set('set:sky', ({ day: 'dusk', dusk: 'night', night: 'day' } as Record<Sky, Sky>)[setting<Sky>(store, 'sky', 'day')]);
+    if (act === 'boards' || act === 'atmo') openSheet(act);
     if (act === 'redo') board.redo();
     if (act === 'meadow') meadow();
     if (act === 'export') {
@@ -583,6 +788,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     try {
       const data = JSON.parse(await input.files![0].text());
       for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmf]:/.test(k)) store.set(k, v);
+        else if (/^(@[\w-]+\/[bmf]:|bd:)/.test(k)) store.setRaw(k, v);
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
@@ -631,7 +837,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     net.wake(Date.now() - hiddenAt > 20_000);
     stayAwake();
     board.invalidate();
+    sound.suspend(false);
   });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) sound.suspend(true); });
   addEventListener('online', () => net.wake(false));
   addEventListener('pageshow', (e) => { if (e.persisted) net.wake(true); });
   addEventListener('pagehide', () => {

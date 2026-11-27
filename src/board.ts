@@ -12,6 +12,10 @@ export type Vec = [number, number, number];
 export type RulerMode = 'line' | 'circle' | 'cone';
 export interface Ruler { a: Vec; b: Vec; m: RulerMode }
 export type Sky = 'day' | 'dusk' | 'night';
+/** A copied chunk of the build: cells relative to its corner. */
+export interface Slab { w: number; h: number; d: number; cells: [number, number, number, CellVal][] }
+export const EMOTES: Record<string, string> = { attack: '⚔️', hurt: '💥', cheer: '🎉', wave: '👋', think: '❓', love: '❤️', sleep: '💤' };
+const SLAB_MAX = 4000;
 
 export interface BoardHooks {
   onSelect(id: string | null): void;
@@ -27,6 +31,8 @@ export interface BoardHooks {
   onThrow(starts: Start[], vel: Vec): void;
   /** The local ruler changed (null = put away). Called often while measuring. */
   onRuler(r: Ruler | null): void;
+  /** An area was copied with the copy brush. */
+  onSlab(slab: Slab): void;
 }
 
 const LIMIT = 96;
@@ -181,8 +187,9 @@ const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; 
 
 export class Board {
   tool: Tool = 'move';
-  /** A block or prop id, or 'erase'. */
+  /** A block or prop id, or 'erase', 'copy' (drag out an area) or 'paste' (stamp the copied slab). */
   brush = 'grass';
+  slab: Slab | null = null;
   rot = 0;
   rulerMode: RulerMode = 'line';
   /** Fog tool: true paints fog, false reveals. */
@@ -217,6 +224,8 @@ export class Board {
   private ring: THREE.Mesh;
   private turnRing: THREE.Mesh;
   private pings: { mesh: THREE.Mesh; t: number }[] = [];
+  private anims: { id: string; kind: string; t: number; bubble: THREE.Sprite }[] = [];
+  private marquee: THREE.Mesh;
   private pointers = new Map<number, { x: number; y: number }>();
   private gesture: Gesture | null = null;
   private twist = 0;
@@ -286,7 +295,12 @@ export class Board {
     };
     this.ring = torus(0.46, '#ffe066');
     this.turnRing = torus(0.56, '#58d68d');
-    this.scene.add(this.ghost);
+    this.marquee = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5),
+      new THREE.MeshBasicMaterial({ color: '#58d6e8', transparent: true, opacity: 0.28, depthWrite: false }),
+    );
+    this.marquee.visible = false;
+    this.scene.add(this.ghost, this.marquee);
 
     this.camera.position.set(7, 9, 11);
     this.controls = new OrbitControls(this.camera, canvas);
@@ -409,6 +423,25 @@ export class Board {
     }
   }
 
+  /** Empty the table view (before showing a different board). The store is not touched. */
+  clear(): void {
+    this.select(null);
+    this.setTurn(null);
+    for (const l of this.layers.values()) { l.cells.clear(); l.dirty = true; }
+    for (const g of this.props.values()) this.scene.remove(g);
+    for (const m of this.minis.values()) this.scene.remove(m.group);
+    for (const g of this.rulers.values()) this.scene.remove(g);
+    for (const p of this.pings) this.scene.remove(p.mesh);
+    for (const a of this.anims) a.bubble.removeFromParent();
+    this.props.clear();
+    this.minis.clear();
+    this.rulers.clear();
+    this.pings.length = this.anims.length = 0;
+    this.undoStack.length = this.redoStack.length = 0;
+    this.fogDirty = this.visDirty = true;
+    this.invalidate();
+  }
+
   // ---- store → scene -------------------------------------------------------
 
   /** Ask for a redraw. The board only renders when something changed. */
@@ -473,7 +506,7 @@ export class Board {
     }
     const ghost = this.full && !!v.h;
     const fly = Math.max(0, Math.min(12, v.e || 0));
-    const sig = [v.k, v.c, v.n, v.s, v.hp, v.mhp, fly, ghost].join('|');
+    const sig = [v.k, v.c, v.n, v.s, v.hp, v.mhp, fly, ghost, !!v.d].join('|');
     const pos = new THREE.Vector3(v.x + 0.5, v.y, v.z + 0.5);
     if (!m || m.sig !== sig) {
       const group = new THREE.Group();
@@ -517,7 +550,53 @@ export class Board {
     }
     m.val = v;
     if (this.gesture?.mini !== id) m.target.copy(pos);
-    m.group.children[0].rotation.y = ((v.r || 0) * Math.PI) / 4;
+    this.pose(m);
+  }
+
+  /** A mini's resting pose: facing, flying height, and lying down when knocked out. */
+  private pose(m: Mini): void {
+    const body = m.group.children[0], v = m.val;
+    body.rotation.set(v.d ? -Math.PI / 2 : 0, ((v.r || 0) * Math.PI) / 4, 0, 'YXZ');
+    body.position.set(0, Math.max(0, Math.min(12, v.e || 0)) + (v.d ? 0.22 * (v.s || 1) : 0), 0);
+  }
+
+  /** Play a short emote on a mini: a little movement and an emoji popping up over its head. */
+  emote(id: string, kind: string): void {
+    const m = this.minis.get(id);
+    if (!m || !EMOTES[kind] || !m.group.visible) return;
+    const bubble = textSprite((g) => { g.font = '72px system-ui, sans-serif'; g.fillText(EMOTES[kind], 48, 52); }, 96, 96, 0.7);
+    (bubble.material as THREE.SpriteMaterial).depthTest = false;
+    bubble.renderOrder = 18;
+    m.group.add(bubble);
+    this.anims = this.anims.filter((a) => { if (a.id === id) a.bubble.removeFromParent(); return a.id !== id; });
+    this.anims.push({ id, kind, t: 0, bubble });
+    this.invalidate();
+  }
+  private animate(dt: number): boolean {
+    for (let i = this.anims.length - 1; i >= 0; i--) {
+      const a = this.anims[i], m = this.minis.get(a.id);
+      a.t += dt;
+      const u = a.t / 1.1;
+      if (!m || u >= 1) {
+        a.bubble.removeFromParent();
+        if (m) this.pose(m);
+        this.anims.splice(i, 1);
+        continue;
+      }
+      this.pose(m);
+      const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + MINIS[m.val.k].height * s;
+      const w = Math.sin(Math.min(1, u * 2) * Math.PI); // one swell over the first half
+      if (!m.val.d) switch (a.kind) {
+        case 'attack': body.translateZ(w * 0.45); body.rotateX(w * 0.35); break;
+        case 'hurt': body.position.x += Math.sin(a.t * 55) * 0.07 * (1 - u); body.rotateX(-w * 0.3); break;
+        case 'cheer': body.position.y += Math.abs(Math.sin(u * Math.PI * 2)) * 0.4; body.rotateY(u * Math.PI * 2); break;
+        case 'sleep': body.rotateZ(w * 0.35); break;
+        default: body.rotateZ(Math.sin(u * Math.PI * 4) * 0.22 * (1 - u));
+      }
+      a.bubble.position.set(0, top + 0.9 + u * 0.5, 0);
+      (a.bubble.material as THREE.SpriteMaterial).opacity = Math.min(1, (1 - u) * 3);
+    }
+    return this.anims.length > 0;
   }
 
   /** Another player is dragging a mini: show it moving before they drop it. */
@@ -610,6 +689,48 @@ export class Board {
   }
 
   private get erasing(): boolean { return this.tool === 'build' && this.brush === 'erase'; }
+  private get copying(): boolean { return this.tool === 'build' && this.brush === 'copy'; }
+  private get pasting(): boolean { return this.tool === 'build' && this.brush === 'paste' && !!this.slab; }
+
+  /** Footprint of the slab as it would be pasted with the current rotation. */
+  private slabSize(): Vec {
+    const s = this.slab!;
+    return this.rot % 2 ? [s.d, s.h, s.w] : [s.w, s.h, s.d];
+  }
+  private pasteAt(p: Vec): void {
+    const s = this.slab!, r = this.rot;
+    this.batch = [];
+    this.undoStack.push(this.batch);
+    for (const [dx, dy, dz, v] of s.cells) {
+      const [x, z] = r === 1 ? [s.d - 1 - dz, dx] : r === 2 ? [s.w - 1 - dx, s.d - 1 - dz] : r === 3 ? [dz, s.w - 1 - dx] : [dx, dz];
+      const c: Vec = [p[0] + x, p[1] + dy, p[2] + z];
+      if (Math.abs(c[0]) >= LIMIT || Math.abs(c[2]) >= LIMIT || c[1] >= MAX_Y) continue;
+      this.edit(ck(...c), PROPS[v.i] ? { i: v.i, ...(((v.r ?? 0) + 4 - r) % 4 ? { r: ((v.r ?? 0) + 4 - r) % 4 } : {}) } : v);
+    }
+    this.batch = null;
+  }
+  /** Stretch the copy marquee between two columns; on release, lift everything inside into the slab. */
+  private stretchCopy(g: Gesture, done: boolean): void {
+    const s = this.pickSurface(), a = g.first;
+    const b = s && (s.cell ?? s.place);
+    if (!a || !b) { if (done) this.marquee.visible = false; return; }
+    const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), z0 = Math.min(a[2], b[2]), z1 = Math.max(a[2], b[2]);
+    const top = Math.max(1, this.maxHeight());
+    this.marquee.position.set(x0, 0, z0);
+    this.marquee.scale.set(x1 - x0 + 1, top + 0.05, z1 - z0 + 1);
+    this.marquee.visible = !done;
+    this.invalidate();
+    if (!done) return;
+    const found: [Vec, CellVal][] = [];
+    for (const k of this.store.keys('b:')) {
+      const c = parse(k);
+      if (c[0] >= x0 && c[0] <= x1 && c[2] >= z0 && c[2] <= z1 && !this.cellHidden(...c)) found.push([c, this.store.get<CellVal>(k)!]);
+    }
+    if (!found.length || found.length > SLAB_MAX) return;
+    const y0 = Math.min(...found.map(([c]) => c[1])), y1 = Math.max(...found.map(([c]) => c[1]));
+    this.slab = { w: x1 - x0 + 1, h: y1 - y0 + 1, d: z1 - z0 + 1, cells: found.map(([c, v]) => [c[0] - x0, c[1] - y0, c[2] - z0, v]) };
+    this.hooks.onSlab(this.slab);
+  }
 
   setTool(t: Tool): void {
     this.tool = t;
@@ -621,8 +742,9 @@ export class Board {
     }
     // In every tool but Move, one finger is the tool and two fingers are the camera.
     this.controls.touches.ONE = t === 'move' ? THREE.TOUCH.ROTATE : (-1 as THREE.TOUCH);
-    // Ruler and fog are drag tools for the mouse as well (right-drag and wheel still move the camera).
-    this.controls.mouseButtons.LEFT = t === 'ruler' || t === 'fog' ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
+    // Ruler, fog and the copy marquee are drag tools for the mouse as well (right-drag and wheel still move the camera).
+    this.controls.mouseButtons.LEFT = t === 'ruler' || t === 'fog' || this.copying ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
+    this.marquee.visible = false;
     this.canvas.style.cursor = t === 'move' ? 'grab' : 'crosshair';
   }
 
@@ -747,7 +869,7 @@ export class Board {
     const g: Gesture = {
       id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button, touch, moved: false, done: false,
       mini: null, tapMini: null, throwing: null, measure: null, first: null, stroke: null,
-      drags: this.tool === 'ruler' || this.tool === 'fog' || (touch && this.tool !== 'move'),
+      drags: this.tool === 'ruler' || this.tool === 'fog' || this.copying || (touch && this.tool !== 'move'),
     };
     this.gesture = g;
     if (e.button !== 0) return;
@@ -795,9 +917,16 @@ export class Board {
         this.canvas.setPointerCapture(e.pointerId);
         break;
       default:
+        if (this.copying) {
+          const s = this.pickSurface();
+          g.first = s && (s.cell ?? s.place);
+          this.canvas.setPointerCapture(e.pointerId);
+          break;
+        }
         if (!touch) break;
         // No hover on touch: show where the edit will land as soon as the finger is down.
         this.updateGhost();
+        if (this.pasting) break;
         if (this.erasing) { const t = this.eraseTarget(); g.first = t ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
@@ -852,7 +981,8 @@ export class Board {
     this.aim(e);
     if (this.tool === 'ruler') this.stretchRuler(g, false);
     else if (this.tool === 'fog') { if (g.moved) this.paintFog(); }
-    else if (this.tool === 'mini') this.updateGhost();
+    else if (this.copying) this.stretchCopy(g, false);
+    else if (this.tool === 'mini' || this.pasting) this.updateGhost();
     else if (this.tool === 'build' && g.moved) this.paint(g);
   }
 
@@ -912,9 +1042,16 @@ export class Board {
 
   private updateGhost(): void {
     this.hideGhost();
-    if (this.tool !== 'build' && this.tool !== 'mini') return;
+    if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying) return;
     const mat = this.ghost.material as THREE.MeshBasicMaterial;
-    if (this.erasing) {
+    if (this.pasting) {
+      const p = this.pickSurface()?.place;
+      if (!p) return;
+      const [w, h, d] = this.slabSize();
+      mat.color.set('#58d6e8');
+      this.ghost.scale.set(w, h, d);
+      this.ghost.position.set(p[0] + w / 2, p[1], p[2] + d / 2);
+    } else if (this.erasing) {
       const t = this.eraseTarget();
       if (!t) return;
       const [x, y, z] = parse(t);
@@ -981,19 +1118,26 @@ export class Board {
       this.batch = null;
       return;
     }
+    if (this.copying) { this.stretchCopy(g, true); return; }
     if (g.stroke) { // the drag already did the editing
       this.batch = null;
       this.hideGhost();
       return;
     }
     // A moved pointer was a camera drag, except a finger sliding a mini's landing spot.
-    if (g.moved && !(g.touch && this.tool === 'mini')) { this.hideGhost(); return; }
+    if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting))) { this.hideGhost(); return; }
     this.gesture = g; // so edit() knows whether to give haptic feedback
     switch (this.tool) {
       case 'move':
         this.select(g.tapMini);
         break;
       case 'build': {
+        if (this.pasting) {
+          const at = this.pickSurface()?.place;
+          if (at) this.pasteAt(at);
+          break;
+        }
+        if (this.brush === 'paste') break;
         if (this.erasing) {
           const t = this.eraseTarget();
           if (t) this.edit(t, null);
@@ -1024,6 +1168,7 @@ export class Board {
     this.dragPos = null;
     this.controls.enabled = true;
     this.hideGhost();
+    this.marquee.visible = false;
     clearTimeout(g?.press);
     const m = g?.mini ? this.minis.get(g.mini) : null;
     if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
@@ -1058,6 +1203,7 @@ export class Board {
     this.last = now;
     let busy = this.controls.update() || this.dirty;
     if (this.dice.update(dt)) busy = true;
+    if (this.animate(dt)) busy = true;
     if (this.fogDirty) { this.rebuildFog(); busy = true; }
     if (this.visDirty) { this.refreshMinis(); busy = true; }
     for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); busy = true; }

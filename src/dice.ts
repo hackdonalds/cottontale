@@ -403,6 +403,8 @@ const LINGER = 12; // seconds the dice stay on the table after settling
 export class DiceView {
   private playing: Playing[] = [];
   private held: Held | null = null;
+  /** Called when a die bounces, with how hard (for sound). */
+  onHit: (strength: number) => void = () => {};
   constructor(private scene: THREE.Scene) {}
 
   /** Pick the dice up: they hover and tumble at `at` until thrown. */
@@ -467,6 +469,14 @@ export class DiceView {
       p.t += dt;
       if (was < end) {
         const f = Math.min(p.t * FPS, p.n - 1), a = Math.floor(f), b = Math.min(a + 1, p.n - 1);
+        // A die that was falling and is now rising has just hit something.
+        const prev = Math.floor(Math.min(was * FPS, p.n - 1));
+        if (a > prev && a >= 1 && a + 1 < p.n) {
+          for (const P of p.pos) {
+            const down = P[a].y - P[a - 1].y, up = P[a + 1].y - P[a].y;
+            if (down < -0.03 && up > down * 0.3) this.onHit(Math.min(1, -down * 4));
+          }
+        }
         p.kinds.forEach((_, k) => {
           p.meshes[k].position.lerpVectors(p.pos[k][a], p.pos[k][b], f - a);
           p.meshes[k].quaternion.slerpQuaternions(p.rot[k][a], p.rot[k][b], f - a);

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES } from './catalog';
 import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
-import { deriveRoom, seal, unseal } from './net';
+import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, eyesOf, fullPowers, measure, miniShown, nextTurn, sees, turnOrder, type MiniVal } from './rules';
 import { Store, type Row } from './store';
 
@@ -39,6 +40,28 @@ describe('Store', () => {
     s.set('k', 2);
     expect(s.get('k')).toBe(2);
     expect(out).toHaveLength(1);
+  });
+});
+
+describe('boards', () => {
+  it('keeps each board\'s pieces apart while sharing table-wide keys', () => {
+    const s = new Store('a');
+    const seen: string[] = [];
+    s.onChange = (k) => seen.push(k);
+    s.set('b:0,0,0', { i: 'grass' });
+    s.set('gm:a', true);
+    s.setBoard('cave');
+    expect(s.get('b:0,0,0')).toBeNull();
+    expect(s.get('gm:a')).toBe(true);
+    s.set('b:1,0,0', { i: 'stone' });
+    s.set('turn', { id: 'x', round: 1 });
+    expect([...s.keys('b:')]).toEqual(['b:1,0,0']);
+    expect(s.entries.has('@cave/b:1,0,0')).toBe(true);
+    s.merge(['b:9,9,9', { i: 'dirt' }, Date.now() + 5, 'z']); // a peer edits the main board meanwhile
+    expect(seen).toEqual(['b:0,0,0', 'gm:a', 'b:1,0,0', 'turn']); // ...which this view does not hear about
+    s.setBoard('');
+    expect([...s.keys('b:')].sort()).toEqual(['b:0,0,0', 'b:9,9,9']);
+    expect(s.get('turn')).toBeNull();
   });
 });
 
@@ -173,5 +196,23 @@ describe('table rules', () => {
     for (let i = 0; i < 4; i++) { const t = nextTurn(s)!; s.set('turn', t); seq.push(`${t.id}${t.round}`); }
     expect(seq).toEqual(['b1', 'a1', 'b2', 'a2']);
     expect(measure([0.5, 0, 0.5], [3.5, 0, 4.5])).toEqual({ cells: 5, feet: 25 });
+  });
+});
+
+describe('library', () => {
+  it('shelves every block, prop and mini exactly once, and every piece builds', () => {
+    for (const [all, shelves] of [[BLOCKS, BLOCK_SHELVES], [PROPS, PROP_SHELVES], [MINIS, MINI_SHELVES]] as const) {
+      const shelved = Object.values(shelves).flat();
+      expect([...shelved].sort()).toEqual(Object.keys(all).sort());
+    }
+    for (const p of Object.values(PROPS)) expect(p.make().children.length).toBeGreaterThan(0);
+    for (const m of Object.values(MINIS)) expect(m.make().length).toBeGreaterThan(0);
+    expect(Object.keys(PROPS).length).toBeGreaterThan(45);
+    expect(Object.keys(MINIS).length).toBeGreaterThan(40);
+  });
+
+  it('packs slabs into text and back', async () => {
+    const slab = { w: 2, h: 1, d: 1, cells: [[0, 0, 0, { i: 'stone' }], [1, 0, 0, { i: 'door', r: 1 }]] };
+    expect(await unpack(await pack(slab))).toEqual(slab);
   });
 });
