@@ -45,6 +45,15 @@ first, then enhance for larger screens.
   - `sheets.ts` sheet heights. Every `.sheet` has three (`data-h`: peek = its first row, half = as it opens, full = forms) and a grab handle that is a real button (`setSheetHeight(id, 'peek'|'half'|'full')`, `sheetHeight`, `cycleSheetHeight`). One sheet at a time; a sheet sits on top of the dock (`--dock`) and drops to peek when a finger lands on the table; `#hud[data-sheet]` hides what a sheet would cover. Drill down with `pushSheetPage(id, title, render)` (a page with Back in the same sheet), never a second sheet
   - `library.ts` (pure: recents, favourites, search — unit-test here) and `hotbar.ts` (the Recent / Favourites shelves, the `#lib` sheet with search and a grid). Pieces are named by key (`b_grass`, `p_barrel`, `m_knight`) and looked up at draw time, never assumed to exist; long-press pins, but the star in the library is the tap path
   - `prep.ts` Prep, the third mode: full-screen pages with a title bar and Back (button, Escape and the phone's back button share the history). Add a page with `registerPrepPage({ id, title, icon, order, hint, render(el, ctx), update?(el, ctx) })`; `prepPages.ts` has the Theme gallery and placeholders that a page with the same id replaces
+- `src/system.ts` game systems as data (pure, whole numbers only — unit-test in `src/system.test.ts`): the format and
+  strict `parseSystem`, the expression language, dice notation (`planRoll` picks the physical dice, `readRoll` reads
+  the landed faces), `derive` (sheet from what was entered + condition modifiers), triggers (`fire`), `authority`.
+  Nothing game-specific in code: systems are files in `public/systems` (listed in `index.json`), copied whole into
+  `set:system` when picked. With none picked the app behaves as it always did.
+- `src/ui/sheet.ts` the character sheet drawn from a system's schema, the rules picker (`renderSystemPicker`), and the
+  referee: triggers are applied by one device only (the GM's; lowest id of several; the actor's with no GM here).
+- A mini stores only inputs and outcomes: `sv` (entered stats), `cn` (conditions), `fx` (ids of the last events applied
+  to it, so a repeat is harmless) beside the old `hp`/`mhp`/`ini`. Derived values are never stored.
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
 - Board-specific keys (`b:` `m:` `f:` `w:` `at:` `turn`) are scoped per board by the store;

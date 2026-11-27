@@ -40,6 +40,11 @@ places minis, and moves everything; players move the minis the GM hands them
   — rain, wind, campfire, cave, calm music, battle drums. All sound is
   synthesised on the device (nothing to download) and each player can mute it.
 
+- pick the **rules** the table plays by (☰ → Rules): a game system is a data file (`public/systems`) describing the
+  character sheet, dice, conditions and what happens by itself. Each piece then has a sheet (Sheet in the dock, or the
+  sheet button on a selected piece): tap a stat or a roll to put its dice in your hand; the faces that land are read
+  by the rules (advantage, exploding dice, counted successes). Conditions show over the piece.
+
 With no GM the table is free play: everyone can do everything. These rules
 decide what each player's app shows — everyone at the table holds the same key,
 so they keep honest players from spoilers rather than stop a determined cheat.

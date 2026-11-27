@@ -1,0 +1,71 @@
+{
+  "v": 1,
+  "id": "lantern-d20",
+  "name": "Lantern d20",
+  "about": "Fantasy adventure with a twenty-sided die: six abilities, armour, hit points.",
+  "hp": "hp",
+  "dice": [4, 6, 8, 10, 12, 20, 100],
+  "sections": [
+    { "name": "Hero", "fields": [
+      { "id": "level", "name": "Level", "type": "number", "min": 1, "max": 20, "def": 1 },
+      { "id": "hp", "name": "Hit points", "type": "resource" },
+      { "id": "armour", "name": "Armour worn", "type": "number", "min": 0, "max": 10, "def": 0 },
+      { "id": "ac", "name": "Armour class", "short": "AC", "type": "derived", "formula": "10 + dex.mod + armour" },
+      { "id": "speed", "name": "Speed", "type": "number", "min": 0, "max": 20, "def": 6 },
+      { "id": "skill", "name": "Skill bonus", "type": "derived", "formula": "2 + (level - 1) / 4" }
+    ] },
+    { "name": "Abilities", "fields": [
+      { "id": "str", "name": "Strength", "type": "number", "min": 1, "max": 30, "def": 10, "roll": "d20+@str.mod" },
+      { "id": "dex", "name": "Dexterity", "type": "number", "min": 1, "max": 30, "def": 10, "roll": "d20+@dex.mod" },
+      { "id": "con", "name": "Constitution", "type": "number", "min": 1, "max": 30, "def": 10, "roll": "d20+@con.mod" },
+      { "id": "int", "name": "Intelligence", "type": "number", "min": 1, "max": 30, "def": 10, "roll": "d20+@int.mod" },
+      { "id": "wis", "name": "Wisdom", "type": "number", "min": 1, "max": 30, "def": 10, "roll": "d20+@wis.mod" },
+      { "id": "cha", "name": "Charisma", "type": "number", "min": 1, "max": 30, "def": 10, "roll": "d20+@cha.mod" },
+      { "id": "str.mod", "type": "derived", "hide": true, "formula": "floor((str - 10) / 2)" },
+      { "id": "dex.mod", "type": "derived", "hide": true, "formula": "floor((dex - 10) / 2)" },
+      { "id": "con.mod", "type": "derived", "hide": true, "formula": "floor((con - 10) / 2)" },
+      { "id": "int.mod", "type": "derived", "hide": true, "formula": "floor((int - 10) / 2)" },
+      { "id": "wis.mod", "type": "derived", "hide": true, "formula": "floor((wis - 10) / 2)" },
+      { "id": "cha.mod", "type": "derived", "hide": true, "formula": "floor((cha - 10) / 2)" }
+    ] },
+    { "name": "Weapon", "fields": [
+      { "id": "weapon", "name": "Fights with", "type": "choice", "options": [{ "id": "might", "name": "Might" }, { "id": "finesse", "name": "Finesse" }] },
+      { "id": "die", "name": "Damage die", "type": "number", "min": 4, "max": 12, "def": 8 },
+      { "id": "trained", "name": "Trained", "type": "toggle", "def": true },
+      { "id": "atk", "name": "Attack bonus", "type": "derived", "formula": "(weapon == 1 ? dex.mod : str.mod) + (trained ? skill : 0)" },
+      { "id": "dmg", "name": "Damage bonus", "type": "derived", "formula": "weapon == 1 ? dex.mod : str.mod" },
+      { "id": "notes", "name": "Notes", "type": "text" }
+    ] }
+  ],
+  "rolls": [
+    { "id": "attack", "name": "Attack", "dice": "d20+@atk", "vs": "target.ac", "win": "Hit", "lose": "Miss" },
+    { "id": "damage", "name": "Damage", "dice": "1d(@die)+@dmg" },
+    { "id": "initiative", "name": "Initiative", "dice": "d20+@dex.mod", "into": "ini" }
+  ],
+  "modes": [
+    { "id": "adv", "name": "Advantage", "die": 20, "add": 1, "keep": "h", "cancels": "dis" },
+    { "id": "dis", "name": "Disadvantage", "die": 20, "add": 1, "keep": "l", "cancels": "adv" }
+  ],
+  "conditions": [
+    { "id": "poisoned", "name": "Poisoned", "icon": "🤢", "mode": "dis" },
+    { "id": "prone", "name": "Prone", "icon": "⤵", "mods": [{ "target": "speed", "op": "mul", "value": 1, "div": 2 }, { "target": "ac", "op": "add", "value": -2 }] },
+    { "id": "guarded", "name": "Guarded", "icon": "🛡", "mods": [{ "target": "ac", "op": "add", "value": 2 }] },
+    { "id": "inspired", "name": "Inspired", "icon": "✨", "mode": "adv" },
+    { "id": "snared", "name": "Snared", "icon": "🕸", "mods": [{ "target": "speed", "op": "set", "value": 0, "priority": 10 }] },
+    { "id": "burning", "name": "Burning", "icon": "🔥" },
+    { "id": "down", "name": "Down", "icon": "💀", "mods": [{ "target": "speed", "op": "set", "value": 0, "priority": 10 }] }
+  ],
+  "triggers": [
+    { "on": "roll", "roll": "attack", "if": "roll.nat == 20", "do": [{ "say": "{name} strikes true: a natural 20!" }] },
+    { "on": "roll", "roll": "damage", "if": "roll.target", "do": [
+      { "stat": "hp", "op": "add", "value": "0 - max(0, roll.total)", "who": "target" },
+      { "say": "{target} takes {max(0, roll.total)} damage." }
+    ] },
+    { "on": "turn.start", "if": "has(burning)", "do": [
+      { "roll": "1d4", "name": "Burning" },
+      { "stat": "hp", "op": "add", "value": "0 - roll.total" }
+    ] },
+    { "on": "turn.end", "if": "has(guarded)", "do": [{ "cond": "guarded", "on": false }] },
+    { "on": "hp.zero", "do": [{ "cond": "down", "on": true }, { "say": "{name} is down!" }] }
+  ]
+}

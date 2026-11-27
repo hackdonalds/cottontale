@@ -323,3 +323,38 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
 }
 /* Things only the GM (or everyone, in free play) gets. */
 body.player [data-gm], body:not(.gm) [data-gmonly] { display: none !important; }
+
+/* ---- game systems (src/ui/sheet.ts): the character sheet and the list of rules ---- */
+/* Without a system on the table none of this shows. */
+body:not(.sys) :is(#sheetBtn, #miniSheet) { display: none; }
+#sheet { max-height: min(72%, 560px); }
+#sheetName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sheetBody { display: flex; flex-direction: column; gap: 8px; }
+#sheet .card { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 12px; background: rgba(0, 0, 0, .22); }
+#sheet h4 { margin: 2px 0; font-size: 11.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; opacity: .6; }
+#sheet .frow { display: flex; align-items: center; gap: 4px; min-height: var(--tap); }
+#sheet .fname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14.5px; }
+#sheet .frow input[type=number] { flex: none; width: 54px; text-align: center; padding: 8px 2px; -moz-appearance: textfield; }
+#sheet .frow input[type=number]::-webkit-inner-spin-button { display: none; }
+#sheet .frow input[type=text], #sheet .frow select { flex: 2 1 0; }
+#sheet .frow button { flex: none; padding: 0 6px; }
+#sheet .val { min-width: var(--tap); text-align: center; font-weight: 700; }
+#sheet .eff { color: var(--acc); padding: 0 4px; }
+#sheet .of { opacity: .6; }
+#sheet .rollb { gap: 5px; min-width: 84px; color: var(--acc); font-size: 14px; font-weight: 600; white-space: nowrap; }
+#sheet .rollb svg { width: 18px; height: 18px; flex: none; }
+#sheet .rollb small { font-size: 12.5px; opacity: .85; }
+#sheet .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+#sheet .chips button { padding: 0 12px; border-radius: 22px; font-size: 13.5px; font-weight: 600; }
+#sheet .chips button:disabled { opacity: 1; }
+#sheet .rolls { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+#sheet .rolls .rollb { justify-content: flex-start; padding: 0 10px; color: inherit; }
+#sheet .rolls .rollb small { color: var(--acc); margin-left: auto; }
+.picker { display: flex; flex-direction: column; gap: 6px; }
+.picker button { flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px; text-align: left; }
+.picker button span { font-size: 12.5px; opacity: .7; }
+#msgs .rule { opacity: .8; font-style: italic; }
+#msgs s { opacity: .5; }
+@media (min-width: 900px) and (min-height: 521px) {
+  #sheet { max-height: 50%; }
+}

@@ -1,0 +1,51 @@
+{
+  "v": 1,
+  "id": "six-sides",
+  "name": "Six Sides",
+  "about": "Roll a handful of six-sided dice and count the fives and sixes. Sixes roll again.",
+  "hp": "wounds",
+  "dice": [6],
+  "sections": [
+    { "name": "Makeup", "fields": [
+      { "id": "body", "name": "Body", "type": "number", "min": 1, "max": 6, "def": 2, "roll": "(max(0, body - hurt))d6!>=5" },
+      { "id": "wits", "name": "Wits", "type": "number", "min": 1, "max": 6, "def": 2, "roll": "(max(0, wits - hurt))d6!>=5" },
+      { "id": "heart", "name": "Heart", "type": "number", "min": 1, "max": 6, "def": 2, "roll": "(max(0, heart - hurt))d6!>=5" }
+    ] },
+    { "name": "Knacks", "fields": [
+      { "id": "fight", "name": "Fight", "type": "number", "min": 0, "max": 4, "def": 0 },
+      { "id": "sneak", "name": "Sneak", "type": "number", "min": 0, "max": 4, "def": 0, "roll": "(max(0, body + sneak - hurt))d6!>=5" },
+      { "id": "lore", "name": "Lore", "type": "number", "min": 0, "max": 4, "def": 0, "roll": "(max(0, wits + lore - hurt))d6!>=5" },
+      { "id": "charm", "name": "Charm", "type": "number", "min": 0, "max": 4, "def": 0, "roll": "(max(0, heart + charm - hurt))d6!>=5" }
+    ] },
+    { "name": "Harm", "fields": [
+      { "id": "wounds", "name": "Wounds", "type": "resource", "max": "2 + body", "up": true },
+      { "id": "hurt", "name": "Dice lost", "type": "derived", "formula": "wounds / 2" },
+      { "id": "guard", "name": "Guard", "type": "derived", "formula": "1 + (body + fight) / 3" },
+      { "id": "luck", "name": "Luck", "type": "resource", "max": 3 }
+    ] }
+  ],
+  "rolls": [
+    { "id": "strike", "name": "Strike", "dice": "(max(0, body + fight - hurt))d6!>=5", "vs": "target.guard", "win": "Wounds", "lose": "Glances off" },
+    { "id": "dodge", "name": "Dodge", "dice": "(max(0, wits + sneak - hurt))d6!>=5" }
+  ],
+  "modes": [
+    { "id": "push", "name": "Push it", "die": 6, "add": 2 },
+    { "id": "hard", "name": "Hard", "die": 6, "add": -1 }
+  ],
+  "conditions": [
+    { "id": "shaken", "name": "Shaken", "icon": "😨", "mods": [{ "target": "hurt", "op": "add", "value": 1 }] },
+    { "id": "focused", "name": "Focused", "icon": "🎯", "mods": [{ "target": "hurt", "op": "add", "value": -1 }, { "target": "hurt", "op": "max", "value": 0, "priority": 5 }] },
+    { "id": "cover", "name": "In cover", "icon": "🧱", "mods": [{ "target": "guard", "op": "add", "value": 1 }] },
+    { "id": "bleeding", "name": "Bleeding", "icon": "🩸" },
+    { "id": "out", "name": "Out", "icon": "💤" }
+  ],
+  "triggers": [
+    { "on": "roll", "roll": "strike", "if": "roll.target && roll.total >= target.guard", "do": [
+      { "stat": "wounds", "op": "add", "value": "1 + (roll.total - target.guard) / 2", "who": "target" },
+      { "say": "{target} is wounded." }
+    ] },
+    { "on": "turn.start", "if": "has(bleeding)", "do": [{ "stat": "wounds", "op": "add", "value": 1 }, { "say": "{name} is bleeding." }] },
+    { "on": "turn.end", "if": "has(shaken)", "do": [{ "cond": "shaken", "on": false }] },
+    { "on": "hp.zero", "do": [{ "cond": "out", "on": true }, { "say": "{name} is out of the fight." }] }
+  ]
+}

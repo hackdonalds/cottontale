@@ -88,6 +88,7 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
     <symbol id="i-fwd" viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></symbol>
     <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.500C10 5 7 4.500 4 5v13.500c3-.5 6 0 8 1.500 2-1.500 5-2 8-1.500V5c-3-.5-6 0-8 1.500zM12 6.500V20"/></symbol>
+    <symbol id="i-sheet" viewBox="0 0 24 24"><path d="M6.500 3.500h8l3.500 3.500v13.500h-11.500zM14.500 3.500V7H18M9.500 11h5M9.500 14.500h5M9.500 18h3"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2.500M12 18.500V21M3 12h2.500M18.500 12H21M5.600 5.600l1.800 1.800M16.600 16.600l1.800 1.800M5.600 18.400l1.800-1.800M16.600 7.400l1.800-1.800"/></symbol>
   </svg>
   <div id="hud" hidden>
@@ -109,6 +110,7 @@
         <button data-act="los" data-gm></button>
         <button data-act="boards"><svg><use href="#i-map"/></svg>Boards</button>
         <button data-act="atmo"><svg><use href="#i-moon"/></svg>Atmosphere &amp; sound</button>
+        <button data-act="rules"><svg><use href="#i-sheet"/></svg>Rules</button>
         <button data-act="redo" data-gm><svg><use href="#i-redo"/></svg>Redo</button>
         <button data-act="gen" data-gm><svg><use href="#i-spark"/></svg>Generate a scene</button>
         <button data-act="meadow" data-gm><svg><use href="#i-house"/></svg>Add a starter scene</button>
@@ -178,6 +180,7 @@
           <button id="miniHide" title="Hide from players" aria-label="Hide from players" data-gm></button>
           <select id="miniOwner" title="Who may move it" aria-label="Who may move it" data-gm></select>
           <button id="miniMore" title="More stats" aria-label="More stats"><svg><use href="#i-list"/></svg></button>
+          <button id="miniSheet" title="Character sheet" aria-label="Character sheet"><svg><use href="#i-sheet"/></svg></button>
         </span>
         <span id="stats" hidden>
           <input class="st" maxlength="14" placeholder="AC 15" aria-label="Stat 1" />
@@ -193,6 +196,7 @@
         <button data-tool="ruler" data-in="play" title="Measure"><svg><use href="#i-ruler"/></svg>Measure</button>
         <button data-tool="fog" data-in="play" title="Fog: hide areas from players" data-gm data-gmonly><svg><use href="#i-fog"/></svg>Fog</button>
         <button id="logToggle" data-in="play" title="Dice &amp; chat"><svg><use href="#i-dice"/></svg>Dice</button>
+        <button id="sheetBtn" data-in="play" title="Character sheet"><svg><use href="#i-sheet"/></svg>Sheet</button>
         <button data-cat="land" data-in="build" title="Shape and paint the ground"><svg><use href="#i-hill"/></svg>Land</button>
         <button data-cat="walls" data-in="build" title="Walls, rooms and building blocks"><svg><use href="#i-wall"/></svg>Walls</button>
         <button data-cat="things" data-in="build" title="Furniture, nature and dungeon dressing"><svg><use href="#i-chair"/></svg>Things</button>
@@ -245,6 +249,17 @@
       <p class="hint">Soundscape — the GM picks it for the whole table</p>
       <div id="scapes" class="choices"></div>
       <button id="soundOn"></button>
+    </div>
+
+    <!-- The table's game system (src/ui/sheet.ts): the sheet is drawn from the system's schema. -->
+    <div id="sheet" class="panel sheet closed">
+      <span class="row"><b class="grow"><svg><use href="#i-sheet"/></svg><span id="sheetName"></span></b><button data-close aria-label="Close"><svg><use href="#i-x"/></svg></button></span>
+      <div id="sheetBody"></div>
+    </div>
+    <div id="rules" class="panel sheet closed">
+      <span class="row"><b class="grow"><svg><use href="#i-sheet"/></svg>Rules</b><button data-close aria-label="Close"><svg><use href="#i-x"/></svg></button></span>
+      <p class="hint">The game this table plays: its character sheets, dice and conditions. The GM picks it for everyone.</p>
+      <div id="rulesList"></div>
     </div>
 
     <div id="log" class="panel sheet closed">
