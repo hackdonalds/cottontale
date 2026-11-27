@@ -61,9 +61,12 @@ const flow = {
   results: [] as Result[],
 };
 let host: { el: HTMLElement; ctx: PrepCtx } | null = null;
+/** The 3D model flow (ui/modelPage.ts): fetched when a model is first chosen, and then it draws its own steps in this page. */
+let model: typeof import('./modelPage') | null = null;
 
 const SVG = {
   camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3.500L9 5.500h6L16.500 8H20v11H4z"/><circle cx="12" cy="13.200" r="3.300"/></svg>',
+  model: '<svg viewBox="0 0 24 24"><path d="M12 3 4 7.500v9L12 21l8-4.500v-9zM4 7.500l8 4.500 8-4.500M12 12v9"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="3.500" y="5" width="17" height="14" rx="2"/><path d="m3.500 16.500 5-5 4 4 2.500-2.500 5.500 5.500M15.500 9.500h.01"/></svg>',
 };
 const ico = (id: string) => `<svg><use href="#i-${id}"/></svg>`;
@@ -140,6 +143,7 @@ function paint(): void {
   box.className = `impFlow${flow.step === 'crop' || flow.step === 'cut' ? ' work' : ''}`;
   box.dataset.step = flow.step;
   el.append(box);
+  if (model?.paintModel(box, ctx)) return;
   ({ start, opening: busy, crop, cut, name: naming, saving: busy, failed })[flow.step](box, ctx);
 }
 const go = (step: typeof flow.step) => { flow.step = step; paint(); };
@@ -180,11 +184,25 @@ function take(files: FileList | null): void {
   if (flow.step === 'start') void next();
 }
 
+/** A .glb was chosen: hand it to the model flow, which is fetched now if this is the first. */
+async function takeModel(file: File | undefined): Promise<void> {
+  if (!file) return;
+  try {
+    model ??= await import('./modelPage');
+    model.startModel(file, { repaint: paint, result: (r) => void flow.results.unshift(r), packName, shelves: shelvesFor });
+  } catch {
+    flow.results.unshift({ name: file.name, ok: false, text: 'The part of the app that reads models could not be fetched. Check the connection and try again.' });
+    paint();
+  }
+}
+
 function start(box: HTMLElement, ctx: PrepCtx): void {
   box.innerHTML = `
-    <p>Turn a photo or a picture into a piece for this table: a standing figure, a thing, or a map tile laid on the ground.</p>
+    <p>Turn a photo or a picture into a piece for this table: a standing figure, a thing, or a map tile laid on the ground. Or bring a 3D model (a .glb file from a scanning app or a download).</p>
     <button class="primary impBig" id="impShoot">${SVG.camera}Take a photo</button>
     <button class="impBig" id="impPick">${SVG.image}Choose pictures</button>
+    <button class="impBig" id="impModel">${SVG.model}Add a 3D model</button>
+    <input type="file" id="impModelFile" accept=".glb,model/gltf-binary,application/octet-stream" hidden />
     <input type="file" id="impCamera" accept="image/*" capture="environment" hidden />
     <input type="file" id="impFiles" accept="image/*" multiple hidden />
     <ul class="impDone" id="impResults" aria-live="polite"></ul>
@@ -195,6 +213,9 @@ function start(box: HTMLElement, ctx: PrepCtx): void {
   q('impShoot').onclick = () => cam.click();
   q('impPick').onclick = () => files.click();
   for (const input of [cam, files]) input.onchange = () => { take(input.files); input.value = ''; };
+  const glb = q<HTMLInputElement>('impModelFile');
+  q('impModel').onclick = () => glb.click();
+  glb.onchange = () => { const file = glb.files?.[0]; glb.value = ''; void takeModel(file); };
   q('impPacks').onclick = () => ctx.open('packs');
   const list = q('impResults');
   for (const r of flow.results.slice(0, 8)) {
@@ -205,7 +226,7 @@ function start(box: HTMLElement, ctx: PrepCtx): void {
     li.children[1].textContent = r.text;
     list.append(li);
   }
-  if (!ctx.app.full()) { q<HTMLButtonElement>('impShoot').disabled = q<HTMLButtonElement>('impPick').disabled = true; }
+  if (!ctx.app.full()) { q<HTMLButtonElement>('impShoot').disabled = q<HTMLButtonElement>('impPick').disabled = q<HTMLButtonElement>('impModel').disabled = true; }
 }
 
 function busy(box: HTMLElement): void {
