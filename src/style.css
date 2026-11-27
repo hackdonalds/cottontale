@@ -162,7 +162,7 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 .slider input { flex: 1; min-width: 0; height: 44px; margin: 0; accent-color: var(--accent, #ffd166); }
 .sheet { overflow-y: auto; }
 .sheet > * { flex: none; }
-#soundOn { justify-content: center; }
+#soundOn, #hapticsOn { justify-content: center; }
 #genThemes { grid-template-columns: repeat(2, 1fr); }
 #genRooms { display: flex; flex-direction: column; gap: 4px; }
 #genRooms .row { align-items: center; gap: 6px; }
@@ -174,7 +174,7 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 #msgs .sys { opacity: .55; font-style: italic; }
 #msgs b { font-weight: 650; }
 #msgs .tot { font-weight: 800; color: var(--acc); }
-#dice { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+#dice { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 #dice button { padding: 0; position: relative; }
 /* How many of each die are in your hand. */
 #dice button[data-n]::after, #logToggle[data-n]::after { content: attr(data-n); position: absolute; top: -5px; right: -3px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--acc); color: #201a05; font: 700 12px/20px system-ui, sans-serif; }

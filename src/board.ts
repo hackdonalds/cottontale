@@ -5,6 +5,7 @@ import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
+import { buzz } from './haptics';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
@@ -1538,7 +1539,16 @@ export class Board {
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack.length = 0;
     this.store.set(k, v);
-    if (this.gesture?.touch) navigator.vibrate?.(6);
+    if (this.gesture?.touch) buzz(6);
+  }
+
+  /** Throw the dice in hand with no finger on the table (a shake of the phone): they appear over `at` and leave at `vel`. */
+  toss(at: Vec, vel: Vec): void {
+    if (!this.hand.length || this.gesture?.throwing) return; // a finger holding them has the say
+    this.dice.hold(this.hand, this.diceColor, new THREE.Vector3(...at));
+    this.dice.update(0); // puts them in place, so the throw starts from there
+    this.hooks.onThrow(this.dice.holdStarts(), vel);
+    this.invalidate();
   }
 
   /** Where thrown dice should land (the middle of the view) and where the thrower stands. */
@@ -1721,7 +1731,7 @@ export class Board {
             const s = this.pickSurface();
             if (!s) return;
             g.done = true;
-            navigator.vibrate?.(15);
+            buzz(15);
             this.hooks.onPing([+s.point.x.toFixed(2), +s.point.y.toFixed(2), +s.point.z.toFixed(2)]);
           }, LONG_PRESS);
         }
