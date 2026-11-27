@@ -37,6 +37,7 @@ export class Look {
   private composer: EffectComposer;
   private bokeh: BokehPass;
   private ao: GTAOPass;
+  private bloom: UnrealBloomPass;
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     this.composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(size.x, size.y, { samples: 4, type: THREE.HalfFloatType }));
@@ -45,7 +46,7 @@ export class Look {
     ao.blendIntensity = 1.15;
     ao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1.4, thickness: 1.2, scale: 1.25, samples: 12 });
     this.composer.addPass(ao);
-    this.composer.addPass(new UnrealBloomPass(size, 0.32, 0.7, 0.92));
+    this.composer.addPass((this.bloom = new UnrealBloomPass(size, 0.32, 0.7, 0.92)));
     this.bokeh = new BokehPass(scene, camera, { focus: 14, aperture: 0.0006, maxblur: 0.0045 });
     this.composer.addPass(this.bokeh);
     // Grading comes last, on the finished picture: its curves are made for values between
@@ -53,6 +54,8 @@ export class Look {
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new ShaderPass(GRADE));
   }
+  /** How far light spills around the brightest things: little in daylight, a lot in the dark. */
+  setGlow(strength: number): void { this.bloom.strength = strength; }
   /** 0: every pass. 1: only the cheap ones (glow and grade). */
   setLevel(level: number): void {
     this.ao.enabled = this.bokeh.enabled = level === 0;

@@ -676,6 +676,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     choices($('skies'), SKY_NAMES, 'sky', 'day');
     choices($('seasons'), SEASON_NAMES, 'season', 'summer');
     choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
+    const glow = $<HTMLInputElement>('glow');
+    if (document.activeElement !== glow) glow.value = String(setting(store, 'glow', 1));
+    glow.disabled = !full();
     $('soundOn').innerHTML = sound.enabled ? `${ico('sound')}Sound on this device: on` : `${ico('mute')}Sound on this device: off`;
   }
   $('soundOn').onclick = () => {
@@ -711,6 +714,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderBoards(active);
     const l = setting(store, 'los', false);
     if (l !== los) { los = l; board.refresh(); }
+    board.setGlow(setting(store, 'glow', 1));
     const sky = setting<Sky>(store, 'sky', 'day');
     board.setSky(sky);
     board.setSeason(setting<Season>(store, 'season', 'summer'));
@@ -987,6 +991,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     ls.set('genRecent', JSON.stringify(genRecent));
     renderGen();
   }
+  $<HTMLInputElement>('glow').oninput = (e) => { if (full()) store.set('set:glow', +(e.target as HTMLInputElement).value); };
   $('genGo').onclick = () => buildScene(genOpts, sceneRec()?.rooms.filter((q) => q.lock) ?? []);
   $('genAgain').onclick = () => {
     const rec = sceneRec(), locked = rec?.o.theme === genOpts.theme ? rec.rooms.filter((q) => q.lock) : [];

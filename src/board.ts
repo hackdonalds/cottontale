@@ -8,6 +8,7 @@ import { DiceView, type Kind, type Start } from './dice';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { Look } from './look';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 export type { CellVal, MiniVal };
 export type Tool = 'move' | 'build' | 'mini' | 'ruler' | 'fog';
@@ -252,10 +253,11 @@ function plate(v: MiniVal): THREE.Sprite {
   return s;
 }
 
-const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number }> = {
-  day: { bg: '#100e0d', sun: '#ffdcae', sunI: 3.9, hemi: '#a9bdea', hemiI: 0.95 },
-  dusk: { bg: '#120b0f', sun: '#ff9a58', sunI: 2.3, hemi: '#b79fc9', hemiI: 0.6 },
-  night: { bg: '#05060b', sun: '#8fb0ff', sunI: 0.75, hemi: '#6f84c6', hemiI: 0.34 }, // dark enough for torches to matter
+/** `spill`: how far fire and magic glow into the picture; `sheen`: how much of the room shows in polished things. */
+const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number; spill: number; sheen: number }> = {
+  day: { bg: '#100e0d', sun: '#ffdcae', sunI: 3.9, hemi: '#a9bdea', hemiI: 0.85, spill: 0.14, sheen: 0.32 },
+  dusk: { bg: '#120b0f', sun: '#ff9a58', sunI: 2.3, hemi: '#b79fc9', hemiI: 0.55, spill: 0.3, sheen: 0.2 },
+  night: { bg: '#05060b', sun: '#8fb0ff', sunI: 0.75, hemi: '#6f84c6', hemiI: 0.32, spill: 0.44, sheen: 0.08 }, // dark enough for torches to matter
 };
 
 export class Board {
@@ -286,6 +288,9 @@ export class Board {
   /** 0 the full look, 1 its light version, 2 plain. */
   private lookLevel = 2;
   private lamps: THREE.PointLight[] = [];
+  private spill = 0.2;
+  /** How strongly fires, torches and crystals light the table: the GM's dial, 0 (out) to 2. */
+  private glow = 1;
   private litAt = new THREE.Vector3(1e9, 0, 0);
   private sun: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
@@ -363,10 +368,28 @@ export class Board {
       this.look = new Look(this.renderer, this.scene, this.camera);
       this.look.setLevel(this.lookLevel);
     }
+    // A plain lit room for polished things to reflect: water, metal and glaze stop looking like
+    // matt plastic. It is baked once into a small map, so it costs nothing per frame.
+    if (!lowEnd) {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+    }
     // Fire and magic light what stands near them. A fixed handful of lamps is handed to
     // whichever sources are nearest the middle of the view (see relight).
     for (let i = 0; i < (this.coarse ? 2 : 4); i++) {
       const lamp = new THREE.PointLight('#ffb46b', 0, 7.5, 2);
+      // On a desktop the lamps throw shadows too, so firelight stops at a wall instead of
+      // shining through it. Like the sun's, they are only redrawn when the table changes.
+      if (!this.coarse) {
+        lamp.castShadow = true;
+        lamp.shadow.mapSize.setScalar(512);
+        lamp.shadow.camera.near = 0.08;
+        lamp.shadow.camera.far = 8;
+        lamp.shadow.bias = -0.006;
+        lamp.shadow.normalBias = 0.03;
+        lamp.shadow.radius = 2;
+      }
       this.lamps.push(lamp);
       this.scene.add(lamp);
     }
@@ -537,6 +560,9 @@ export class Board {
     this.sun.intensity = s.sunI;
     this.hemi.color.set(s.hemi);
     this.hemi.intensity = s.hemiI;
+    this.spill = s.spill;
+    this.scene.environmentIntensity = s.sheen;
+    this.look?.setGlow(this.spill * (0.5 + 0.5 * Math.min(this.glow, 2)));
     this.invalidate();
   }
 
@@ -614,19 +640,36 @@ export class Board {
 
   // ---- store → scene -------------------------------------------------------
 
+  /** Turn the table's firelight up or down (1 is as modelled). */
+  setGlow(strength: number): void {
+    const k = Math.max(0, Math.min(2, Number.isFinite(strength) ? strength : 1));
+    if (k === this.glow) return;
+    this.glow = k;
+    this.look?.setGlow(this.spill * (0.5 + 0.5 * k));
+    this.relight();
+    this.invalidate();
+  }
+
   /** Hand the lamps to the fires, torches and crystals nearest the middle of the view. */
-  private relight(): void {
+  private relight(): boolean {
     const at = this.litAt.copy(this.controls.target), near: { d: number; p: THREE.Vector3; glow: (typeof GLOWS)[string] }[] = [];
     for (const [key, g] of this.props) {
       const glow = GLOWS[this.store.get<CellVal>(key)?.i ?? ''];
       if (glow && g.visible) near.push({ d: g.position.distanceToSquared(at), p: g.position, glow });
     }
     near.sort((a, b) => a.d - b.d);
+    let moved = false;
     this.lamps.forEach((lamp, i) => {
       const n = near[i];
-      lamp.intensity = n ? n.glow[1] : 0;
-      if (n) { lamp.color.set(n.glow[0]); lamp.position.set(n.p.x, n.p.y + n.glow[2], n.p.z); }
+      lamp.intensity = n ? n.glow[1] * this.glow : 0;
+      lamp.visible = !!n && this.glow > 0; // a lamp with nothing to light costs nothing
+      if (!n) return;
+      const y = n.p.y + n.glow[2];
+      if (lamp.position.x !== n.p.x || lamp.position.y !== y || lamp.position.z !== n.p.z) moved = true;
+      lamp.color.set(n.glow[0]);
+      lamp.position.set(n.p.x, y, n.p.z);
     });
+    return moved; // their shadows need drawing again
   }
 
   /** Ask for a redraw. The board only renders when something changed. */
@@ -1855,7 +1898,7 @@ export class Board {
     for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); changed = true; }
     if (this.edgesDirty) { this.rebuildEdges(); changed = true; }
     if (this.coverDirty) { this.rebuildCover(); changed = true; }
-    if (changed || this.controls.target.distanceToSquared(this.litAt) > 4) this.relight();
+    if ((changed || this.controls.target.distanceToSquared(this.litAt) > 4) && this.relight()) changed = true;
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {
       if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;

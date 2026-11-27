@@ -162,7 +162,9 @@ export function withDetail<T extends THREE.MeshStandardMaterial>(mat: T, terrain
 
 /** How kit pieces are drawn into the shadow map: everything casts a shadow except what glows. */
 const SHADOW = new THREE.MeshDepthMaterial();
-SHADOW.onBeforeCompile = (shader) => {
+/** The same for the shadows thrown by a lamp: a flame must not shade the light burning inside it. */
+const LAMP_SHADOW = new THREE.MeshDistanceMaterial();
+SHADOW.onBeforeCompile = LAMP_SHADOW.onBeforeCompile = (shader) => {
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nattribute float kind;')
     .replace('#include <begin_vertex>', '#include <begin_vertex>\nif (kind > 6.5) transformed = vec3(0.0);');
@@ -283,6 +285,7 @@ export function kitMesh(id: string): THREE.Mesh | null {
   const mesh = new THREE.Mesh(geo, geo.userData.atlas ? painted(geo.userData.atlas) : KIT);
   mesh.castShadow = mesh.receiveShadow = true;
   mesh.customDepthMaterial = SHADOW;
+  mesh.customDistanceMaterial = LAMP_SHADOW;
   return mesh;
 }
 
@@ -305,6 +308,7 @@ export function kitProp(id: string, x: number, y: number, z: number, crowd?: [nu
   const mesh = new THREE.Mesh(family[Math.floor(rand(x, y, z, 1) * family.length)], TINTS[Math.floor(rand(x, y, z, 2) * TINTS.length)]);
   mesh.castShadow = mesh.receiveShadow = true;
   mesh.customDepthMaterial = SHADOW;
+  mesh.customDistanceMaterial = LAMP_SHADOW;
   const wild = WILD[id];
   if (wild) {
     mesh.rotation.set((rand(x, y, z, 3) - 0.5) * wild.lean, rand(x, y, z, 4) * Math.PI * 2, (rand(x, y, z, 5) - 0.5) * wild.lean, 'YXZ');

@@ -232,6 +232,15 @@ for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Rain']) {
 await a.click('#skies button:has-text("Night")');
 const playing = await a.evaluate(() => window.__ct.sound.playing);
 assert(await ok(b, () => window.__ct.store.get('set:amb') === 'rain' && window.__ct.store.get('set:sky') === 'night') && ['rain', 'off'].includes(playing), `sky and soundscape are shared (this device is playing: ${playing})`);
+// Firelight: the GM's dial reaches everyone, and at zero the lamps are out.
+await a.evaluate(() => window.__ct.store.set('b:6,0,6', { i: 'stone' }));
+await a.evaluate(() => window.__ct.store.set('b:6,1,6', { i: 'torch' }));
+await a.fill('#glow', '2');
+assert(await ok(b, () => window.__ct.store.get('set:glow') === 2 && window.__ct.board.lamps.some((l) => l.intensity > 15)), 'the firelight slider turns the lamps up for everyone');
+await a.fill('#glow', '0');
+assert(await ok(b, () => window.__ct.board.lamps.every((l) => l.intensity === 0)), 'and at zero puts them out');
+await a.fill('#glow', '1');
+await a.evaluate(() => { window.__ct.store.set('b:6,1,6', null); window.__ct.store.set('b:6,0,6', null); });
 await a.click('#scapes button:has-text("Silence")');
 await a.click('#skies button:has-text("Day")');
 await a.click('#atmo [data-close]');
