@@ -12,6 +12,8 @@ const { chromium, devices } = pw;
 
 // E2E_PORT moves the three local servers (site, relay = +1, blossom = +2) so several runs can share a machine.
 const PORT = Number(process.env.E2E_PORT ?? 4188), RELAY = process.env.E2E_PORT ? PORT + 1 : 7788, BLOSSOM = PORT + 2;
+// E2E_SLOW=4 gives every wait four times as long: for a machine that is busy with other runs.
+const SLOW = +(process.env.E2E_SLOW ?? 1);
 const procs = [
   spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: String(RELAY) }, stdio: 'ignore' }),
   spawn('node', ['node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' }), // not npx: killing npx leaves vite running
@@ -32,6 +34,7 @@ const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', 
 const url = (room) => `http://localhost:${PORT}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
+  page.setDefaultTimeout(30000 * SLOW);
   page.on('pageerror', (e) => { console.log('pageerror', name, e.message); done(1); });
   await page.goto(url(room));
   await page.fill('#name', name);
@@ -110,7 +113,7 @@ await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/dice-desktop.png` }
 assert(true, 'mixed hands, percentile, /r and chat delivered');
 
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
-const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 }).then(() => true, () => false);
+const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 * SLOW }).then(() => true, () => false);
 const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
 await a.keyboard.press('1');
 await a.click('#menuBtn');
@@ -159,7 +162,7 @@ const SHOWN = () => {
   return n;
 };
 const drawn = (page) => page.evaluate(SHOWN);
-const shows = (page, n) => page.waitForFunction(`(${SHOWN})() === ${n}`, null, { timeout: 8000 }).then(() => true, () => false);
+const shows = (page, n) => page.waitForFunction(`(${SHOWN})() === ${n}`, null, { timeout: 8000 * SLOW }).then(() => true, () => false);
 await a.keyboard.press('5');
 await a.mouse.move(top[0] - 40, top[1]);
 await a.mouse.down();
