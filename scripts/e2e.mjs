@@ -3,8 +3,12 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 
-// Works with a project-local or a globally installed Playwright.
-const { chromium, devices } = createRequire(import.meta.url)('playwright');
+// Works with Playwright and its own browser, or with playwright-core driving the Chrome already
+// on this machine (no browser download).
+const require = createRequire(import.meta.url);
+let pw, channel;
+try { pw = require('playwright'); } catch { pw = require('playwright-core'); channel = 'chrome'; }
+const { chromium, devices } = pw;
 
 const procs = [
   spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: '7788' }, stdio: 'ignore' }),
@@ -15,7 +19,7 @@ const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (
 process.on('uncaughtException', (e) => { console.error(e); done(1); });
 await new Promise((r) => setTimeout(r, 2500));
 
-const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const url = (room) => `http://localhost:4188/#room=${room}&relays=ws://localhost:7788`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
@@ -102,8 +106,8 @@ const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2))
 await a.keyboard.press('1');
 await a.click('#menuBtn');
 await a.click('[data-act="gm"]');
-assert(await ok(b, (id) => document.body.classList.contains('player') && getComputedStyle(document.querySelector('[data-tool="build"]')).display === 'none'
-  && !window.__ct.board.hooks.canMove(id) && /🎩/.test(document.querySelector('#players').textContent), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
+assert(await ok(b, (id) => document.body.classList.contains('player') && getComputedStyle(document.querySelector('#modes')).display === 'none'
+  && !window.__ct.board.hooks.canMove(id) && !!document.querySelector('#players svg'), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
 await a.selectOption('#miniOwner', { label: '🎮 Bo' });
@@ -128,16 +132,24 @@ assert(await ok(b, () => !document.querySelector('#init').hidden && document.que
 await a.click('#endFight');
 assert(await ok(b, () => document.querySelector('#init').hidden), 'ending the fight clears the turn order');
 
-const drawn = (page) => page.evaluate(() => [...window.__ct.board.layers.values()].reduce((n, l) => n + l.mesh.count, 0));
+// How many blocks a player's table shows: everything not under fog or above the cutaway.
+const SHOWN = () => {
+  const b = window.__ct.board;
+  let n = 0;
+  for (const l of b.layers.values()) for (const k of l.cells) if (!b.cellHidden(...k.slice(2).split(',').map(Number))) n++;
+  return n;
+};
+const drawn = (page) => page.evaluate(SHOWN);
+const shows = (page, n) => page.waitForFunction(`(${SHOWN})() === ${n}`, null, { timeout: 8000 }).then(() => true, () => false);
 await a.keyboard.press('5');
 await a.mouse.move(top[0] - 40, top[1]);
 await a.mouse.down();
 await a.mouse.move(top[0] + 40, top[1], { steps: 8 });
 await a.mouse.up();
-assert(await ok(b, () => [...window.__ct.store.keys('f:')].length > 0 && [...window.__ct.board.layers.values()].every((l) => l.mesh.count === 0))
+assert(await ok(b, () => [...window.__ct.store.keys('f:')].length > 0) && await shows(b, 0)
   && (await drawn(a)) === 2, 'fog painted by the GM hides the terrain under it from players only');
 await a.click('#palette [title="Reveal everything"]');
-assert(await ok(b, () => [...window.__ct.board.layers.values()].reduce((n, l) => n + l.mesh.count, 0) === 2), 'revealing brings it back');
+assert(await shows(b, 2), 'revealing brings it back');
 
 await a.keyboard.press('4');
 await a.mouse.move(300, 520);
@@ -149,7 +161,7 @@ await a.mouse.click(300, 520);
 assert(await ok(b, () => window.__ct.board.rulers.size === 0), 'a tap puts the ruler away for everyone');
 
 await a.click('#floorDown');
-const draws = (n) => ok(a, (n) => [...window.__ct.board.layers.values()].reduce((c, l) => c + l.mesh.count, 0) === n, n);
+const draws = (n) => shows(a, n);
 assert(await draws(1) && (await drawn(b)) === 2, 'cutaway hides the upper floor, for that player only');
 await a.click('#floorUp');
 assert(await draws(2), 'and shows it again');
@@ -184,7 +196,7 @@ await a.waitForFunction(() => [...window.__ct.store.keys('b:')].length === 1);
 await b.waitForTimeout(600);
 assert((await count(b, 'b:')) === 2 && await b.evaluate(() => [...window.__ct.store.entries.keys()].some((k) => k.startsWith('@'))), 'players stay on their board while the GM builds another');
 await a.click('#prepGo');
-assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 1 && [...window.__ct.board.layers.values()].reduce((n, l) => n + l.mesh.count, 0) === 1 && window.__ct.board.minis.size === 0), 'the GM brings everyone to the new board');
+assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 1 && window.__ct.board.minis.size === 0) && await shows(b, 1), 'the GM brings everyone to the new board');
 await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
 await a.click('#boardList .row:first-child button[title="Bring everyone here"]');
@@ -192,8 +204,8 @@ assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 2 && windo
 await a.click('#boards [data-close]');
 
 // Copy an area and paste it elsewhere.
-await a.keyboard.press('2');
-await a.selectOption('#palette select', 'Copy & paste');
+await a.click('[data-mode="build"]');
+await a.click('[data-cat="scenes"]');
 await a.click('#palette [title^="Copy"]');
 await a.mouse.move(top[0] - 30, top[1]);
 await a.mouse.down();
@@ -232,11 +244,13 @@ await b.waitForFunction((n) => [...window.__ct.store.keys('b:')].length === n, t
 assert(total > 400, `starter scene synced live (${total} cells)`);
 await a.evaluate(() => window.__ct.net.snapshot());
 await a.screenshot({ path: process.env.SHOT ?? '/tmp/cottontale-e2e.png' });
+const walls = await count(a, 'w:'), figures = await count(a, 'm:');
+assert(walls > 20, `the starter cottage stands on edge walls (${walls})`);
 await a.close();
 await b.close();
 const c = await join('Cy');
 await c.waitForFunction((n) => [...window.__ct.store.keys('b:')].length === n, total);
-assert((await count(c, 'm:')) === 1, 'late joiner restored the whole table from snapshots');
+assert((await count(c, 'm:')) === figures && (await count(c, 'w:')) === walls, 'late joiner restored the whole table from snapshots');
 
 // ---- phones: the primary target. Real touch events, both orientations. ----
 for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }]]) {
@@ -248,7 +262,8 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const [cx, cy] = [viewport.width / 2, viewport.height / 2];
   const settle = () => p.waitForTimeout(120);
 
-  await p.tap('[data-tool="build"]');
+  await p.tap('[data-mode="build"]');
+  await p.tap('#palette [title="Grass"]');
   await touch('touchStart', [[cx, cy]]);
   await touch('touchEnd', []);
   await settle();
@@ -273,7 +288,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await settle();
   assert((await cells()).length === 1, 'two-finger pinch/twist never edits');
 
-  await p.tap('[data-tool="mini"]');
+  await p.tap('[data-cat="figures"]');
   await touch('touchStart', [[cx + 60, cy + 60]]);
   await touch('touchEnd', []);
   await p.waitForFunction(() => [...window.__ct.store.keys('m:')].length === 1);
@@ -285,7 +300,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return { x: v.x, z: v.z, sx: ((s.x + 1) / 2) * c.clientWidth, sy: ((1 - s.y) / 2) * c.clientHeight };
   });
   const m0 = await mini();
-  await p.tap('[data-tool="move"]');
+  await p.tap('[data-mode="play"]');
   await touch('touchStart', [[m0.sx, m0.sy]]);
   for (let i = 1; i <= 8; i++) await touch('touchMove', [[m0.sx - i * 12, m0.sy - i * 3]]);
   await touch('touchEnd', []);
@@ -313,12 +328,81 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   let bad = await layout();
   assert(await p.evaluate(() => !document.querySelector('#minipanel').hidden) && !bad.length, `mini editor layout clean ${bad.join('; ')}`);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-mini.png` });
-  await p.tap('[data-tool="build"]');
-  bad = await layout();
-  assert(!bad.length, `palette layout clean ${bad.join('; ')}`);
+  // Build mode: every category's tray, then the tools that came with the redesign.
+  await p.tap('[data-mode="build"]');
+  for (const cat of ['land', 'walls', 'things', 'figures', 'scenes']) {
+    await p.tap(`[data-cat="${cat}"]`);
+    bad = await layout();
+    assert(!bad.length && await p.evaluate(() => document.querySelector('#palette').classList.contains('tray')), `${cat} tray layout clean ${bad.join('; ')}`);
+  }
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-build.png` });
+  const keys = (prefix) => p.evaluate((q) => [...window.__ct.store.keys(q)], prefix);
+  const drag = async (x0, y0, x1, y1) => {
+    await touch('touchStart', [[x0, y0]]);
+    for (let i = 1; i <= 10; i++) await touch('touchMove', [[x0 + ((x1 - x0) * i) / 10, y0 + ((y1 - y0) * i) / 10]]);
+    await touch('touchEnd', []);
+    await settle();
+  };
+  // Land: a tap with the raise brush lifts the ground a level, and one undo takes it back.
+  await p.tap('[data-cat="land"]');
+  await p.tap('#palette [title="Raise the ground"]');
+  const spot = await p.evaluate(() => { // where the one block is on screen now (the pinch moved the camera)
+    const { board, store } = window.__ct;
+    const [x, y, z] = [...store.keys('b:')][0].slice(2).split(',').map(Number);
+    const s = board.ground.position.clone().set(x + 0.5, y + 1, z + 0.5).project(board.camera), c = document.querySelector('#c');
+    return [((s.x + 1) / 2) * c.clientWidth, ((1 - s.y) / 2) * c.clientHeight];
+  });
+  await touch('touchStart', [spot]);
+  await touch('touchEnd', []);
+  await settle();
+  assert((await cells()).length === 2 && (await cells()).some((k) => k.split(',')[1] === '1'), 'the raise brush lifts the ground a level');
+  await p.tap('#undo');
+  await settle();
+  assert((await cells()).length === 1, 'and undo lowers it again');
+  // Walls: a tap puts one wall on an edge, a drag draws a run, a second finger still never edits.
+  await p.tap('[data-cat="walls"]');
+  await p.tap('#palette [title="Stone wall"]');
+  await touch('touchStart', [[cx - 40, cy + 90]]);
+  await touch('touchEnd', []);
+  await settle();
+  assert((await keys('w:')).length === 1 && (await cells()).length === 1, 'a wall goes on the edge of a cell, not in it');
+  const h = viewport.height; // strokes are placed by the height of the screen, so they clear the dock either way up
+  await drag(cx - 170, cy + h * 0.15, cx + 150, cy + h * 0.21);
+  const run = await keys('w:');
+  assert(run.length >= 3 && new Set(run.slice(1).map((k) => k.split(',')[3])).size === 1, `one-finger drag draws a straight run of wall (${run.length - 1})`);
+  await p.tap('#undo');
+  await settle();
+  assert((await keys('w:')).length === 1, 'undo takes the whole run back');
+  // A room in one drag: walls all round with a doorway, and a floor if there is ground to lay it on.
+  await p.tap('#palette [title="Drag out its floor"]');
+  await drag(cx - 150, cy - h * 0.2, cx + 60, cy - h * 0.07);
+  const room = await p.evaluate(() => [...window.__ct.store.keys('w:')].map((k) => window.__ct.store.get(k).i));
+  assert(room.length > 8 && room.filter((i) => i === 'walldoor').length === 1, `dragging the room brush builds a room with one doorway (${room.length - 1} walls)`);
+  await p.tap('#undo');
+  await settle();
+  // Scenes: generate a dungeon from the sheet; its rooms are listed, and one can be refurnished alone.
+  await p.tap('[data-cat="scenes"]');
+  await p.tap('#palette [title="Generate a scene"]');
+  await p.tap('#genThemes button:has-text("Dungeon")');
+  await p.tap('#genGo');
+  await p.waitForFunction(() => [...window.__ct.store.keys('b:')].length > 100 && document.querySelectorAll('#genRooms .row').length > 2);
+  bad = await layout();
+  const fitsGen = await p.evaluate(() => { const r = document.querySelector('#gen').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; });
+  assert(fitsGen && !bad.length, `generate sheet opens on screen ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-generate.png` });
+  const wallsBefore = JSON.stringify((await keys('w:')).sort()), seedBefore = await p.evaluate(() => window.__ct.store.get('gen').rooms[1].seed);
+  await p.evaluate(() => document.querySelectorAll('#genRooms .row')[1].querySelectorAll('button')[1].click());
+  await settle();
+  assert(JSON.stringify((await keys('w:')).sort()) === wallsBefore && await p.evaluate((s) => window.__ct.store.get('gen').rooms[1].seed !== s, seedBefore), 'refurnishing one room leaves every wall where it was');
+  await p.tap('#gen [data-close]');
+  await p.tap('#undo');
+  await p.tap('#undo');
+  await settle();
+  assert((await cells()).length === 1 && (await keys('w:')).length === 1, 'undo brings back the table from before the scene');
+  await p.evaluate(() => window.__ct.store.set([...window.__ct.store.keys('w:')][0], null));
 
   // Measure with one finger; press and hold to ping.
+  await p.tap('[data-mode="play"]');
   await p.tap('[data-tool="ruler"]');
   await touch('touchStart', [[cx - 90, cy - 70]]);
   for (let i = 1; i <= 6; i++) await touch('touchMove', [[cx - 90 + i * 20, cy - 70 + i * 4]]);

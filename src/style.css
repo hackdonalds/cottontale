@@ -116,7 +116,7 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 #minipanel.readonly :is(button, select, #miniColors), #minipanel.readonly .stats :is(#ini, span:nth-of-type(3)) { display: none; }
 
 /* Turn order strip, under the top bar. */
-#strips { position: absolute; top: calc(70px + var(--st)); left: calc(8px + var(--sl)); right: calc(8px + var(--sr)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+#strips { position: absolute; top: calc(78px + var(--st)); left: calc(8px + var(--sl)); right: calc(8px + var(--sr)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
 #strips > * { pointer-events: auto; }
 #init, #prep { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; }
 #prepText { font-size: 13px; min-width: 0; }
@@ -177,8 +177,17 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
   #tools { order: -1; flex: none; }
   #tools button { flex: none; width: 46px; height: 46px; }
   #palette { flex: 1; min-width: 0; }
+  /* A phone on its side has no height to spare: actions and pictures share one row. */
+  #palette.tray { flex-direction: row; align-items: center; padding: 6px 0; gap: 0; }
+  #palette.tray > div { min-width: 0; }
+  #palette.tray > div:first-child { flex: 0 1 auto; max-width: 42%; }
+  #palette.tray > div:last-child { flex: 1 1 0; border-left: 1px solid var(--line); }
+  #palette.tray > div:only-child { max-width: none; border-left: 0; }
+  .tile i { width: 50px; height: 50px; }
+  .tile { width: 56px; }
+  .tile span { max-width: 56px; }
   #minipanel { flex: 0 1 340px; margin-left: auto; }
-  #floors { top: calc(70px + var(--st)); flex-direction: row; right: auto; left: calc(8px + var(--sl)); }
+  #floors { top: calc(78px + var(--st)); flex-direction: row; right: auto; left: calc(8px + var(--sl)); }
   #strips { left: calc(170px + var(--sl)); }
   .sheet { left: auto; width: min(340px, 50%); top: calc(66px + var(--st)); bottom: calc(70px + var(--sb)); max-height: none; overflow-y: auto; }
   #toast { top: 16%; }
@@ -196,9 +205,9 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
   #logToggle { display: none; }
   #palette { position: absolute; left: 10px; bottom: 10px; max-width: calc(100% - 330px); }
   #minipanel { position: absolute; left: 72px; top: 50%; transform: translateY(-50%); width: 320px; }
-  #strips { left: 50%; right: auto; transform: translateX(-50%); width: max-content; max-width: 60%; top: 64px; }
+  #strips { left: 50%; right: auto; transform: translateX(-50%); width: max-content; max-width: 60%; top: 78px; }
   .sheet { left: auto; right: 10px; top: 64px; bottom: auto; width: 320px; max-height: 50%; }
-  #floors { top: 64px; }
+  #floors { top: 78px; }
   #miniColors { flex-wrap: wrap; }
   #log, #log.closed { display: flex; left: auto; right: 10px; top: auto; bottom: 10px; width: 300px; max-height: min(42%, 420px); }
 }

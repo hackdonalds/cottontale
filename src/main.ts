@@ -379,6 +379,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let cat: Cat = 'land';
   const building = () => board.tool === 'build' || board.tool === 'mini';
   function setTool(t: Tool): void {
+    // Arriving by keyboard shortcut: the tray shows what the tool is for.
+    if (t === 'mini') cat = 'figures';
+    else if (t === 'build' && cat === 'figures') cat = 'land';
     board.setTool(t);
     const build = building();
     for (const b of $('tools').querySelectorAll<HTMLButtonElement>('button')) {
