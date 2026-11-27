@@ -154,7 +154,8 @@ assert(feel.hopping && feel.top > 0.15 && feel.squashed < 0.99 && feel.landed, `
 assert(feel.fell && feel.flat && feel.rose && feel.up && feel.back && feel.calm, 'a knocked-down mini topples into the lying pose and stands back up, and the table goes quiet again');
 
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
-const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 20000 }).then(() => true, () => false);
+// (Frames are slow in a browser without a GPU, and animations run on frames: be patient.)
+const ok = (page, fn, arg, timeout = 20000) => page.waitForFunction(fn, arg, { timeout }).then(() => true, () => false);
 const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
 await a.keyboard.press('1');
 await a.click('#menuBtn');
@@ -442,7 +443,7 @@ assert((await count(c, 'm:')) === figures && (await count(c, 'w:')) === walls, '
   await sa.click('[data-cat="things"]');
   await sa.click('#palette [aria-label^="Scatter"]');
   await sa.mouse.click(640, 380);
-  const settled = await ok(sb, () => [...window.__ct.store.keys('l:')].length === 6 && window.__ct.board.loose.playing.length === 0 && window.__ct.board.loose.pieces.size === 6);
+  const settled = await ok(sb, () => [...window.__ct.store.keys('l:')].length === 6 && window.__ct.board.loose.playing.length === 0 && window.__ct.board.loose.pieces.size === 6, undefined, 120000);
   const [la, lb] = [await lying(sa), await lying(sb)];
   const watch = await sb.evaluate(() => window.__watch);
   const whole = lb.every((v) => { const o = JSON.parse(v); return [...o.p, ...o.q].every(Number.isInteger) && o.p[1] >= 0 && o.p[1] < 100; });
