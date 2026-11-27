@@ -283,8 +283,10 @@ const pad4 = (n: number) => (n + 3) & ~3;
 /** Quantise, compress and write: one mesh, one material, at most one picture. */
 function write(s: Soup, tex: { bytes: Uint8Array; mime: string } | null): Uint8Array {
   // The order a GPU likes (and that compresses best), and only the vertices still in use.
-  const [order, unique] = MeshoptEncoder.reorderMesh(s.idx, true, true);
-  s = compact(s, order, unique);
+  // (On a copy of the triangles: reordering rewrites them in place, and a mesh is written more than once,
+  // first bare to see what room is left for its picture. A second writing of rewritten triangles is a mangled model.)
+  const tris = s.idx.slice(), [order, unique] = MeshoptEncoder.reorderMesh(tris, true, true);
+  s = compact({ ...s, idx: tris }, order, unique);
   const n = unique, idx = s.idx, small = n <= 65535;
   const P = new Uint16Array(n * 4), N = new Float32Array(n * 4), C = new Uint8Array(n * 4), U = new Uint16Array(n * 2);
   const q = (v: number, top: number) => Math.round(Math.min(1, Math.max(0, v)) * top);
