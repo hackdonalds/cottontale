@@ -210,17 +210,31 @@ await a.keyboard.press('2');
 await a.mouse.click(640, 430);
 await a.waitForFunction(() => [...window.__ct.store.keys('b:')].length === 1);
 await b.waitForTimeout(600);
+// Each board has its own atmosphere: night falls on the new one, and only there.
+const skyOf = (page) => page.evaluate(() => JSON.parse(window.__ct.board.skySig)[0]);
+await a.evaluate(() => window.__ct.store.set('at:sky', 'night'));
+assert(await ok(a, () => JSON.parse(window.__ct.board.skySig)[0] === 'night'), 'the GM sets the sky of the board being prepared');
 assert((await count(b, 'b:')) === 2 && await b.evaluate(() => [...window.__ct.store.entries.keys()].some((k) => k.startsWith('@'))), 'players stay on their board while the GM builds another');
 await a.click('#prepGo');
 assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 1 && window.__ct.board.minis.size === 0) && await shows(b, 1), 'the GM brings everyone to the new board');
+assert(await ok(b, () => JSON.parse(window.__ct.board.skySig)[0] === 'night' && window.__ct.store.get('set:sky') === null), 'and its atmosphere comes with it');
 await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
 await a.click('#boardList .row:first-child button[title="Bring everyone here"]');
 assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 2 && window.__ct.board.minis.size === 1), 'and back to the main board, with everything still there');
+assert(await skyOf(b) === 'day' && await skyOf(a) === 'day', 'where the sky is as it was');
 a.once('dialog', (d) => d.accept());
 await a.click('#boardList button[title="Delete this board"]');
 assert(await ok(a, () => document.querySelectorAll('#boardList .row').length === 1 && [...window.__ct.store.keys('bd:')].length === 0)
   && await ok(b, () => [...window.__ct.store.entries.entries()].every(([k, e]) => !k.startsWith('@') || e.v === null)), 'a deleted board leaves the list at once, and takes its contents with it');
+// A copy of a board keeps its atmosphere.
+await a.evaluate(() => window.__ct.store.set('at:sky', 'dusk'));
+await a.click('#boardCopy');
+assert(await ok(a, () => { const { store, board } = window.__ct; return !document.querySelector('#prep').hidden && [...store.entries.keys()].some((k) => /^@.+\/at:sky$/.test(k)) && store.get('at:sky') === 'dusk' && JSON.parse(board.skySig)[0] === 'dusk'; }), 'a copied board keeps its atmosphere');
+a.once('dialog', (d) => d.accept());
+await a.click('#boardList button[title="Delete this board"]');
+await a.evaluate(() => window.__ct.store.set('at:sky', null));
+assert(await ok(a, () => document.querySelectorAll('#boardList .row').length === 1 && document.querySelector('#prep').hidden) && await ok(b, () => JSON.parse(window.__ct.board.skySig)[0] === 'day'), 'and deleting the copy brings the GM back');
 await a.click('#boards [data-close]');
 
 // Copy an area and paste it elsewhere.
@@ -247,26 +261,76 @@ for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Rain']) {
 }
 await a.click('#skies button:has-text("Night")');
 const playing = await a.evaluate(() => window.__ct.sound.playing);
-assert(await ok(b, () => window.__ct.store.get('set:amb') === 'rain' && window.__ct.store.get('set:sky') === 'night') && ['rain', 'off'].includes(playing), `sky and soundscape are shared (this device is playing: ${playing})`);
+assert(await ok(b, () => window.__ct.store.get('at:amb') === 'rain' && window.__ct.store.get('at:sky') === 'night') && ['rain', 'off'].includes(playing), `sky and soundscape are shared (this device is playing: ${playing})`);
 // Firelight: the GM's dial reaches everyone, and at zero the lamps are out.
 await a.evaluate(() => window.__ct.store.set('b:6,0,6', { i: 'stone' }));
 await a.evaluate(() => window.__ct.store.set('b:6,1,6', { i: 'torch' }));
 await a.fill('#glow', '2');
-assert(await ok(b, () => window.__ct.store.get('set:glow') === 2 && window.__ct.board.lamps.some((l) => l.intensity > 15)), 'the firelight slider turns the lamps up for everyone');
+assert(await ok(b, () => window.__ct.store.get('at:glow') === 2 && window.__ct.board.lamps.some((l) => l.intensity > 15)), 'the firelight slider turns the lamps up for everyone');
 await a.fill('#glow', '0');
 assert(await ok(b, () => window.__ct.board.lamps.every((l) => l.intensity === 0)), 'and at zero puts them out');
 await a.fill('#glow', '1');
 await a.evaluate(() => { window.__ct.store.set('b:6,1,6', null); window.__ct.store.set('b:6,0,6', null); });
 // A theme: one tap sets the whole mood for everyone and brings its pieces to the front of the library.
 await a.click('#themes button:has-text("Vampires")');
-assert(await ok(b, () => { const s = window.__ct.store; return s.get('set:theme')?.id === 'vampire' && s.get('set:sky') === 'night' && s.get('set:season') === 'winter' && s.get('set:amb') === 'rain'; }), 'picking a theme sets sky, season and soundscape for the table');
+assert(await ok(b, () => { const s = window.__ct.store; return s.get('at:theme')?.id === 'vampire' && s.get('at:sky') === 'night' && s.get('at:season') === 'winter' && s.get('at:amb') === 'rain'; }), 'picking a theme sets sky, season and soundscape for the board');
+// The theme's own look is data too: its light, haze, grade and dice reach everyone (the grade only where the finished look is drawn).
+const lookOf = (page) => page.evaluate(() => {
+  const { board } = window.__ct, u = board.look?.grade.uniforms;
+  return { near: board.scene.fog.near, fog: board.scene.fog.color.getHexString(), sun: board.sun.intensity, sat: u ? u.uSat.value : null, dice: board.dice.look };
+});
+assert(await ok(b, () => window.__ct.board.scene.fog.near === 18), 'a theme brings its own haze');
+let themed = await lookOf(b);
+assert(themed.fog === '0b1020' && themed.sun === 1.1 && [null, 0.62].includes(themed.sat) && themed.dice.body === '#5c0f1a' && themed.dice.ink === '#e8dcc0', `and its own light, grade and dice ${JSON.stringify(themed)}`);
+await a.click('#skies button:has-text("Dusk")');
+assert(await ok(b, () => window.__ct.board.scene.fog.near === 60), 'under another sky the theme\'s light and haze step aside');
+themed = await lookOf(b);
+assert(themed.sun === 2.3 && [null, 0.62].includes(themed.sat) && themed.dice.body === '#5c0f1a', `while its grade and dice stay ${JSON.stringify(themed)}`);
+await a.click('#skies button:has-text("Night")');
 await a.click('#themes button:has-text("Vampires")');
-assert(await ok(b, () => window.__ct.store.get('set:theme') === null && window.__ct.store.get('set:sky') === 'night'), 'tapping it again lets go of the theme and keeps the mood');
+assert(await ok(b, () => window.__ct.store.get('at:theme') === '' && window.__ct.store.get('at:sky') === 'night' && window.__ct.board.scene.fog.near === 60), 'tapping it again lets go of the theme and keeps the mood');
+themed = await lookOf(b);
+assert(themed.sun === 0.75 && [null, 0.9].includes(themed.sat) && themed.dice.body === undefined, `and the picture is the plain night again ${JSON.stringify(themed)}`);
 await a.click('#skies button:has-text("Day")');
 await a.click('#seasons button:has-text("Summer")');
 await a.click('#scapes button:has-text("Silence")');
 await a.click('#skies button:has-text("Day")');
 await a.click('#atmo [data-close]');
+
+// Pieces from a pack (see registry.ts): a board can name ones this device does not have. They
+// stand as plain markers, and become the real thing when the pack registers.
+await a.evaluate(() => {
+  const s = window.__ct.store;
+  s.set('b:9,0,9', { i: 'ada:moonrock' });
+  s.set('b:10,0,9', { i: 'ada:keg', r: 1 });
+  s.set('m:robot', { x: 11, y: 0, z: 9, k: 'ada:robot', c: '#e5484d', n: 'R2', r: 0, s: 1 });
+});
+const standins = () => { const { board } = window.__ct; return ['b:9,0,9', 'b:10,0,9'].every((k) => board.props.get(k)?.userData.pending) && board.minis.has('robot') && !board.layers.has('ada:moonrock'); };
+assert(await ok(a, standins) && await ok(b, standins), 'pieces nobody here has are drawn as stand-ins');
+await a.evaluate(() => {
+  const { registry, catalog } = window.__ct;
+  registry.registerPack('ada', {
+    blocks: { moonrock: { name: 'Moon rock', color: '#9999aa' } },
+    props: { keg: { name: 'Keg', icon: '🛢️', make: () => catalog.PROPS.barrel.make() } },
+    minis: { robot: { name: 'Robot', icon: '🤖', height: 1, make: () => catalog.MINIS.knight.make() } },
+    shelves: { blocks: { Terrain: ['moonrock'] }, props: { Space: ['keg'] }, minis: { Heroes: ['robot'] } },
+  });
+});
+assert(await ok(a, () => { const { board } = window.__ct; return board.layers.get('ada:moonrock')?.cells.size === 1 && !board.props.has('b:9,0,9') && board.props.get('b:10,0,9')?.userData.pending === undefined && !board.minis.get('robot').group.children[0].children[2].material.transparent; }), 'when the pack registers they stand up as themselves');
+await a.click('[data-mode="build"]');
+await a.click('[data-cat="things"]');
+await a.click('#palette .chip:has-text("Space")');
+await a.click('#palette [title="Keg"]');
+assert(await ok(a, () => window.__ct.board.brush === 'ada:keg'), 'and take their place on the shelves');
+await a.click('[data-cat="land"]');
+assert(await ok(a, () => !!document.querySelector('#palette [title="Moon rock"]')), 'blocks too');
+await a.click('[data-cat="things"]');
+await a.click('#palette [title="Keg"]');
+await a.evaluate(() => window.__ct.registry.unregisterPack('ada'));
+assert(await ok(a, standins) && await ok(a, () => !document.querySelector('#palette [title="Keg"]') && !!document.querySelector('#palette .tile')) && await ok(b, standins), 'a pack that leaves takes them off the shelves and leaves stand-ins on the board');
+assert(await a.evaluate(() => !window.__ct.board.brush.includes(':')), 'and out of the hand');
+await a.evaluate(() => { const s = window.__ct.store; for (const k of ['b:9,0,9', 'b:10,0,9', 'm:robot']) s.set(k, null); });
+await a.keyboard.press('1');
 
 await a.click('#menuBtn');
 await a.click('[data-act="gm"]');
@@ -424,7 +488,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const crew = await p.evaluate(() => document.querySelector('#palette .tile')?.title);
   bad.push(...await layout());
   assert(mine.chip?.includes('Pirates') && mine.palm && crew === 'Pirate' && !bad.length, `a theme picked by touch puts its own shelf first ${JSON.stringify(mine)} ${crew} ${bad.join('; ')}`);
-  await p.evaluate(() => { const s = window.__ct.store; s.set('set:theme', null); s.set('set:amb', 'off'); });
+  await p.evaluate(() => { const s = window.__ct.store; s.set('at:theme', ''); s.set('at:amb', 'off'); });
   await p.tap('[data-cat="land"]');
   const keys = (prefix) => p.evaluate((q) => [...window.__ct.store.keys(q)], prefix);
   const drag = async (x0, y0, x1, y1) => {

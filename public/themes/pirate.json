@@ -7,9 +7,29 @@
   "sky": "day",
   "season": "summer",
   "glow": 1,
-  "amb": "wind"
+  "amb": "wind",
+  "light": {
+   "bg": "#0b1418",
+   "sun": "#fff1d0",
+   "sunI": 4.4,
+   "hemi": "#8fd0f0",
+   "hemiI": 1,
+   "sheen": 0.4
+  },
+  "grade": {
+   "sat": 1.15,
+   "warmth": 0.8,
+   "contrast": 0.42,
+   "vignette": 0.4
+  }
  },
  "gen": "tavern",
+ "dice": {
+  "body": "#12324a",
+  "ink": "#f2c14e",
+  "rough": 0.3,
+  "metal": 0.1
+ },
  "pieces": {
   "blocks": [
    "sand",

@@ -7,9 +7,35 @@
   "sky": "night",
   "season": "winter",
   "glow": 1.75,
-  "amb": "rain"
+  "amb": "rain",
+  "light": {
+   "bg": "#070a12",
+   "sun": "#a9c4ff",
+   "sunI": 1.1,
+   "hemi": "#5f76b8",
+   "hemiI": 0.36,
+   "spill": 0.5,
+   "sheen": 0.1
+  },
+  "fog": {
+   "color": "#0b1020",
+   "near": 18,
+   "far": 90
+  },
+  "grade": {
+   "sat": 0.62,
+   "warmth": -0.4,
+   "contrast": 0.45,
+   "vignette": 0.8
+  }
  },
  "gen": "dungeon",
+ "dice": {
+  "body": "#5c0f1a",
+  "ink": "#e8dcc0",
+  "rough": 0.25,
+  "metal": 0.2
+ },
  "pieces": {
   "blocks": [
    "cobble",

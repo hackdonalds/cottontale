@@ -7,9 +7,34 @@
   "sky": "dusk",
   "season": "autumn",
   "glow": 1.5,
-  "amb": "battle"
+  "amb": "battle",
+  "light": {
+   "bg": "#0d0c0c",
+   "sun": "#d98a62",
+   "sunI": 1.9,
+   "hemi": "#8c8a94",
+   "hemiI": 0.5,
+   "spill": 0.34
+  },
+  "fog": {
+   "color": "#141212",
+   "near": 30,
+   "far": 110
+  },
+  "grade": {
+   "sat": 0.72,
+   "warmth": 0.5,
+   "contrast": 0.5,
+   "vignette": 0.85
+  }
  },
  "gen": "dungeon",
+ "dice": {
+  "body": "#26262b",
+  "ink": "#c9c2b4",
+  "rough": 0.5,
+  "metal": 0.5
+ },
  "pieces": {
   "blocks": [
    "cobble",

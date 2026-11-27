@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { BLOCKS } from './catalog';
 import type { Store } from './store';
+import type { DiceLook } from './theme';
 
 export type Kind = 'd4' | 'd6' | 'd8' | 'd10' | 'd12' | 'd20' | 'd100';
 type V3 = [number, number, number];
@@ -318,8 +319,11 @@ function geometry(kind: Kind): THREE.BufferGeometry {
 
 const materials = new Map<string, THREE.MeshStandardMaterial>();
 /** `blank` dice have no numbers: what players see when the GM rolls in secret. */
-function material(kind: Kind, color: string, blank = false): THREE.MeshStandardMaterial {
-  const key = `${kind}|${color}|${blank}`;
+function material(kind: Kind, color: string, blank = false, look: DiceLook = {}): THREE.MeshStandardMaterial {
+  // The table's dice look (a theme's, see theme.ts) goes over the thrower's colour.
+  const ink = look.ink, rough = look.rough ?? 0.35, metal = look.metal ?? 0.05;
+  color = look.body ?? color;
+  const key = `${kind}|${color}|${blank}|${ink}|${rough}|${metal}`;
   let m = materials.get(key);
   if (m) return m;
   const sh = shape(kind), { cols, rows } = grid(kind);
@@ -330,7 +334,7 @@ function material(kind: Kind, color: string, blank = false): THREE.MeshStandardM
   g.fillStyle = color;
   g.fillRect(0, 0, cv.width, cv.height);
   const c = new THREE.Color(color);
-  g.fillStyle = c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 0.5 ? '#14161c' : '#ffffff';
+  g.fillStyle = ink ?? (c.r * 0.299 + c.g * 0.587 + c.b * 0.114 > 0.5 ? '#14161c' : '#ffffff');
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   const text = (s: string, px: number) => {
@@ -360,7 +364,7 @@ function material(kind: Kind, color: string, blank = false): THREE.MeshStandardM
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
-  m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.35, metalness: 0.05 });
+  m = new THREE.MeshStandardMaterial({ map: tex, roughness: rough, metalness: metal });
   materials.set(key, m);
   return m;
 }
@@ -405,13 +409,18 @@ export class DiceView {
   private held: Held | null = null;
   /** Called when a die bounces, with how hard (for sound). */
   onHit: (strength: number) => void = () => {};
+  /** The table's dice look; nothing = each player's colour on plain dice. */
+  private look: DiceLook = {};
   constructor(private scene: THREE.Scene) {}
+
+  /** Dice picked up or thrown from now on wear this (the ones already lying on the table stay as they are). */
+  setLook(look: DiceLook = {}): void { this.look = look; }
 
   /** Pick the dice up: they hover and tumble at `at` until thrown. */
   hold(kinds: Kind[], color: string, at: THREE.Vector3): void {
     this.endHold();
     const meshes = kinds.map((kind) => {
-      const m = new THREE.Mesh(geometry(kind), material(kind, color));
+      const m = new THREE.Mesh(geometry(kind), material(kind, color, false, this.look));
       m.castShadow = true;
       m.quaternion.setFromEuler(new THREE.Euler(spread(Math.PI), spread(Math.PI), spread(Math.PI)));
       this.scene.add(m);
@@ -439,7 +448,7 @@ export class DiceView {
     for (const p of this.playing) if (p.owner === owner) p.t = Math.max(p.t, p.n / FPS + LINGER);
     return new Promise((done) => {
       const meshes = t.k.map((kind, i) => {
-        const m = new THREE.Mesh(geometry(kind), material(kind, color, blank));
+        const m = new THREE.Mesh(geometry(kind), material(kind, color, blank, this.look));
         m.castShadow = true;
         m.position.copy(d.pos[i][0]);
         m.quaternion.copy(d.rot[i][0]);
