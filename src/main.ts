@@ -44,10 +44,15 @@ const coarse = matchMedia('(pointer: coarse)').matches;
 // Keep bottom-anchored UI above the on-screen keyboard (iOS overlays it instead of resizing the page).
 const vv = window.visualViewport;
 if (vv) {
-  const fit = () => document.documentElement.style.setProperty('--kb', `${Math.max(0, innerHeight - vv.height - vv.offsetTop)}px`);
+  // (Only when the page is not zoomed: a zoomed viewport is smaller too, but that is not a keyboard.)
+  const fit = () => { if (Math.abs(vv.scale - 1) < 0.01) document.documentElement.style.setProperty('--kb', `${Math.max(0, innerHeight - vv.height - vv.offsetTop)}px`); };
   vv.addEventListener('resize', fit);
   vv.addEventListener('scroll', fit);
 }
+
+// iOS ignores CSS that forbids pinch-zooming the page; a pinch that starts on a
+// panel would zoom the whole app instead of the table. Refuse it.
+for (const type of ['gesturestart', 'gesturechange']) document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
 
 // Installable, and opens offline.
 if (import.meta.env.PROD && 'serviceWorker' in navigator) void navigator.serviceWorker.register('./sw.js').catch(() => {});

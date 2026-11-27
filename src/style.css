@@ -9,7 +9,7 @@
   --kb: 0px;   /* on-screen keyboard height, set from JS */
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: #1b2233; color: #eef1f6; font: 16px/1.4 system-ui, sans-serif; overscroll-behavior: none; touch-action: manipulation; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #1b2233; color: #eef1f6; font: 16px/1.4 system-ui, sans-serif; overscroll-behavior: none; touch-action: pan-x pan-y; /* no page pinch-zoom: zoom belongs to the table */ }
 #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 [hidden] { display: none !important; }
 

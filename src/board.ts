@@ -1,7 +1,7 @@
 // The 3D table: renders the shared Store and turns pointer input into edits.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { BLOCKS, MINIS, PROPS } from './catalog';
+import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { DiceView, type Kind, type Start } from './dice';
 import { eyesOf, fogged, measure, miniShown, type CellVal, type MiniVal } from './rules';
 import type { Store } from './store';
@@ -98,6 +98,7 @@ class Layer {
       i++;
     }
     this.mesh.count = i;
+    this.mesh.visible = i > 0; // an empty layer should not cost a draw call
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.mesh.boundingSphere = null;
@@ -130,6 +131,18 @@ const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it sta
 const LONG_PRESS = 550;
 
 interface Mini { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string }
+
+// Shared by every mini: one base shape, one material per base colour, one invisible hit area.
+const BASE = new THREE.CylinderGeometry(0.38, 0.4, 0.08, 24);
+const HIT = new THREE.CylinderGeometry(0.56, 0.56, 1, 10).translate(0, 0.5, 0);
+const UNSEEN = new THREE.MeshBasicMaterial({ visible: false });
+const baseMaterials = new Map<string, THREE.MeshStandardMaterial>();
+function baseMaterial(color: string): THREE.MeshStandardMaterial {
+  let m = baseMaterials.get(color);
+  if (!m) baseMaterials.set(color, (m = new THREE.MeshStandardMaterial({ color, roughness: 0.5 })));
+  return m;
+}
+const SUN_OFFSET = new THREE.Vector3(22, 40, 14);
 
 function textSprite(draw: (g: CanvasRenderingContext2D) => void, w: number, h: number, scale: number): THREE.Sprite {
   const cv = document.createElement('canvas');
@@ -229,6 +242,14 @@ export class Board {
   private pointers = new Map<number, { x: number; y: number }>();
   private gesture: Gesture | null = null;
   private twist = 0;
+  /** A pinch always wobbles a little: only start turning once the fingers have clearly twisted. */
+  private twistSlack = 0;
+  private zoomGoal: number | null = null;
+  private shadowDirty = true;
+  private sunAt = new THREE.Vector3(1e9, 0, 0);
+  /** Rendering resolution steps down if this device cannot keep up (see `adapt`). */
+  private quality = 0;
+  private slow = 0;
   private dragPos: Vec | null = null;
   private lastLive = 0;
   private lastRuler = 0;
@@ -245,6 +266,8 @@ export class Board {
     const lowEnd = this.coarse && ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 3;
     this.renderer.shadowMap.enabled = !lowEnd;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Shadows only change when the table does, not when the camera moves: redraw them on demand.
+    this.renderer.shadowMap.autoUpdate = false;
     this.scene.background = new THREE.Color();
     this.scene.fog = new THREE.Fog('#000', 60, 170);
 
@@ -323,6 +346,16 @@ export class Board {
     canvas.addEventListener('pointercancel', (e) => { this.pointers.delete(e.pointerId); this.abortGesture(); });
     canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this.hideGhost(); });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Wheel and trackpad zoom glide to their target instead of jumping a step per notch.
+    // (Caught on the way down from the document, so the camera controls never see the raw wheel.)
+    document.addEventListener('wheel', (e) => {
+      if (e.target !== canvas) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const px = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY;
+      const from = this.zoomGoal ?? this.camera.position.distanceTo(this.controls.target);
+      this.zoomGoal = Math.min(this.controls.maxDistance, Math.max(this.controls.minDistance, from * Math.exp(px * (e.ctrlKey ? 0.012 : 0.0016))));
+    }, { capture: true, passive: false });
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
     this.renderer.setAnimationLoop(() => this.frame());
@@ -343,7 +376,7 @@ export class Board {
     for (const [key, g] of this.props) g.visible = !this.cellHidden(...parse(key));
     for (const [id, m] of this.minis) this.applyMini(id, m.val); // ghosting depends on the role
     this.fogDirty = this.visDirty = true;
-    this.invalidate();
+    this.touched();
   }
 
   setCut(level: number): void {
@@ -439,20 +472,22 @@ export class Board {
     this.pings.length = this.anims.length = 0;
     this.undoStack.length = this.redoStack.length = 0;
     this.fogDirty = this.visDirty = true;
-    this.invalidate();
+    this.touched();
   }
 
   // ---- store → scene -------------------------------------------------------
 
   /** Ask for a redraw. The board only renders when something changed. */
   invalidate(): void { this.dirty = true; }
+  /** The table itself changed (not just the camera): shadows need redrawing too. */
+  private touched(): void { this.dirty = this.shadowDirty = true; }
   private hideGhost(): void {
     if (this.ghost.visible) this.invalidate();
     this.ghost.visible = false;
   }
 
   apply(key: string, value: unknown, prev: unknown): void {
-    this.invalidate();
+    this.touched();
     if (key.startsWith('b:')) {
       this.applyCell(key, value as CellVal | null, prev as CellVal | null);
       this.visDirty = this.fogDirty = true; // walls change sight lines and fog heights
@@ -484,7 +519,7 @@ export class Board {
       l.cells.add(key);
       l.dirty = true;
     } else if (PROPS[v.i]) {
-      const g = PROPS[v.i].make();
+      const g = makeProp(v.i);
       g.position.set(x + 0.5, y, z + 0.5);
       g.rotation.y = ((v.r ?? 0) * Math.PI) / 2;
       g.userData.cell = key;
@@ -511,14 +546,14 @@ export class Board {
     if (!m || m.sig !== sig) {
       const group = new THREE.Group();
       const def = MINIS[v.k], s = v.s || 1;
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.4, 0.08, 24), new THREE.MeshStandardMaterial({ color: v.c, roughness: 0.5 }));
+      const base = new THREE.Mesh(BASE, baseMaterial(v.c));
       base.position.y = 0.04;
       base.castShadow = base.receiveShadow = true;
       // Generous invisible hit area: minis are small targets for a fingertip.
-      const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.56, def.height + 0.15, 10), new THREE.MeshBasicMaterial({ visible: false }));
-      hit.position.y = (def.height + 0.15) / 2;
+      const hit = new THREE.Mesh(HIT, UNSEEN);
+      hit.scale.y = def.height + 0.15;
       const body = new THREE.Group();
-      body.add(base, hit, ...def.make());
+      body.add(base, hit, ...makeMini(v.k));
       body.scale.setScalar(s);
       body.position.y = fly;
       const label = plate(v);
@@ -533,8 +568,11 @@ export class Board {
       }
       if (ghost) { // the GM sees hidden minis as see-through
         body.traverse((o) => {
-          const mat = (o as THREE.Mesh).material as THREE.Material | undefined;
-          if (mat?.visible) { mat.transparent = true; mat.opacity = 0.38; mat.depthWrite = false; }
+          const mesh = o as THREE.Mesh, mat = mesh.material as THREE.Material | undefined;
+          if (!mat?.visible) return;
+          mesh.material = mat.clone(); // materials are shared between minis: fade a copy
+          Object.assign(mesh.material, { transparent: true, opacity: 0.38, depthWrite: false });
+          mesh.castShadow = false;
         });
       }
       group.userData.mini = id;
@@ -859,10 +897,12 @@ export class Board {
 
   private onDown(e: PointerEvent): void {
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    this.zoomGoal = null;
     if (this.pointers.size > 1) {
       // A second finger means a camera gesture, never an edit.
       this.abortGesture();
       this.twist = this.twistAngle();
+      this.twistSlack = 0.14;
       return;
     }
     const touch = e.pointerType !== 'mouse';
@@ -947,6 +987,10 @@ export class Board {
       if (d > Math.PI) d -= Math.PI * 2;
       if (d < -Math.PI) d += Math.PI * 2;
       this.twist = a;
+      if (this.twistSlack > 0) { // still inside the wobble of an ordinary pinch
+        this.twistSlack -= Math.abs(d);
+        return;
+      }
       const t = this.controls.target;
       this.camera.position.sub(t).applyAxisAngle(THREE.Object3D.DEFAULT_UP, d).add(t);
       return;
@@ -1197,22 +1241,50 @@ export class Board {
     this.invalidate();
   }
 
+  /**
+   * Keep the camera moving smoothly on weak phones: if frames keep taking too
+   * long while something is moving, render at a lower resolution, and as a last
+   * resort drop shadows. It never steps back up, so quality does not flicker.
+   */
+  private adapt(frameMs: number): void {
+    this.slow = frameMs > 34 ? this.slow + 1 : Math.max(0, this.slow - 2);
+    if (this.slow < 24 || this.quality >= 3) return;
+    this.slow = 0;
+    this.quality++;
+    const base = Math.min(devicePixelRatio, 2);
+    if (this.quality === 3) this.renderer.shadowMap.enabled = false;
+    else this.renderer.setPixelRatio(Math.max(1, base * (this.quality === 1 ? 0.75 : 0.5)));
+    if (this.quality === 3) this.scene.traverse((o) => { const m = (o as THREE.Mesh).material as THREE.Material | undefined; if (m) m.needsUpdate = true; });
+    this.resize();
+  }
+
   private frame(): void {
     const now = performance.now();
-    const dt = Math.min((now - this.last) / 1000, 0.1);
+    const elapsed = now - this.last;
+    const dt = Math.min(elapsed / 1000, 0.1);
     this.last = now;
-    let busy = this.controls.update() || this.dirty;
-    if (this.dice.update(dt)) busy = true;
-    if (this.animate(dt)) busy = true;
-    if (this.fogDirty) { this.rebuildFog(); busy = true; }
-    if (this.visDirty) { this.refreshMinis(); busy = true; }
-    for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); busy = true; }
+    let moving = this.controls.update();
+    if (this.zoomGoal !== null) {
+      const t = this.controls.target, dist = this.camera.position.distanceTo(t);
+      const next = Math.abs(this.zoomGoal - dist) < 0.01 ? this.zoomGoal : dist + (this.zoomGoal - dist) * (1 - Math.exp(-dt * 16));
+      this.camera.position.sub(t).setLength(next).add(t);
+      if (next === this.zoomGoal) this.zoomGoal = null;
+      moving = true;
+    }
+    // Things that change the table (and so its shadows), as opposed to the view of it.
+    let changed = this.shadowDirty;
+    if (this.dice.update(dt)) changed = true;
+    if (this.animate(dt)) changed = true;
+    if (this.fogDirty) { this.rebuildFog(); changed = true; }
+    if (this.visDirty) { this.refreshMinis(); changed = true; }
+    for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); changed = true; }
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {
       if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;
       m.group.position.lerp(m.target, k);
-      busy = true;
+      changed = true;
     }
+    let busy = moving || changed || this.dirty;
     for (let i = this.pings.length - 1; i >= 0; i--) {
       const p = this.pings[i];
       p.t += dt;
@@ -1226,10 +1298,21 @@ export class Board {
       busy = true;
     }
     // Idle tables cost no GPU time (and no battery).
-    if (!busy) return;
+    if (!busy) { this.wasBusy = false; return; }
+    if (this.wasBusy) this.adapt(elapsed); // only judge frames that follow another drawn frame
+    this.wasBusy = true;
     this.dirty = false;
-    this.sun.position.copy(this.controls.target).add(new THREE.Vector3(22, 40, 14));
-    this.sun.target.position.copy(this.controls.target);
+    // The sun follows the camera target in coarse steps, so panning rarely moves the shadows.
+    const t = this.controls.target, sx = Math.round(t.x / 6) * 6, sz = Math.round(t.z / 6) * 6;
+    if (sx !== this.sunAt.x || sz !== this.sunAt.z) {
+      this.sunAt.set(sx, 0, sz);
+      this.sun.position.copy(this.sunAt).add(SUN_OFFSET);
+      this.sun.target.position.copy(this.sunAt);
+      changed = true;
+    }
+    if (changed) this.renderer.shadowMap.needsUpdate = true;
+    this.shadowDirty = false;
     this.renderer.render(this.scene, this.camera);
   }
+  private wasBusy = false;
 }

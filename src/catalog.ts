@@ -1,6 +1,7 @@
 // Everything that can be put on the table. All models are built from
 // primitives at runtime, so the game ships with no art assets.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 export interface BlockDef { name: string; color: string; h?: number; opacity?: number; glow?: number; rough?: number }
 
@@ -652,5 +653,66 @@ export const MINI_SHELVES: Record<string, string[]> = {
   Monsters: ['goblin', 'orc', 'ogre', 'troll', 'skeleton', 'zombie', 'ghost', 'imp', 'slime', 'mimic', 'golem', 'treant', 'elemental', 'dragon'],
   Markers: ['marker', 'flag', 'cross'],
 };
+
+// ---- baking ---------------------------------------------------------------------
+// A piece is modelled as a handful of primitives, but drawing each primitive
+// separately costs a phone one draw call apiece (twice with shadows). So every
+// kind of piece is merged once into one or two meshes with the colours baked
+// into the vertices, and all copies on the table share that geometry.
+
+const SOLID = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+const SHINY = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.6 });
+
+function bake(parts: THREE.Object3D[]): THREE.Mesh[] {
+  const root = new THREE.Group();
+  root.add(...parts);
+  root.updateMatrixWorld(true);
+  const merged: Record<'solid' | 'shiny', THREE.BufferGeometry[]> = { solid: [], shiny: [] };
+  const out: THREE.Mesh[] = [];
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh, m = mesh.material as THREE.MeshStandardMaterial;
+    if (!mesh.isMesh) return;
+    const g = (mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone()).applyMatrix4(mesh.matrixWorld);
+    // Glowing, see-through and double-sided parts keep a material of their own.
+    const special = m.transparent || m.side !== THREE.FrontSide || (m.emissiveIntensity > 0 && m.emissive.getHex() !== 0);
+    if (special) {
+      const keep = new THREE.Mesh(g, m);
+      keep.castShadow = !m.transparent;
+      out.push(keep);
+      return;
+    }
+    if (m.flatShading) g.computeVertexNormals(); // unindexed, so this gives faceted normals
+    g.deleteAttribute('uv');
+    const n = g.getAttribute('position').count, colors = new Float32Array(n * 3);
+    for (let v = 0; v < n; v++) m.color.toArray(colors, v * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    merged[m.metalness >= 0.3 ? 'shiny' : 'solid'].push(g);
+  });
+  for (const [kind, list] of Object.entries(merged)) {
+    if (!list.length) continue;
+    const mesh = new THREE.Mesh(mergeGeometries(list), kind === 'solid' ? SOLID : SHINY);
+    mesh.castShadow = mesh.receiveShadow = true;
+    out.push(mesh);
+  }
+  return out;
+}
+
+const baked = new Map<string, THREE.Mesh[]>();
+function copies(key: string, parts: () => THREE.Object3D[]): THREE.Mesh[] {
+  let t = baked.get(key);
+  if (!t) baked.set(key, (t = bake(parts())));
+  return t.map((m) => {
+    const c = new THREE.Mesh(m.geometry, m.material);
+    c.castShadow = m.castShadow;
+    c.receiveShadow = m.receiveShadow;
+    return c;
+  });
+}
+/** A prop ready for the table (cheap: shares its geometry with every other copy). */
+export function makeProp(id: string): THREE.Group {
+  return group(...copies(`p:${id}`, () => PROPS[id].make().children.slice()));
+}
+/** The figure of a mini, without its base. */
+export const makeMini = (kind: string): THREE.Mesh[] => copies(`m:${kind}`, () => MINIS[kind].make());
 
 export const PLAYER_COLORS = ['#e5484d', '#f2a33a', '#f5d90a', '#46a758', '#12a594', '#3e63dd', '#8e4ec6', '#e93d82', '#f1f5f9', '#30323a'];

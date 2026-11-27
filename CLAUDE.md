@@ -17,7 +17,10 @@ first, then enhance for larger screens.
 - **Gestures:** one finger = the current tool, two fingers = camera. A second
   finger must never cause an edit (`src/board.ts`).
 - **Budget:** render on demand (`board.invalidate()`), no per-frame work when
-  idle, keep the bundle and GPU cost phone-sized.
+  idle, keep the bundle and GPU cost phone-sized. Draw calls are the scarce
+  resource: pieces are baked into shared merged geometry (`makeProp`/`makeMini`
+  in `src/catalog.ts`) — never add per-instance geometry or materials. Shadows
+  redraw only when the table changes (`touched()`), not when the camera moves.
 - **Verify on a phone viewport:** `npm run e2e` runs phone portrait/landscape
   checks (touch gestures, overlap, target sizes). Extend them with new UI.
 
