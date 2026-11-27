@@ -127,7 +127,7 @@ assert(await ok(b, (id) => document.body.classList.contains('player') && getComp
   && !window.__ct.board.hooks.canMove(id) && !!document.querySelector('#players svg'), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
-assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 4), 'selecting a piece shows a ring of actions on it, not a panel');
+assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 5), 'selecting a piece shows a ring of actions on it, not a panel');
 await a.click('#ring [title="More"]');
 await a.selectOption('#miniOwner', { label: '🎮 Bo' });
 assert(await ok(b, (id) => window.__ct.board.hooks.canMove(id), id), 'GM hands a mini to a player, who can then move it');
@@ -230,6 +230,37 @@ await b.waitForTimeout(400);
 assert((await chunks(b)) === 0 && await b.evaluate(() => !window.__ct.board.breaking.size), 'and the player sees no debris from under the fog');
 await a.evaluate(() => { const { store } = window.__ct; for (const k of ['b:9,0,9', 'b:10,0,9', 'f:30,30']) store.set(k, null); });
 assert(await ok(b, () => !window.__ct.store.get('b:9,0,9') && !window.__ct.store.get('f:30,30')), 'cleared up after the breaking');
+// Shots: an arrow from one mini to another flies on every table, rocks the target, and changes nothing.
+await a.click('#ring [title="Back"]');
+await a.evaluate((id) => {
+  const { store } = window.__ct, v = store.get(`m:${id}`);
+  // Stand it a couple of cells off, on whichever side has nothing built in between.
+  const open = (dx) => [1, 2].every((i) => !store.get(`b:${v.x + dx * i},${v.y},${v.z}`) && !store.get(`b:${v.x + dx * i},${v.y + 1},${v.z}`));
+  store.set('m:target', { ...v, x: v.x + (open(1) ? 2 : -2), n: 'Target', o: undefined });
+}, id);
+assert(await ok(b, () => window.__ct.board.minis.get('target')?.group.visible), 'a second mini to shoot at');
+await b.evaluate(() => { const { shots } = window.__ct.board, fire = shots.fire.bind(shots); window.__fired = 0; shots.fire = (...args) => { window.__fired++; fire(...args); }; });
+const shootAt = async (kind) => {
+  if (await a.$('#ring [title="Shoot"]')) await a.click('#ring [title="Shoot"]'); // (after a shot the picker stays open)
+  await a.click(`#ring [title="${kind}"]`);
+  const spot = await a.evaluate(() => window.__ct.board.spotOf('target'));
+  await a.mouse.click(spot.x, spot.y);
+};
+const tableBefore = await a.evaluate(() => JSON.stringify(window.__ct.store.dump()));
+await shootAt('Arrow');
+assert(await a.evaluate((id) => window.__ct.board.selected === id && window.__ct.board.aimed === null, id), 'tapping the target fires, and leaves the shooter selected');
+assert(await ok(b, () => window.__ct.board.shots.live > 0) && await ok(b, () => window.__ct.board.wobbles.has('target'))
+  && await ok(b, () => window.__ct.board.shots.live === 0 && window.__ct.board.wobbles.size === 0), 'a shot flies on the other table, rocks the mini it hits, and is gone');
+assert(await a.evaluate((t) => JSON.stringify(window.__ct.store.dump()) === t, tableBefore) && await b.evaluate(() => window.__fired === 1), 'and nothing on the table changed');
+// A hidden mini must not give itself away: players see no shot at it, and it does not flinch.
+await a.evaluate(() => { const { store } = window.__ct; store.set('m:target', { ...store.get('m:target'), h: true }); });
+assert(await ok(b, () => window.__ct.board.minis.get('target').group.visible === false), 'the GM hides the target');
+await shootAt('Fire bolt');
+assert(await ok(a, () => window.__ct.board.wobbles.has('target')) && await ok(a, () => window.__ct.board.shots.live === 0), 'the GM sees the shot at a hidden mini land');
+await b.waitForTimeout(300);
+assert(await b.evaluate(() => window.__fired === 1 && window.__ct.board.shots.live === 0 && window.__ct.board.wobbles.size === 0), 'players see nothing of a shot at a hidden mini');
+await a.evaluate(() => window.__ct.store.set('m:target', null));
+await a.click('#ring [title="Back"]');
 
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
@@ -474,7 +505,20 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return { panel: !document.querySelector('#minipanel').hidden, free: Math.round(((dock - top) / innerHeight) * 100),
       buttons: [...document.querySelectorAll('#ring button')].map((b) => b.getBoundingClientRect()).filter((r) => r.left >= 0 && r.top >= top && r.right <= innerWidth && r.bottom <= innerHeight).length };
   });
-  assert(!ring.panel && ring.buttons === 4 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
+  assert(!ring.panel && ring.buttons === 5 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
+  // Shooting, by touch alone: the ring offers it, a picker of full-size kinds opens, a tap on the table lets fly.
+  await p.tap('#ring [title="Shoot"]');
+  const picker = await p.evaluate(() => [...document.querySelectorAll('#ring .pop button')].map((b) => b.getBoundingClientRect())
+    .filter((r) => r.width >= 44 && r.height >= 44 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight).length);
+  await p.tap('#ring [title="Fire bolt"]');
+  const aim = await p.evaluate(() => { const { board, store } = window.__ct, s = board.spotOf(board.selected); return { x: s.x + (s.x > innerWidth / 2 ? -110 : 110), y: s.y + 30, table: JSON.stringify(store.dump()), armed: !!board.aimed }; });
+  await touch('touchStart', [[aim.x, aim.y]]);
+  await touch('touchEnd', []);
+  const flew = await p.waitForFunction(() => window.__ct.board.shots.live > 0, null, { timeout: 5000 }).then(() => true, () => false);
+  const landed = await p.waitForFunction(() => window.__ct.board.shots.live === 0, null, { timeout: 5000 }).then(() => true, () => false);
+  const after = await p.evaluate(() => ({ table: JSON.stringify(window.__ct.store.dump()), armed: !!window.__ct.board.aimed, picker: !!document.querySelector('#ring [title="Arrow"]') }));
+  assert(picker === 6 && aim.armed && flew && landed && !after.armed && after.picker && after.table === aim.table, `a shot is picked and fired by touch, and changes nothing (${picker} full-size choices) ${JSON.stringify({ flew, landed, armed: after.armed })}`);
+  await p.tap('#ring [title="Back"]');
   // Hit points from the ring, then the full editor on request, with the piece still in view above it.
   await p.tap('#ring [title="Hit points"]');
   await p.tap('#ring [title="Gain a hit point"]');

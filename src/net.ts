@@ -12,6 +12,7 @@ import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tool
 import type { Ruler } from './board';
 import type { Throw } from './dice';
 import type { Pour } from './loose';
+import type { Shot } from './shots';
 import type { Row, Store } from './store';
 
 export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
@@ -27,6 +28,7 @@ type Body =
   | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw; s?: boolean }
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
+  | ({ y: 'shot' } & Shot)
   | { y: 'ping'; p: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] }
   /** A piece (`i`) at a cell or edge key was broken on purpose: burst it when its removal arrives. */
