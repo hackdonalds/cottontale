@@ -202,6 +202,17 @@ export class Sound {
   ping(): void {
     if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
   }
+  /** Something on the table breaks: wood cracks and splinters, stone thuds and rattles down. */
+  crumble(wood: boolean): void {
+    if (!this.ready()) return;
+    const m = this.master!;
+    this.note(m, 'sine', wood ? 190 : 110, 0.5, wood ? 0.12 : 0.28, 0.004, wood ? 70 : 38);
+    this.burst(m, wood ? 1900 : 420, 0.4, wood ? 0.09 : 0.3, wood ? 'bandpass' : 'lowpass');
+    // The pieces coming down after it, each a little quieter.
+    for (let i = 1; i <= (wood ? 3 : 6); i++) {
+      setTimeout(() => this.ready() && this.burst(m, (wood ? 2400 : 900) + Math.random() * 1600, 0.2 / i + 0.03, 0.04 + Math.random() * 0.05, 'bandpass'), 60 + i * (wood ? 55 : 85) + Math.random() * 40);
+    }
+  }
   /** A little sting for an emote. */
   emote(kind: string): void {
     if (!this.ready()) return;

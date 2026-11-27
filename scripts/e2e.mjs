@@ -207,6 +207,30 @@ assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return 
 await a.click('#ring [title="Emote"]');
 await a.click('#ring [title="Stand up"]');
 
+// Breaking: the GM smashes a statue. It is one edit (rubble is left, undo restores it), and the
+// debris and the rocking are worked out on each device; under fog a player gets none of it.
+const smash = (page, key) => page.evaluate((key) => { const { board } = window.__ct; board.offer(key); board.breakOffered(); }, key);
+const chunks = (page) => page.evaluate(() => window.__ct.board.debris.count);
+await a.evaluate(() => { const { store } = window.__ct; store.set('b:9,0,9', { i: 'statue' }); store.set('b:10,0,9', { i: 'table' }); store.set('w:30,0,30,n', { i: 'wall' }); store.set('f:30,30', true); });
+const stood = () => window.__ct.store.get('w:30,0,30,n') && window.__ct.store.get('b:9,0,9') && window.__ct.board.props.get('b:10,0,9')?.userData.pending === undefined;
+assert(await ok(b, stood) && await ok(a, stood), 'pieces to break reach the player');
+await b.evaluate(() => { window.__ct.board.offer('b:9,0,9'); window.__ct.board.breakOffered(); });
+assert(await b.evaluate(() => window.__ct.store.get('b:9,0,9').i === 'statue' && window.__ct.board.offered === null), 'a player cannot break anything');
+await smash(a, 'b:9,0,9');
+const flew = await chunks(a);
+assert(flew >= 12 && flew <= 24 && await a.evaluate(() => window.__ct.store.get('b:9,0,9').i === 'rock' && window.__ct.board.wobbles.has('b:10,0,9')), `a broken statue leaves a rock, ${flew} chunks fly as one mesh, and the table beside it rocks`);
+assert(await ok(b, () => window.__ct.store.get('b:9,0,9').i === 'rock' && window.__ct.board.debris.count >= 12 && window.__ct.board.wobbles.size > 0), 'the player sees it burst too');
+assert(await ok(a, () => window.__ct.board.debris.count === 0 && !window.__ct.board.wobbles.size && !window.__ct.board.wasBusy)
+  && await ok(b, () => window.__ct.board.debris.count === 0), 'the debris is gone in a moment and the table is idle again');
+await a.evaluate(() => window.__ct.board.undo());
+assert(await ok(b, () => window.__ct.store.get('b:9,0,9').i === 'statue') && (await chunks(a)) === 0 && (await chunks(b)) === 0, 'undo stands the statue up again, with no debris');
+await smash(a, 'w:30,0,30,n');
+assert(await ok(b, () => !window.__ct.store.get('w:30,0,30,n')) && (await chunks(a)) >= 12, 'a wall under fog breaks for the GM');
+await b.waitForTimeout(400);
+assert((await chunks(b)) === 0 && await b.evaluate(() => !window.__ct.board.breaking.size), 'and the player sees no debris from under the fog');
+await a.evaluate(() => { const { store } = window.__ct; for (const k of ['b:9,0,9', 'b:10,0,9', 'f:30,30']) store.set(k, null); });
+assert(await ok(b, () => !window.__ct.store.get('b:9,0,9') && !window.__ct.store.get('f:30,30')), 'cleared up after the breaking');
+
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
@@ -490,6 +514,49 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await touch('touchEnd', []);
   const pg = await p.evaluate(() => ({ pings: window.__ct.board.pings.length, rulers: window.__ct.board.rulers.size, sel: window.__ct.board.selected, tool: window.__ct.board.tool }));
   assert(pg.pings === 1 && !pg.rulers, `press and hold pings; leaving the ruler tool puts the ruler away ${JSON.stringify(pg)}`);
+
+  // Breaking by touch: tap a wall in play, a Break button comes up over it; tapping that brings the wall down.
+  const wall = await p.evaluate(() => {
+    const { board, store } = window.__ct, c = document.querySelector('#c'), t = board.controls.target;
+    const roof = document.querySelector('#top').getBoundingClientRect().bottom + 70, floor = document.querySelector('#tools').getBoundingClientRect().top - 30;
+    board.select(null);
+    const minis = [...store.keys('m:')].map((k) => store.get(k)), blocks = [...store.keys('b:')].map((k) => k.slice(2).split(',').map(Number));
+    for (let r = 0; r < 8; r++) for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+      const x = Math.floor(t.x) + dx, z = Math.floor(t.z) + dz;
+      if ([...minis, ...blocks.map(([bx, , bz]) => ({ x: bx, z: bz }))].some((m) => Math.hypot(m.x - x, m.z - z) < 3)) continue;
+      const s = board.ground.position.clone().set(x + 0.5, 0.5, z).project(board.camera), sx = ((s.x + 1) / 2) * c.clientWidth, sy = ((1 - s.y) / 2) * c.clientHeight;
+      if (sx < 60 || sx > c.clientWidth - 60 || sy < roof || sy > floor) continue;
+      const key = `w:${x},0,${z},n`;
+      store.set(key, { i: 'wall' });
+      return { key, sx, sy };
+    }
+    return null;
+  });
+  assert(!!wall, 'found a clear spot on screen for a wall');
+  await settle();
+  await touch('touchStart', [[wall.sx, wall.sy]]);
+  await touch('touchEnd', []);
+  await settle();
+  bad = await layout();
+  const offer = await p.evaluate(() => {
+    const b = document.querySelector('#break'), r = b.getBoundingClientRect(), top = document.querySelector('#top').getBoundingClientRect().bottom;
+    return { key: window.__ct.board.offered, shown: !b.hidden, w: Math.round(r.width), h: Math.round(r.height), on: r.left >= 0 && r.top >= top && r.right <= innerWidth && r.bottom <= document.querySelector('#tools').getBoundingClientRect().top };
+  });
+  assert(offer.key === wall.key && offer.shown && offer.w >= 44 && offer.h >= 44 && offer.on && !bad.length, `tapping a wall in play offers to break it, with a full-size button on screen ${JSON.stringify(offer)} ${bad.join('; ')}`);
+  await touch('touchStart', [[wall.sx, wall.sy]]);
+  await touch('touchStart', [[wall.sx, wall.sy], [wall.sx + 50, wall.sy + 40]]);
+  await touch('touchEnd', [[wall.sx + 50, wall.sy + 40]]);
+  await touch('touchEnd', []);
+  await settle();
+  assert(await p.evaluate((k) => !!window.__ct.store.get(k), wall.key), 'a second finger never breaks anything');
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-break.png` });
+  await p.tap('#break');
+  const burst = await p.evaluate((k) => ({ gone: !window.__ct.store.get(k), chunks: window.__ct.board.debris.count, hidden: document.querySelector('#break').hidden }), wall.key);
+  assert(burst.gone && burst.chunks >= 12 && burst.chunks <= 24 && burst.hidden, `the Break button brings the wall down in a burst of debris ${JSON.stringify(burst)}`);
+  await p.waitForFunction(() => window.__ct.board.debris.count === 0 && !window.__ct.board.wasBusy, null, { timeout: 8000 });
+  await p.evaluate(() => window.__ct.board.undo());
+  assert(await p.evaluate((k) => window.__ct.store.get(k)?.i === 'wall' && window.__ct.board.debris.count === 0, wall.key), 'undo puts the wall back, and the table went idle after the debris');
+  await p.evaluate((k) => window.__ct.store.set(k, null), wall.key);
 
   for (const sheet of ['boards', 'atmo']) {
     await p.tap('#menuBtn');

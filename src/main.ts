@@ -8,6 +8,7 @@ import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } 
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
+import { breakButton } from './breakui';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
 
@@ -176,6 +177,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   });
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
+  breakButton(board, $('hud'), $('top'), (k, i) => void send({ y: 'broke', k, i }), (wood) => sound.crumble(wood));
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
@@ -218,6 +220,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         break;
       }
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
+      case 'broke': if (!elsewhere && typeof msg.k === 'string') board.broke(msg.k, String(msg.i)); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
     }
   }

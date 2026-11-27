@@ -5,6 +5,8 @@ import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
+import { Debris } from './debris';
+import { BREAK_KEY, broken, debrisOf, seedOf, shatter } from './breaking';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
@@ -205,6 +207,8 @@ const BAND = 0.5;
  * Rough solid shape of a prop for dice to bounce off: one box per half-cell of height, each as
  * wide as the model is there (so a tree is a trunk under a canopy, not one big block).
  */
+/** Where a wall edge or a cell is, from its key (`side` is empty for a cell). */
+const pieceAt = (key: string): [x: number, y: number, z: number, side: Side | ''] => (key.startsWith('w:') ? parseEdge(key) : [...parse(key), '']);
 function propSolids(g: THREE.Group): Solid[] {
   g.updateMatrixWorld(true);
   const y0 = g.position.y, bands: number[][] = [];
@@ -537,6 +541,7 @@ export class Board {
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
     this.dice = new DiceView(this.scene);
     this.dice.onBump = (at, dv) => this.bump(at, dv);
+    this.debris = new Debris(this.scene);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
     onKitPack(() => {
       for (const [key, g] of this.props) {
@@ -579,6 +584,7 @@ export class Board {
   setRole(me: string, full: boolean): void {
     this.me = me;
     this.full = full;
+    if (!full) this.offer(null);
     this.refresh();
   }
 
@@ -704,6 +710,9 @@ export class Board {
     this.rulers.clear();
     this.pings.length = this.anims.length = 0;
     this.wobbles.clear();
+    this.debris.clear();
+    this.breaking.clear();
+    this.offer(null);
     this.undoStack.length = this.redoStack.length = 0;
     this.fogDirty = this.visDirty = true;
     this.touched();
@@ -757,6 +766,7 @@ export class Board {
 
   apply(key: string, value: unknown, prev: unknown): void {
     this.touched();
+    if (this.breaking.size || this.offered) this.applyBreak(key, value, prev);
     if (key.startsWith('b:')) {
       this.applyCell(key, value as CellVal | null, prev as CellVal | null);
       this.visDirty = this.fogDirty = true; // walls change sight lines and fog heights
@@ -1210,6 +1220,114 @@ export class Board {
     return this.wobbles.size > 0;
   }
 
+  // ---- breaking ---------------------------------------------------------------
+  // In play, whoever runs the table can tap a wall, a door or a thing and break it. The break
+  // is one ordinary edit, so it syncs and can be undone. The debris is for show, and a removal
+  // alone cannot tell a break from an eraser stroke, an undo or a new scene: so the breaker
+  // also says "this broke" in a live message, and each device bursts the piece when it sees it go.
+
+  /** The piece on offer to be broken (a `b:` or `w:` key), marked on the table. */
+  offered: string | null = null;
+  /** The offer changed, or the view of it moved: the UI shows, moves or hides its Break button. */
+  onOffer: (key: string | null) => void = () => {};
+  /** This device broke a piece: tell the others which, so they see it burst too. */
+  onBreak: (key: string, id: string) => void = () => {};
+  /** A piece burst where this player can see it (`wood` cracks, stone crumbles). */
+  onCrumble: (wood: boolean) => void = () => {};
+  debris!: Debris;
+  /** Pieces said to be breaking whose removal has not reached this device yet, and until when we wait for it. */
+  private breaking = new Map<string, { id: string; until: number }>();
+
+  /** What a tap in play would break: the wall, thing or built block under the pointer. */
+  private breakTarget(): string | null {
+    if (!this.full) return null;
+    const key = this.eraseTarget(), v = key && this.store.get<CellVal>(key);
+    return key && v && broken(key, v.i) !== undefined ? key : null;
+  }
+  private offer(key: string | null): void {
+    if (key === this.offered) return;
+    this.offered = key;
+    if (!key) this.hideGhost();
+    this.onOffer(key);
+  }
+  /** Show which piece the Break button is about. */
+  private markOffer(): void {
+    const key = this.offered;
+    if (!key) return;
+    if (key.startsWith('w:')) { this.edgeGhost(parseEdge(key), '#ff5a5a'); return; }
+    const [x, y, z] = parse(key);
+    (this.ghost.material as THREE.MeshBasicMaterial).color.set('#ff5a5a');
+    this.ghost.scale.setScalar(1.04);
+    this.ghost.position.set(x + 0.5, y - 0.02, z + 0.5);
+    this.ghost.visible = true;
+    this.invalidate();
+  }
+  /** Where the Break button goes, in CSS pixels: just above the piece on offer. */
+  offerSpot(): { x: number; y: number } | null {
+    const key = this.offered;
+    if (!key) return null;
+    const [x, y, z, side] = pieceAt(key);
+    const p = new THREE.Vector3(side === 'w' ? x : x + 0.5, y + 1.05, side === 'n' ? z : z + 0.5).project(this.camera);
+    if (p.z > 1) return null; // behind the camera
+    return { x: ((p.x + 1) / 2) * this.canvas.clientWidth, y: ((1 - p.y) / 2) * this.canvas.clientHeight };
+  }
+  /** Break the piece on offer: one edit, and word to the table that it was a break. */
+  breakOffered(): void {
+    const key = this.offered, v = key && this.store.get<CellVal>(key), next = key && v ? broken(key, v.i) : undefined;
+    this.offer(null);
+    if (!key || !v || next === undefined || !this.full) return;
+    this.breaking.set(key, { id: v.i, until: performance.now() + 3000 });
+    this.edit(key, next);
+    this.onBreak(key, v.i);
+  }
+  /** Someone broke the piece `id` at `key`. Their edit may arrive before or after this does. */
+  broke(key: string, id: string): void {
+    if (!BREAK_KEY.test(key) || broken(key, id) === undefined) return;
+    if (this.store.get<CellVal>(key)?.i === id) this.breaking.set(key, { id, until: performance.now() + 3000 }); // still standing: wait for the edit
+    else this.crumble(key, id);
+  }
+  /** A cell or edge changed while a break is on offer or expected. */
+  private applyBreak(key: string, value: unknown, prev: unknown): void {
+    if (key === this.offered) this.offer(null); // it changed under the button
+    const due = this.breaking.get(key), now = performance.now();
+    for (const [k, b] of this.breaking) if (k === key || now > b.until) this.breaking.delete(k); // this one, and word of breaks that never came
+    if (due && now < due.until && (prev as CellVal | null)?.i === due.id && (value as CellVal | null)?.i !== due.id) this.crumble(key, due.id);
+  }
+  private box = new THREE.Box3();
+  /** Burst a piece into debris and rock what stands near, if this player can see the spot at all. */
+  private crumble(key: string, id: string): void {
+    const [x, y, z, side] = pieceAt(key);
+    if (![x, y, z].every(Number.isInteger) || this.cellHidden(x, y, z)) return; // under fog or above the cutaway: not a sound, not a speck
+    let at: Vec = [x + 0.5, y + 0.5, z + 0.5], half: Vec = [0.42, 0.45, 0.42];
+    if (side === 'n') { at = [x + 0.5, y + 0.5, z]; half = [0.48, 0.48, 0.08]; }
+    else if (side === 'w') { at = [x, y + 0.5, z + 0.5]; half = [0.08, 0.48, 0.48]; }
+    else if (PROPS[id]) {
+      // As big as the thing was, if it is still standing here to be measured.
+      const g = this.props.get(key), b = g && !g.userData.pending && g.children.length ? this.box.setFromObject(g) : null;
+      half = [0.3, 0.35, 0.3];
+      if (b && !b.isEmpty()) half = [Math.min(0.5, (b.max.x - b.min.x) / 2), Math.min(1, (b.max.y - y) / 2), Math.min(0.5, (b.max.z - b.min.z) / 2)];
+      at[1] = y + half[1];
+    }
+    // Chunks land on what is really there, but a fogged column must not show its height through them.
+    const top = (cx: number, cz: number) => (!this.full && fogged(this.store, cx, cz) ? y : Math.min(this.cut, (columnTop(this.store, cx, cz)?.y ?? -1) + 1));
+    const kind = debrisOf(key, id);
+    this.debris.burst(shatter(seedOf(key) + this.debris.count, at, half, top), kind.tones);
+    for (const [mid, m] of this.minis) {
+      const dx = m.val.x + 0.5 - at[0], dz = m.val.z + 0.5 - at[2], d = Math.hypot(dx, dz);
+      if (!m.group.visible || m.val.d || d > 1.6 || Math.abs(m.val.y - y) > 1.5) continue;
+      const push = (3.4 * (1 - d / 2.2)) / (d || 1);
+      this.kick(mid, d ? dx * push : 2, dz * push);
+    }
+    for (const [pk, g] of this.props) {
+      const dx = g.position.x - at[0], dz = g.position.z - at[2], d = Math.hypot(dx, dz);
+      if (pk === key || !g.visible || g.userData.pending || d > 1.6 || d < 0.01 || Math.abs(g.position.y - y) > 1.5) continue;
+      const push = (1.3 * (1 - d / 2.2)) / d; // furniture is heavier than a figure
+      this.kick(pk, dx * push, dz * push);
+    }
+    this.onCrumble(kind.wood);
+    this.invalidate();
+  }
+
   /** Another player is dragging a mini: show it moving before they drop it. */
   liveMove(id: string, p: Vec): void {
     const m = this.minis.get(id);
@@ -1290,6 +1408,7 @@ export class Board {
   select(id: string | null): void {
     if (this.selected) this.minis.get(this.selected)?.group.remove(this.ring);
     this.selected = id && this.minis.has(id) ? id : null;
+    if (this.selected) this.offer(null);
     if (this.selected) this.attachRing(this.minis.get(this.selected)!);
     this.invalidate();
     this.hooks.onSelect(this.selected);
@@ -1467,6 +1586,7 @@ export class Board {
 
   setTool(t: Tool): void {
     this.tool = t;
+    this.offer(null);
     this.hideGhost();
     if (t !== 'move') this.select(null);
     if (t !== 'ruler' && this.rulers.has('me')) {
@@ -1885,6 +2005,7 @@ export class Board {
 
   private updateGhost(): void {
     this.hideGhost();
+    if (this.offered) { this.markOffer(); return; }
     if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying || this.rooming || this.lighting) return;
     if (this.edging) {
       const e = this.pickEdge();
@@ -1992,6 +2113,7 @@ export class Board {
     switch (this.tool) {
       case 'move':
         this.select(g.tapMini);
+        this.offer(g.tapMini ? null : this.breakTarget()); // a tap on a wall or a thing offers to break it
         break;
       case 'build': {
         if (this.pasting) {
@@ -2031,6 +2153,7 @@ export class Board {
     this.gesture = null;
     if (g.touch) this.hideGhost();
     else this.updateGhost();
+    this.markOffer();
   }
 
   /** Drop whatever the current pointer was doing (second finger landed, or the OS took over). */
@@ -2112,6 +2235,7 @@ export class Board {
     if (this.dice.update(dt)) changed = true;
     if (this.animate(dt)) changed = true;
     if (this.wobble(dt)) changed = true;
+    if (this.debris.update(dt)) this.dirty = true; // drawn, but it casts no shadow to redraw
     if (this.fogDirty) { this.rebuildFog(); changed = true; }
     if (this.visDirty) { this.refreshMinis(); changed = true; }
     if (this.terrainDirty) { this.rebuildTerrain(); changed = true; }
@@ -2171,6 +2295,7 @@ export class Board {
     this.camera.layers.enable(OVERLAY);
     if (!this.look) this.renderer.render(this.scene, this.camera);
     this.hooks.onView();
+    if (this.offered) this.onOffer(this.offered); // its button follows the piece across the screen
   }
   private wasBusy = false;
 }
