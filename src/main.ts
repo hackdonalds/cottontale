@@ -811,7 +811,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   /** Tapping a theme, wherever it is shown: take it up, or let go of the one the table has. */
   function pickTheme(t: GameTheme): void {
     if (!full()) return;
-    if (t.id === gameTheme()?.id) { setAtmo(store, 'theme', null); return; }
+    if (t.id === gameTheme()?.id) {
+      // A soundscape the theme brought leaves with it: fall silent by choice, not by a name nobody knows.
+      if (t.sounds?.scapes?.[atmo(store, 'amb', 'off')]) setAtmo(store, 'amb', 'off');
+      setAtmo(store, 'theme', null);
+      return;
+    }
     setAtmo(store, 'theme', t); // the whole theme, so the board carries it
     for (const [k, v] of moodEdits(t)) setAtmo(store, k, v);
     if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
