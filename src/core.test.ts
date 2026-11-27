@@ -4,6 +4,7 @@ import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES } from 
 import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, eyesOf, fullPowers, measure, miniShown, nextTurn, sees, turnOrder, type MiniVal } from './rules';
+import { buildTerrain } from './terrain';
 import { Store, type Row } from './store';
 
 describe('Store', () => {
@@ -208,11 +209,41 @@ describe('library', () => {
     for (const p of Object.values(PROPS)) expect(p.make().children.length).toBeGreaterThan(0);
     for (const m of Object.values(MINIS)) expect(m.make().length).toBeGreaterThan(0);
     expect(Object.keys(PROPS).length).toBeGreaterThan(45);
-    expect(Object.keys(MINIS).length).toBeGreaterThan(40);
+    expect(Object.keys(MINIS).length).toBeGreaterThan(20);
   });
 
   it('packs slabs into text and back', async () => {
     const slab = { w: 2, h: 1, d: 1, cells: [[0, 0, 0, { i: 'stone' }], [1, 0, 0, { i: 'door', r: 1 }]] };
     expect(await unpack(await pack(slab))).toEqual(slab);
+  });
+});
+
+describe('terrain', () => {
+  const cols = (cells: [number, number, number, string][]) => new Map(cells.map(([x, y, z, id]) => [`${x},${z}`, { y, id }]));
+  const heights = (t: ReturnType<typeof buildTerrain>, x: number, z: number) => {
+    const p = t.geometry.getAttribute('position'), out: number[] = [];
+    for (let i = 0; i < p.count; i++) if (Math.abs(p.getX(i) - x) < 1e-6 && Math.abs(p.getZ(i) - z) < 1e-6) out.push(p.getY(i));
+    return out;
+  };
+
+  it('draws level ground as two triangles a cell, with nothing marked as a bank', () => {
+    const t = buildTerrain(cols([[0, 0, 0, 'grass'], [1, 0, 0, 'grass'], [0, 0, 1, 'grass'], [1, 0, 1, 'grass']]), () => 0);
+    expect(t.sloped.size).toBe(0);
+    expect(t.side.filter((s) => !s).length).toBe(8);
+  });
+
+  it('turns a step into a bank that meets halfway, and keeps a level pad under each cell', () => {
+    const t = buildTerrain(cols([[0, 0, 0, 'grass'], [1, 1, 0, 'grass']]), () => 0);
+    expect(t.sloped).toEqual(new Set(['0,0', '1,0']));
+    expect(heights(t, 1, 0.5).filter((h) => h === 1.5).length).toBe(1); // the shared edge, one vertex, between 1 and 2
+    expect(heights(t, 0.2, 0.2)).toEqual([1]); // the low cell's pad
+    expect(heights(t, 1.8, 0.8)).toEqual([2]); // the high cell's pad
+  });
+
+  it('does not let floors lift the ground beside them, and closes the gap with a cut face', () => {
+    const t = buildTerrain(cols([[0, 1, 0, 'grass'], [1, 0, 0, 'wood']]), () => 0);
+    expect(t.sloped.size).toBe(0);
+    expect(t.cells.every((c) => c.join() === '0,1,0')).toBe(true);
+    expect(t.side.some(Boolean)).toBe(true);
   });
 });

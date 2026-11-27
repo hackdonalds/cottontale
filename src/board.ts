@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
+import { WILD, kit, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
+import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Kind, type Start } from './dice';
 import { eyesOf, fogged, measure, miniShown, type CellVal, type MiniVal } from './rules';
 import type { Store } from './store';
@@ -44,66 +46,106 @@ function noise(x: number, y: number, z: number): number {
   return s - Math.floor(s);
 }
 
-/** All blocks of one material, drawn as a single instanced mesh. */
-class Layer {
-  cells = new Set<string>();
-  order: string[] = [];
-  dirty = false;
-  cap = 256;
+/** Many copies of one shape as a single draw call, refilled from scratch whenever its contents change. */
+class Swarm {
   mesh: THREE.InstancedMesh;
-  private geo: THREE.BufferGeometry;
-  private mat: THREE.MeshStandardMaterial;
-  private base: THREE.Color;
+  /** What each copy stands for (a cell key), by instance number. */
+  keys: string[] = [];
+  private cap = 64;
 
-  constructor(id: string, private scene: THREE.Scene, private hidden: (x: number, y: number, z: number) => boolean) {
-    const d = BLOCKS[id];
-    const h = d.h ?? 1;
-    this.geo = new THREE.BoxGeometry(1, h, 1).translate(0, h / 2, 0);
-    this.base = new THREE.Color(d.color);
-    this.mat = new THREE.MeshStandardMaterial({
-      color: '#ffffff', roughness: d.rough ?? 0.9,
-      transparent: d.opacity !== undefined, opacity: d.opacity ?? 1,
-      emissive: d.glow ? this.base : new THREE.Color(0), emissiveIntensity: d.glow ?? 0,
-    });
+  constructor(private geo: THREE.BufferGeometry, private mat: THREE.Material, private scene: THREE.Scene, private shadow: boolean) {
     this.mesh = this.make();
   }
   private make(): THREE.InstancedMesh {
     const m = new THREE.InstancedMesh(this.geo, this.mat, this.cap);
     m.count = 0;
+    m.visible = false;
     m.frustumCulled = false;
-    m.castShadow = !this.mat.transparent;
+    m.castShadow = this.shadow;
     m.receiveShadow = true;
-    m.userData.layer = this;
+    m.userData.swarm = this;
     this.scene.add(m);
     return m;
   }
-  rebuild(): void {
-    this.dirty = false;
-    if (this.cells.size > this.cap) {
-      while (this.cells.size > this.cap) this.cap *= 2;
+  /** Start over, with room for `n` copies. */
+  begin(n: number): void {
+    if (n > this.cap) {
+      while (n > this.cap) this.cap *= 2;
       this.scene.remove(this.mesh);
       this.mesh.dispose();
       this.mesh = this.make();
     }
-    const m = new THREE.Matrix4(), c = new THREE.Color();
-    let i = 0;
-    this.order.length = 0;
-    for (const key of this.cells) {
-      const [x, y, z] = parse(key);
-      if (this.hidden(x, y, z)) continue; // above the cutaway, or under fog
-      m.makeTranslation(x + 0.5, y, z + 0.5);
-      this.mesh.setMatrixAt(i, m);
-      this.mesh.setColorAt(i, c.copy(this.base).offsetHSL(0, 0, (noise(x, y, z) - 0.5) * 0.07));
-      this.order.push(key);
-      i++;
-    }
-    this.mesh.count = i;
-    this.mesh.visible = i > 0; // an empty layer should not cost a draw call
+    this.keys.length = 0;
+  }
+  add(m: THREE.Matrix4, c: THREE.Color, key = ''): void {
+    const i = this.keys.push(key) - 1;
+    this.mesh.setMatrixAt(i, m);
+    this.mesh.setColorAt(i, c);
+  }
+  end(): void {
+    this.mesh.count = this.keys.length;
+    this.mesh.visible = this.keys.length > 0; // an empty swarm should not cost a draw call
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.mesh.boundingSphere = null;
     this.mesh.boundingBox = null;
   }
+}
+
+/** All blocks of one material. A modelled block is a family of shapes: one swarm for each member. */
+class Layer {
+  cells = new Set<string>();
+  dirty = false;
+  swarms: Swarm[];
+  private base: THREE.Color;
+  /** How much each block's shade wanders. Modelled blocks get their variety from shape and surface detail instead. */
+  private tint: number;
+  /** How many ways a modelled block may be turned: any quarter, or (boards, which have a direction) end for end. */
+  private turns: number;
+
+  constructor(id: string, scene: THREE.Scene, private hidden: (x: number, y: number, z: number) => boolean) {
+    const d = BLOCKS[id];
+    const h = d.h ?? 1;
+    // A modelled block carries its own paint; a plain one is a box tinted per instance.
+    const family = kit.get(`b_${id}`);
+    this.base = new THREE.Color(family ? '#ffffff' : d.color);
+    const mat = new THREE.MeshStandardMaterial({
+      color: '#ffffff', roughness: d.rough ?? 0.9, vertexColors: !!family,
+      transparent: d.opacity !== undefined, opacity: d.opacity ?? 1,
+      emissive: d.glow ? this.base : new THREE.Color(0), emissiveIntensity: d.glow ?? 0,
+    });
+    if (family) withDetail(mat);
+    this.tint = family ? 0 : 0.07;
+    this.turns = !family ? 1 : id === 'wood' ? 2 : 4;
+    this.swarms = (family ?? [new THREE.BoxGeometry(1, h, 1).translate(0, h / 2, 0)]).map((g) => new Swarm(g, mat, scene, !mat.transparent));
+  }
+  rebuild(): void {
+    this.dirty = false;
+    // Which member of the family a block is, and which way it is turned, follow from where it lies.
+    const lots: Vec[][] = this.swarms.map(() => []);
+    for (const key of this.cells) {
+      const [x, y, z] = parse(key);
+      if (this.hidden(x, y, z)) continue; // above the cutaway, or under fog
+      lots[Math.floor(rand(x, y, z, 11) * lots.length)].push([x, y, z]);
+    }
+    const m = new THREE.Matrix4(), c = new THREE.Color();
+    this.swarms.forEach((swarm, i) => {
+      swarm.begin(lots[i].length);
+      for (const [x, y, z] of lots[i]) {
+        m.makeRotationY(Math.floor(rand(x, y, z, 12) * this.turns) * (Math.PI * 2 / this.turns)).setPosition(x + 0.5, y, z + 0.5);
+        swarm.add(m, c.copy(this.base).offsetHSL(0, 0, (noise(x, y, z) - 0.5) * this.tint), ck(x, y, z));
+      }
+      swarm.end();
+    });
+  }
+}
+
+/** A smooth field over the table in [0, 1): the same hills and hollows of chance for everyone. */
+function field(x: number, z: number, size: number, salt: number): number {
+  const u = x / size, v = z / size, x0 = Math.floor(u), z0 = Math.floor(v);
+  const fx = (u - x0) * (u - x0) * (3 - 2 * (u - x0)), fz = (v - z0) * (v - z0) * (3 - 2 * (v - z0));
+  const at = (i: number, j: number) => rand(x0 + i, salt, z0 + j, 97);
+  return (at(0, 0) * (1 - fx) + at(1, 0) * fx) * (1 - fz) + (at(0, 1) * (1 - fx) + at(1, 1) * fx) * fz;
 }
 
 interface Undo { k: string; prev: unknown }
@@ -193,7 +235,7 @@ function plate(v: MiniVal): THREE.Sprite {
 }
 
 const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number }> = {
-  day: { bg: '#1b2233', sun: '#fff2dd', sunI: 2.1, hemi: '#dfeaff', hemiI: 1.25 },
+  day: { bg: '#1b2233', sun: '#ffe7c2', sunI: 2.5, hemi: '#cfe0ff', hemiI: 1.15 },
   dusk: { bg: '#2b1d2e', sun: '#ff9d5c', sunI: 1.5, hemi: '#ffc9a8', hemiI: 0.7 },
   night: { bg: '#080b14', sun: '#8fb0ff', sunI: 0.55, hemi: '#7f95d6', hemiI: 0.42 },
 };
@@ -246,6 +288,15 @@ export class Board {
   private twistSlack = 0;
   private zoomGoal: number | null = null;
   private shadowDirty = true;
+  /** Ground cover (tufts, flowers, pebbles): not stored anywhere, grown from the lie of the land. */
+  private cover: { tuft: Swarm[]; flower: Swarm[]; pebble: Swarm[] } | null = null;
+  private coverDirty = true;
+  private season: Season = 'summer';
+  /** Natural ground, drawn as one smooth surface instead of cubes (see terrain.ts). */
+  private columns = new Map<string, Column>();
+  private terrain: (Terrain & { mesh: THREE.Mesh }) | null = null;
+  private terrainMat = withDetail(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }), true);
+  private terrainDirty = true;
   private sunAt = new THREE.Vector3(1e9, 0, 0);
   /** Rendering resolution steps down if this device cannot keep up (see `adapt`). */
   private quality = 0;
@@ -264,6 +315,8 @@ export class Board {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     const lowEnd = this.coarse && ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 3;
+    // Keep painted colours rich in bright light instead of washing out to white.
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.shadowMap.enabled = !lowEnd;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // Shadows only change when the table does, not when the camera moves: redraw them on demand.
@@ -271,7 +324,7 @@ export class Board {
     this.scene.background = new THREE.Color();
     this.scene.fog = new THREE.Fog('#000', 60, 170);
 
-    this.hemi = new THREE.HemisphereLight('#fff', '#3a3344', 1);
+    this.hemi = new THREE.HemisphereLight('#fff', '#6b5a4c', 1); // warm light bounced up off the table
     this.sun = new THREE.DirectionalLight('#fff', 1);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.setScalar(this.coarse ? 1024 : 2048);
@@ -336,8 +389,26 @@ export class Board {
     this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
     const hidden = (x: number, y: number, z: number) => this.cellHidden(x, y, z);
-    for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, hidden));
+    // Ground under the smooth surface is not drawn as cubes as well.
+    const buried = (x: number, y: number, z: number) => {
+      const top = this.columns.get(`${x},${z}`);
+      return this.cellHidden(x, y, z) || (!!top && !!GROUND[top.id] && y <= top.y);
+    };
+    for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
     this.dice = new DiceView(this.scene);
+    // A pack of models has arrived: stand up the pieces that were waiting for it.
+    onKitPack(() => {
+      for (const [key, g] of this.props) {
+        const v = this.store.get<CellVal>(key);
+        if (v && g.userData.pending) this.placeProp(key, v);
+      }
+      for (const [id, m] of this.minis) { // and any figures: rebuild them from what the kit now holds
+        m.sig = '';
+        this.applyMini(id, m.val);
+      }
+      this.coverDirty = true;
+      this.touched();
+    });
 
     // Capture phase so we can claim a drag before OrbitControls sees it.
     canvas.addEventListener('pointerdown', (e) => this.onDown(e), true);
@@ -373,6 +444,7 @@ export class Board {
   /** Re-evaluate everything that depends on role, fog, cutaway or line-of-sight settings. */
   refresh(): void {
     for (const l of this.layers.values()) l.dirty = true;
+    this.coverDirty = this.terrainDirty = true;
     for (const [key, g] of this.props) g.visible = !this.cellHidden(...parse(key));
     for (const [id, m] of this.minis) this.applyMini(id, m.val); // ghosting depends on the role
     this.fogDirty = this.visDirty = true;
@@ -393,6 +465,20 @@ export class Board {
 
   private cellHidden(x: number, y: number, z: number): boolean {
     return y >= this.cut || (!this.full && fogged(this.store, x, z));
+  }
+
+  /** The time of year: leaves turn, blossom or fall, and snow settles on the evergreens. */
+  setSeason(name: Season): void {
+    if (name === this.season) return;
+    this.season = name;
+    setSeason(name);
+    // Trees that drop their leaves change shape in and out of winter: stand them all again.
+    for (const [key, g] of this.props) {
+      const v = this.store.get<CellVal>(key);
+      if (v && WILD[v.i]?.bare) { delete g.userData.seat; this.placeProp(key, v); }
+    }
+    this.coverDirty = true;
+    this.touched();
   }
 
   setSky(name: Sky): void {
@@ -461,6 +547,7 @@ export class Board {
     this.select(null);
     this.setTurn(null);
     for (const l of this.layers.values()) { l.cells.clear(); l.dirty = true; }
+    this.coverDirty = this.terrainDirty = true;
     for (const g of this.props.values()) this.scene.remove(g);
     for (const m of this.minis.values()) this.scene.remove(m.group);
     for (const g of this.rulers.values()) this.scene.remove(g);
@@ -500,7 +587,170 @@ export class Board {
     }
   }
 
+  /** What stands in a cell, if anything. */
+  private what(x: number, y: number, z: number): string | undefined {
+    return this.store.get<CellVal>(ck(x, y, z))?.i;
+  }
+
+  /**
+   * Rebuild the smooth ground from the blocks. Also works out how trodden each ground
+   * cell is, so the surface can wear to bare earth along walls, floors and under trees.
+   */
+  private rebuildTerrain(): void {
+    this.terrainDirty = false;
+    this.columns.clear();
+    for (const [id, l] of this.layers) {
+      for (const key of l.cells) {
+        const [x, y, z] = parse(key);
+        if (this.cellHidden(x, y, z)) continue; // above the cutaway, or under fog
+        const k = `${x},${z}`, top = this.columns.get(k);
+        if (!top || y > top.y) this.columns.set(k, { y, id });
+      }
+      if (GROUND[id]) l.dirty = true; // which of its cubes are buried may have changed
+    }
+    const worn = (x: number, z: number): number => {
+      const top = this.columns.get(`${x},${z}`)!;
+      const on = this.what(x, top.y + 1, z);
+      let w = on && (WILD[on] || /^(wall|wood|post|door|gate|fence)/.test(on)) ? (WILD[on] ? 0.55 : 1) : 0;
+      for (let dx = -1; dx <= 1 && w < 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+        if (!dx && !dz) continue;
+        const beside = this.columns.get(`${x + dx},${z + dz}`);
+        // Paving and floors at about this level: feet have been here.
+        if (beside && !GROUND[beside.id] && Math.abs(beside.y - top.y) <= 1) w = Math.max(w, dx && dz ? 0.4 : 0.9);
+      }
+      return w;
+    };
+    const built = buildTerrain(this.columns, worn);
+    if (this.terrain) {
+      this.scene.remove(this.terrain.mesh);
+      this.terrain.geometry.dispose();
+    }
+    const mesh = new THREE.Mesh(built.geometry, this.terrainMat);
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.visible = built.cells.length > 0;
+    this.scene.add(mesh);
+    this.terrain = { ...built, mesh };
+  }
+
+  /**
+   * Scatter small growth over open ground, and settle the things that stand on it.
+   * It is environment-aware rather than random: thick in some patches and bare in
+   * others, pebbly along paths and floors, flowers gathered in drifts of one colour
+   * out in the open, and a fringe of grass around every trunk, boulder and wall foot
+   * so that nothing looks stuck into the ground.
+   */
+  private rebuildCover(): void {
+    this.coverDirty = false;
+    this.seatProps();
+    if (!this.cover) {
+      if (!kit.get('g_tuft')) return;
+      const mat = withDetail(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
+      const swarms = (id: string) => (kit.get(id) ?? []).map((g) => new Swarm(g, mat, this.scene, false));
+      this.cover = { tuft: swarms('g_tuft'), flower: swarms('g_flower'), pebble: swarms('g_pebble') };
+    }
+    const cover = this.cover;
+    const lots = new Map<Swarm, THREE.Matrix4[]>();
+    const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+    let salt = 0;
+    const grow = (kind: 'tuft' | 'flower' | 'pebble', x: number, y: number, z: number, px: number, pz: number, pick?: number, scale = 1) => {
+      const family = cover[kind], i = salt++;
+      const swarm = family[pick ?? Math.floor(rand(x, y, z, 40 + i) * family.length)];
+      const size = (0.8 + rand(x, y, z, 50 + i) * 0.7) * scale;
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(px, y + 1, pz), q.setFromAxisAngle(up, rand(x, y, z, 80 + i) * Math.PI * 2), new THREE.Vector3(size, size, size));
+      if (!lots.has(swarm)) lots.set(swarm, []);
+      lots.get(swarm)!.push(m);
+    };
+    for (const [key, top] of this.columns) {
+      if (GROUND[top.id]?.kind !== 3) continue; // only growing ground
+      const [x, z] = key.split(',').map(Number), y = top.y;
+      // On a bank only the level pad in the middle of the cell is at the cell's own height.
+      const reach = this.terrain?.sloped.has(key) ? 0.5 : 0.84;
+      const on = this.what(x, y + 1, z);
+      salt = 0;
+      if (on) {
+        if (WILD[on]) { // a fringe around the foot of a trunk or boulder
+          const n = 3 + Math.floor(rand(x, y, z, 21) * 4), r0 = on === 'rock' ? 0.36 : 0.2;
+          for (let i = 0; i < n; i++) {
+            const a = (i + rand(x, y, z, 22 + i)) * Math.PI * 2 / n, r = Math.min(reach / 2, r0 + rand(x, y, z, 26 + i) * 0.1);
+            grow('tuft', x, y, z, x + 0.5 + Math.cos(a) * r, z + 0.5 + Math.sin(a) * r, undefined, 0.9);
+          }
+        } else if (/^(wall|woodwin)/.test(on) && reach > 0.6) { // grass growing up against the foot of a wall
+          const turn = (this.store.get<CellVal>(ck(x, y + 1, z))?.r ?? 0) * Math.PI / 2;
+          for (let i = 0, n = 1 + Math.floor(rand(x, y, z, 21) * 3); i < n; i++) {
+            const along = (rand(x, y, z, 22 + i) - 0.5) * 0.9, off = -0.36 + rand(x, y, z, 26 + i) * 0.1;
+            // The wall stands along the far (-z) edge of the cell before it is turned.
+            grow(rand(x, y, z, 28 + i) < 0.25 ? 'pebble' : 'tuft', x, y, z, x + 0.5 + along * Math.cos(turn) + off * Math.sin(turn), z + 0.5 - along * Math.sin(turn) + off * Math.cos(turn));
+          }
+        }
+        continue;
+      }
+      let paved = false, crowded = false;
+      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+        if (!dx && !dz) continue;
+        const beside = this.columns.get(`${x + dx},${z + dz}`);
+        if (!(dx && dz) && beside && !GROUND[beside.id] && Math.abs(beside.y - y) <= 1) paved = true;
+        if (this.what(x + dx, y + 1, z + dz)) crowded = true;
+      }
+      const thick = field(x, z, 5, 1), drift = field(x, z, 7, 2);
+      const n = Math.floor(rand(x, y, z, 20) * (paved ? 2.4 : 0.9 + thick * 5.5));
+      for (let i = 0; i < n; i++) {
+        const r = rand(x, y, z, 30 + i);
+        const kind = paved ? (r < 0.6 ? 'pebble' : 'tuft') : !crowded && drift > 0.62 && r < 0.5 ? 'flower' : r > 0.93 ? 'pebble' : 'tuft';
+        // Flowers of a drift share a colour; everything else is drawn from its whole family.
+        grow(kind, x, y, z, x + 0.5 + (rand(x, y, z, 60 + i) - 0.5) * reach, z + 0.5 + (rand(x, y, z, 70 + i) - 0.5) * reach,
+          kind === 'flower' ? Math.floor(field(x, z, 11, 3) * cover.flower.length * 0.999) : undefined);
+      }
+    }
+    const white = new THREE.Color('#ffffff');
+    for (const swarm of Object.values(cover).flat()) {
+      const list = lots.get(swarm) ?? [];
+      swarm.begin(list.length);
+      for (const m of list) swarm.add(m, white);
+      swarm.end();
+    }
+  }
+
+  /**
+   * Trees and boulders make room for what is next to them: hemmed in by a wall, a
+   * building or another trunk, they grow smaller and lean away instead of poking through it.
+   */
+  private seatProps(): void {
+    for (const [key, g] of this.props) {
+      const v = this.store.get<CellVal>(key);
+      if (!v || !WILD[v.i]) continue;
+      const [x, y, z] = parse(key);
+      let cx = 0, cz = 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = this.what(x + dx, y, z + dz);
+        if (n && !GROUND[n]) { cx -= dx; cz -= dz; }
+      }
+      // In a hollow the banks would swallow the trunk: stand it up on the fill instead.
+      const lift = Math.min(0.9, (this.terrain?.hollow.get(`${x},${z}`) ?? 0) * 0.7);
+      const seat = `${cx},${cz},${lift.toFixed(2)}`;
+      if ((g.userData.seat ?? '0,0,0.00') === seat) continue;
+      if (g.userData.pending) continue; // its model is still on the way
+      const fresh = this.placeProp(key, v, [cx, cz]);
+      if (fresh.children[0]) fresh.children[0].position.y += lift;
+      fresh.userData.seat = seat;
+    }
+  }
+
+  private placeProp(key: string, v: CellVal, crowd?: [number, number]): THREE.Group {
+    const old = this.props.get(key);
+    if (old) this.scene.remove(old);
+    const [x, y, z] = parse(key);
+    const g = makeProp(v.i, [x, y, z], crowd);
+    g.position.set(x + 0.5, y, z + 0.5);
+    g.rotation.y = WILD[v.i] ? 0 : ((v.r ?? 0) * Math.PI) / 2; // wild things already face any which way
+    g.userData.cell = key;
+    g.visible = !this.cellHidden(x, y, z);
+    this.scene.add(g);
+    this.props.set(key, g);
+    return g;
+  }
+
   private applyCell(key: string, v: CellVal | null, prev: CellVal | null): void {
+    this.coverDirty = this.terrainDirty = true; // whatever changed, the ground and growth around it may want to change too
     if (prev && BLOCKS[prev.i]) {
       const l = this.layers.get(prev.i)!;
       l.cells.delete(key);
@@ -519,13 +769,7 @@ export class Board {
       l.cells.add(key);
       l.dirty = true;
     } else if (PROPS[v.i]) {
-      const g = makeProp(v.i);
-      g.position.set(x + 0.5, y, z + 0.5);
-      g.rotation.y = ((v.r ?? 0) * Math.PI) / 2;
-      g.userData.cell = key;
-      g.visible = !this.cellHidden(x, y, z);
-      this.scene.add(g);
-      this.props.set(key, g);
+      this.placeProp(key, v);
     }
   }
 
@@ -840,9 +1084,11 @@ export class Board {
   /** What solid surface is under the pointer: the block hit (if any) and the empty cell in front of it. */
   private pickSurface(): { cell: Vec | null; place: Vec; point: THREE.Vector3 } | null {
     const targets: THREE.Object3D[] = [this.ground];
+    if (this.terrainDirty) this.rebuildTerrain();
+    if (this.terrain) targets.push(this.terrain.mesh);
     for (const l of this.layers.values()) {
       if (l.dirty) l.rebuild(); // never pick against a stale mesh
-      if (l.mesh.count) targets.push(l.mesh);
+      for (const w of l.swarms) if (w.mesh.count) targets.push(w.mesh);
     }
     const hit = this.ray.intersectObjects(targets, false)[0];
     if (!hit) return null;
@@ -850,12 +1096,22 @@ export class Board {
       const place: Vec = [Math.floor(hit.point.x), 0, Math.floor(hit.point.z)];
       return Math.abs(place[0]) < LIMIT && Math.abs(place[2]) < LIMIT ? { cell: null, place, point: hit.point } : null;
     }
-    const layer = hit.object.userData.layer as Layer;
-    const key = layer.order[hit.instanceId!];
+    if (this.terrain && hit.object === this.terrain.mesh) {
+      // Ground: touching its top builds on it; touching a cut face builds beside it, at the height touched.
+      const cell = this.terrain.cells[hit.faceIndex!];
+      if (!this.terrain.side[hit.faceIndex!]) return { cell, place: [cell[0], cell[1] + 1, cell[2]], point: hit.point };
+      const out = hit.face!.normal;
+      return { cell, place: [cell[0] + Math.round(out.x), Math.max(0, Math.min(cell[1], Math.floor(hit.point.y))), cell[2] + Math.round(out.z)], point: hit.point };
+    }
+    const key = (hit.object.userData.swarm as Swarm).keys[hit.instanceId!];
     if (!key) return null;
     const cell = parse(key);
-    const n = hit.face!.normal;
-    const place: Vec = [cell[0] + Math.round(n.x), cell[1] + Math.round(n.y), cell[2] + Math.round(n.z)];
+    // Which side of the cell was touched: judged from where the finger landed, since
+    // modelled blocks have bevels and details whose faces point every which way.
+    const off = [hit.point.x - cell[0] - 0.5, hit.point.y - cell[1] - 0.5, hit.point.z - cell[2] - 0.5];
+    const axis = off.reduce((best, v, i) => (Math.abs(v) > Math.abs(off[best]) ? i : best), 0);
+    const place: Vec = [cell[0], cell[1], cell[2]];
+    place[axis] += Math.sign(off[axis]) || 1;
     return { cell, place, point: hit.point };
   }
 
@@ -1277,7 +1533,9 @@ export class Board {
     if (this.animate(dt)) changed = true;
     if (this.fogDirty) { this.rebuildFog(); changed = true; }
     if (this.visDirty) { this.refreshMinis(); changed = true; }
+    if (this.terrainDirty) { this.rebuildTerrain(); changed = true; }
     for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); changed = true; }
+    if (this.coverDirty) { this.rebuildCover(); changed = true; }
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {
       if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;

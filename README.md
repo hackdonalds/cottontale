@@ -58,7 +58,7 @@ throw. A flick flings them; they bounce off the terrain, everyone watches the
 same tumble, and the faces that end up on top are the result. `/r 2d6+1d20+3`
 in chat puts those dice in your hand; `/w name hello` whispers.
 
-The ☰ menu has a starter meadow, export/import, and clear.
+The ☰ menu has a starter scene, export/import, and clear.
 
 `npm run build` produces a static site in `dist/` that can be hosted anywhere
 with HTTPS (the browser's crypto API requires it).

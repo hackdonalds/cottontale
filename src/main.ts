@@ -1,6 +1,7 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
+import { loadKit, type Season } from './kit';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
@@ -96,7 +97,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const meId = pid(me);
   const store = new Store(meId);
   const full = () => fullPowers(store, meId);
-  const { tag } = await deriveRoom(code);
+  // The modelled pieces; without them (offline, first visit) the table falls back to plain shapes.
+  const [{ tag }] = await Promise.all([deriveRoom(code), loadKit('./kit').catch(() => {})]);
 
   const customRelays = relays.join() !== DEFAULT_RELAYS.join();
   const invite = `${location.origin}${location.pathname}#room=${encodeURIComponent(code)}${customRelays ? `&relays=${relays.join(',')}` : ''}`;
@@ -548,6 +550,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // ---- atmosphere: sky and sound ----
 
   const SKY_NAMES: Record<Sky, string> = { day: '☀️ Day', dusk: '🌇 Dusk', night: '🌙 Night' };
+  const SEASON_NAMES: Record<Season, string> = { spring: '🌸 Spring', summer: '🌿 Summer', autumn: '🍂 Autumn', winter: '❄️ Winter' };
   function choices(el: HTMLElement, items: Record<string, string>, key: string, fallback: string): void {
     const f = full(), cur = setting(store, key, fallback);
     el.innerHTML = '';
@@ -562,6 +565,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
   function renderAtmo(): void {
     choices($('skies'), SKY_NAMES, 'sky', 'day');
+    choices($('seasons'), SEASON_NAMES, 'season', 'summer');
     choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
     $('soundOn').textContent = sound.enabled ? '🔊 Sound on this device: on' : '🔈 Sound on this device: off';
   }
@@ -600,6 +604,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (l !== los) { los = l; board.refresh(); }
     const sky = setting<Sky>(store, 'sky', 'day');
     board.setSky(sky);
+    board.setSeason(setting<Season>(store, 'season', 'summer'));
     const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
     act('gm').textContent = amGM ? '🎩 Stop being the GM' : '🎩 Become the GM';
     act('los').textContent = `👁️ Line of sight: ${l ? 'on' : 'off'}`;
@@ -798,20 +803,59 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     input.value = '';
   };
 
+  /** A starter scene: a cottage in a clearing, with something to fight. */
   function meadow(): void {
-    const h = (x: number, z: number) => Math.sin(x * 0.35) * 1.1 + Math.cos(z * 0.3) * 1.1 + Math.sin((x + z) * 0.17) * 1.3;
+    const put = (x: number, y: number, z: number, i: string, r = 0) => store.set(`b:${x},${y},${z}`, r ? { i, r } : { i });
+    const rnd = (x: number, z: number) => (Math.imul(x * 73856093 ^ z * 19349663, 0x9e3779b1) >>> 8) / 0x1000000;
+    /** Smooth hills of chance, the same on every device. */
+    const roll = (x: number, z: number) => {
+      const u = x / 6, v = z / 6, x0 = Math.floor(u), z0 = Math.floor(v), fx = u - x0, fz = v - z0;
+      return (rnd(x0, z0) * (1 - fx) + rnd(x0 + 1, z0) * fx) * (1 - fz) + (rnd(x0, z0 + 1) * (1 - fx) + rnd(x0 + 1, z0 + 1) * fx) * fz;
+    };
+    const X0 = -4, X1 = 0, Z0 = -4, Z1 = -1, DOOR = -2; // the room, and the column its door is in
+    const inRoom = (x: number, z: number, pad = 0) => x >= X0 - pad && x <= X1 + pad && z >= Z0 - pad && z <= Z1 + pad;
     for (let x = -10; x < 10; x++) {
       for (let z = -10; z < 10; z++) {
-        const top = Math.max(0, Math.round(h(x, z) + 0.6));
-        const pond = Math.hypot(x - 4, z + 3) < 3.2;
-        if (pond) { store.set(`b:${x},0,${z}`, { i: Math.hypot(x - 4, z + 3) < 2.4 ? 'water' : 'sand' }); continue; }
-        for (let y = 0; y <= top; y++) store.set(`b:${x},${y},${z}`, { i: y === top ? 'grass' : y > top - 2 ? 'dirt' : 'stone' });
-        const r = Math.abs(Math.sin(x * 91.7 + z * 37.3) * 1000) % 1;
-        const prop = r < 0.04 ? 'tree' : r < 0.07 ? 'pine' : r < 0.09 ? 'rock' : r < 0.11 ? 'bush' : null;
-        if (prop) store.set(`b:${x},${top + 1},${z}`, { i: prop });
+        const path = x === DOOR && z > Z1 && z < 7;
+        put(x, 0, z, inRoom(x, z) ? 'wood' : path ? 'stone' : 'grass');
+        if (inRoom(x, z, 2) || Math.abs(x - DOOR) < 2 && z > Z1) continue;
+        // The clearing is level; the land rolls up toward its rim, a level at a time.
+        const out = Math.max(0, Math.max(Math.abs(x + 0.5), Math.abs(z + 0.5)) - 5.5) / 4;
+        const high = Math.min(3, Math.round(out * (0.3 + roll(x, z) * 2.6)));
+        for (let y = 1; y <= high; y++) put(x, y, z, 'grass');
+        const edge = out > 0.4, r = rnd(x, z), wood = roll(x + 40, z - 17); // woods gather by kind
+        const tree = wood < 0.38 ? 'pine' : wood < 0.5 ? 'birch' : wood > 0.72 ? 'poplar' : 'tree';
+        const prop = r < (edge ? 0.3 : 0.07) ? tree : r < (edge ? 0.34 : 0.09) ? 'tree' : r < 0.13 ? 'rock' : r < 0.15 ? 'bush' : null;
+        if (prop) put(x, high + 1, z, prop);
       }
     }
-    store.set('b:-2,' + (Math.max(0, Math.round(h(-2, 2) + 0.6)) + 1) + ',2', { i: 'campfire' });
+    // Walls stand on the edge between the room and the ring of cells around it. The two
+    // sides away from the default camera are a storey taller, like an opened doll's house.
+    // Windows keep a rhythm: never in the end stretch of a wall, spaced evenly about its middle,
+    // and an upper window always stands over a lower one.
+    const windowed = (i: number, n: number) => i > 0 && i < n - 1 && (n % 2 ? (i - (n - 1) / 2) % 2 === 0 : i === n / 2 - 1 || i === n / 2);
+    for (let x = X0; x <= X1; x++) {
+      const win = windowed(x - X0, X1 - X0 + 1);
+      put(x, 1, Z0 - 1, win ? 'wallwin' : 'wall', 2);
+      put(x, 2, Z0 - 1, win ? 'woodwin' : 'wallwood', 2);
+      put(x, 1, Z1 + 1, x === DOOR ? 'walldoor' : 'wall');
+    }
+    for (let z = Z0; z <= Z1; z++) {
+      const win = windowed(z - Z0, Z1 - Z0 + 1);
+      put(X0 - 1, 1, z, win ? 'wallwin' : 'wall', 3);
+      put(X0 - 1, 2, z, win ? 'woodwin' : 'wallwood', 3);
+      put(X1 + 1, 1, z, win ? 'wallwin' : 'wall', 1);
+    }
+    put(X0 - 1, 1, Z0 - 1, 'post', 2); put(X0 - 1, 2, Z0 - 1, 'post', 2);
+    put(X1 + 1, 1, Z0 - 1, 'post', 1); put(X1 + 1, 2, Z0 - 1, 'post', 1);
+    put(X0 - 1, 1, Z1 + 1, 'post', 3); put(X0 - 1, 2, Z1 + 1, 'post', 3);
+    put(X1 + 1, 1, Z1 + 1, 'post');
+    put(-3, 1, -3, 'table'); put(-4, 1, -4, 'barrel'); put(-3, 1, -4, 'barrel'); put(0, 1, -4, 'crate'); put(0, 1, -2, 'chair', 1);
+    put(2, 1, 1, 'campfire'); put(3, 1, 0, 'crate'); put(1, 1, 3, 'rock');
+    const mini = (id: string, k: string, x: number, z: number, c: string, r: number) => store.set(`m:${id}`, { x, y: 1, z, k, c, n: '', r, s: 1 });
+    mini('start-knight', 'knight', DOOR, 2, '#3e63dd', 1);
+    mini('start-wolf', 'wolf', 3, 2, '#8b8d98', 6);
+    mini('start-ogre', 'ogre', 4, 4, '#e5484d', 7);
   }
 
   // ---- keyboard ----

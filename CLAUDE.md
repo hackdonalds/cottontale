@@ -30,6 +30,7 @@ first, then enhance for larger screens.
 - `src/rules.ts` pure table rules (GM, visibility, line of sight, turns) — unit-test here
 - `src/board.ts` 3D view and pointer input · `src/dice.ts` physics dice
 - `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis (and their shelves)
+- `src/kit.ts` loads the modelled pieces (`public/kit/*.glb`), built by the Blender scripts in `assets/blender`
 - `src/sound.ts` synthesised soundscapes and effects (no audio files)
 - Board-specific keys (`b:` `m:` `f:` `turn`) are scoped per board by the store;
   everything else is table-wide. Live messages carry the board id (`bd`).
@@ -38,3 +39,4 @@ first, then enhance for larger screens.
 
 - `npm run dev` · `npm test` · `npm run build && npm run e2e`
 - `npm run relay` — local in-memory relay (used by e2e)
+- `npm run kit` — rebuild the kit packs with headless Blender (`-- --sheet out.png` also renders a contact sheet); which family ships in which pack is `assets/blender/packs.py`

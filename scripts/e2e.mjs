@@ -229,7 +229,7 @@ await a.click('#menuBtn');
 await a.click('[data-act="meadow"]');
 const total = await count(a, 'b:');
 await b.waitForFunction((n) => [...window.__ct.store.keys('b:')].length === n, total);
-assert(total > 400, `starter meadow synced live (${total} cells)`);
+assert(total > 400, `starter scene synced live (${total} cells)`);
 await a.evaluate(() => window.__ct.net.snapshot());
 await a.screenshot({ path: process.env.SHOT ?? '/tmp/cottontale-e2e.png' });
 await a.close();

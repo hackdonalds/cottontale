@@ -2,6 +2,7 @@
 // primitives at runtime, so the game ships with no art assets.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { kitMesh, kitPending, kitProp } from './kit';
 
 export interface BlockDef { name: string; color: string; h?: number; opacity?: number; glow?: number; rough?: number }
 
@@ -52,6 +53,8 @@ export const PROPS: Record<string, PropDef> = {
       part(ball(0.28, 7), mat('#4c9c45', { flatShading: true }), 0.18, 1.25, 0.08),
     ),
   },
+  birch: { name: 'Birch', icon: '🌳', make: () => group(part(cyl(0.05, 0.07, 1.1, 6), mat('#e4e0d6'), 0, 0.55, 0), part(ball(0.3, 7), mat('#a9d468', { flatShading: true }), 0, 1.25, 0)) },
+  poplar: { name: 'Poplar', icon: '🌲', make: () => group(part(cyl(0.06, 0.08, 0.4, 6), mat('#5d4a38'), 0, 0.2, 0), part(cyl(0.12, 0.26, 1.4, 7), mat('#476d35', { flatShading: true }), 0, 1.05, 0)) },
   pine: {
     name: 'Pine', icon: '🌲',
     make: () => group(
@@ -152,6 +155,13 @@ export const PROPS: Record<string, PropDef> = {
       part(ball(0.04, 6), mat('#e8c04a', { metalness: 0.7 }), 0.26, 0.45, 0.06),
     ),
   },
+  // Thin walls stand on the far edge of their cell; turn them to pick the edge.
+  wall: { name: 'Stone wall', icon: '🧱', make: () => group(part(box(1, 1, 0.18), mat('#a39c90'), 0, 0.5, -0.5)) },
+  wallwood: { name: 'Timber wall', icon: '🏠', make: () => group(part(box(1, 1, 0.14), mat('#e9dbb8'), 0, 0.5, -0.5)) },
+  wallwin: { name: 'Stone wall, window', icon: '🪟', make: () => group(part(box(1, 0.36, 0.18), mat('#a39c90'), 0, 0.18, -0.5), part(box(1, 0.22, 0.18), mat('#a39c90'), 0, 0.89, -0.5)) },
+  woodwin: { name: 'Timber wall, window', icon: '🪟', make: () => group(part(box(1, 0.36, 0.14), mat('#e9dbb8'), 0, 0.18, -0.5), part(box(1, 0.2, 0.14), mat('#6b4728'), 0, 0.9, -0.5)) },
+  walldoor: { name: 'Doorway', icon: '🚪', make: () => group(part(box(1, 0.16, 0.2), mat('#6b4728'), 0, 0.92, -0.5), part(box(0.64, 0.82, 0.06), mat('#a8733f'), 0, 0.42, -0.5)) },
+  post: { name: 'Corner post', icon: '🗿', make: () => group(part(box(0.27, 1, 0.27), mat('#a39c90'), -0.5, 0.5, -0.5)) },
   fence: {
     name: 'Fence', icon: '🪵',
     make: () => group(
@@ -222,26 +232,6 @@ export const MINIS: Record<string, MiniDef> = {
       tilt(part(new THREE.TorusGeometry(0.2, 0.015, 5, 12, Math.PI), mat('#6b4a2b'), -0.22, 0.42, 0.04), 0, Math.PI / 2, Math.PI / 2),
     ],
   },
-  cleric: {
-    name: 'Cleric', icon: '✨', height: 0.9,
-    make: () => [
-      ...person('#eee6d2'),
-      part(box(0.05, 0.3, 0.02), mat('#e0b93a', { metalness: 0.5 }), 0, 0.38, 0.165),
-      part(box(0.18, 0.05, 0.02), mat('#e0b93a', { metalness: 0.5 }), 0, 0.44, 0.165),
-      part(new THREE.TorusGeometry(0.11, 0.015, 5, 16), mat('#ffe27a', { emissive: new THREE.Color('#ffd84a'), emissiveIntensity: 0.9 }), 0, 0.88, 0)
-        .rotateX(Math.PI / 2),
-    ],
-  },
-  bard: {
-    name: 'Bard', icon: '🎻', height: 0.9,
-    make: () => [
-      ...person('#c2452d'),
-      part(cyl(0.2, 0.2, 0.02, 12), mat('#3a6ea8'), 0, 0.79, 0),
-      part(cyl(0.1, 0.12, 0.1, 10), mat('#3a6ea8'), 0, 0.84, 0),
-      tilt(part(cone(0.02, 0.26, 4), mat('#f2f2f2'), 0.1, 0.94, 0), 0, 0, -0.5),
-      tilt(part(ball(0.09, 8), mat('#b98a52'), 0.19, 0.36, 0.1), 0, 0, 0.4),
-    ],
-  },
   bunny: {
     name: 'Bunny', icon: '🐇', height: 0.75,
     make: () => {
@@ -263,15 +253,6 @@ export const MINIS: Record<string, MiniDef> = {
       ];
     },
   },
-  goblin: {
-    name: 'Goblin', icon: '👺', height: 0.7,
-    make: () => [
-      ...person('#6b4a2b', { skin: '#7fb04a', h: 0.34 }),
-      tilt(part(cone(0.05, 0.2, 5), mat('#7fb04a'), -0.18, 0.54, 0), 0, 0, 1.2),
-      tilt(part(cone(0.05, 0.2, 5), mat('#7fb04a'), 0.18, 0.54, 0), 0, 0, -1.2),
-      part(box(0.04, 0.3, 0.04), mat('#5a3b21'), 0.2, 0.32, 0.06),
-    ],
-  },
   skeleton: {
     name: 'Skeleton', icon: '💀', height: 0.9,
     make: () => [
@@ -280,16 +261,6 @@ export const MINIS: Record<string, MiniDef> = {
       part(box(0.2, 0.05, 0.1), mat('#e9e4d4'), 0, 0.12, 0),
       part(ball(0.14, 10), mat('#f1ecdd'), 0, 0.68, 0),
       ...eyes(0.7, 0.115, 0.055, 0.035, '#111'),
-    ],
-  },
-  orc: {
-    name: 'Orc', icon: '👹', height: 1,
-    make: () => [
-      ...person('#5a4634', { skin: '#5d8f4a', h: 0.56, w: 0.22 }),
-      part(cone(0.025, 0.08, 5), mat('#fff'), -0.05, 0.68, 0.13),
-      part(cone(0.025, 0.08, 5), mat('#fff'), 0.05, 0.68, 0.13),
-      part(box(0.04, 0.6, 0.04), mat('#5a3b21'), 0.28, 0.45, 0.05),
-      part(box(0.04, 0.2, 0.22), mat('#9aa3ad', { metalness: 0.7 }), 0.28, 0.68, 0.1),
     ],
   },
   wolf: {
@@ -547,50 +518,19 @@ function beast(c: string, len: number, h: number, o: { head?: number; ears?: boo
 
 Object.assign(MINIS, {
   // heroes
-  paladin: { name: 'Paladin', icon: '⚜️', height: 0.95, make: () => [
-    ...person('#e3e7ec'), part(ball(0.155, 10), metal('#e3b53c'), 0, 0.71, -0.02),
-    part(box(0.06, 0.34, 0.28), metal('#e3b53c'), -0.23, 0.38, 0.05), part(box(0.05, 0.5, 0.05), metal('#c9ccd2'), 0.23, 0.5, 0.05),
-    part(box(0.12, 0.12, 0.12), metal('#c9ccd2'), 0.23, 0.78, 0.05)] },
   barbarian: { name: 'Barbarian', icon: '🪓', height: 1, make: () => [
     ...person('#8a5a3c', { h: 0.54, w: 0.21 }), part(box(0.34, 0.1, 0.24), mat('#6b4a2b'), 0, 0.36, 0),
     part(box(0.04, 0.7, 0.04), mat('#5a3b21'), 0.28, 0.5, 0.05), part(box(0.04, 0.22, 0.26), metal('#9aa3ad'), 0.28, 0.76, 0.1),
     part(cone(0.15, 0.14, 8), mat('#b8322a'), 0, 0.86, 0)] },
-  druid: { name: 'Druid', icon: '🌿', height: 1.05, make: () => [
-    part(cone(0.24, 0.56, 10), mat('#4f7a3a'), 0, 0.36, 0), part(ball(0.14, 10), mat(SKIN), 0, 0.68, 0), ...eyes(0.7, 0.125, 0.055, 0.022),
-    lay(part(cone(0.03, 0.2, 4), mat('#c9a06a'), -0.1, 0.84, 0), 0, 0, 0.5), lay(part(cone(0.03, 0.2, 4), mat('#c9a06a'), 0.1, 0.84, 0), 0, 0, -0.5),
-    part(cyl(0.025, 0.03, 0.9, 6), mat('#6b4a2b'), 0.25, 0.5, 0.05), part(ball(0.08, 6), flat('#57a955'), 0.25, 0.98, 0.05)] },
-  monk: { name: 'Monk', icon: '🥋', height: 0.9, make: () => [
-    ...person('#d98a2b'), part(box(0.36, 0.06, 0.3), mat('#7a2233'), 0, 0.3, 0), part(cyl(0.02, 0.02, 0.95, 6), mat('#6b4a2b'), 0.24, 0.5, 0.05)] },
   // folk
-  villager: { name: 'Villager', icon: '🧑‍🌾', height: 0.9, make: () => [
-    ...person('#7d6a55'), part(cyl(0.22, 0.24, 0.03, 12), mat('#c9a84f'), 0, 0.78, 0), part(cyl(0.11, 0.13, 0.1, 10), mat('#c9a84f'), 0, 0.83, 0)] },
-  merchant: { name: 'Merchant', icon: '🧳', height: 0.9, make: () => [
-    ...person('#3a6ea8', { w: 0.2 }), part(cyl(0.13, 0.15, 0.1, 10), mat('#7a2233'), 0, 0.82, 0),
-    squash(part(ball(0.13, 8), mat('#b89a6a'), 0.24, 0.2, 0.05), 1, 0.9, 1)] },
-  king: { name: 'Noble', icon: '👑', height: 0.95, make: () => [
-    part(cone(0.25, 0.56, 10), mat('#7a2233'), 0, 0.36, 0), part(ball(0.14, 10), mat(SKIN), 0, 0.68, 0), ...eyes(0.7, 0.125, 0.055, 0.022),
-    part(cyl(0.12, 0.11, 0.1, 8), metal('#e3b53c'), 0, 0.84, 0), part(box(0.5, 0.08, 0.3), mat('#f1f5f9'), 0, 0.56, -0.02)] },
-  child: { name: 'Child', icon: '🧒', height: 0.65, make: () => [...person('#e0b93a', { h: 0.3, w: 0.14 }), part(ball(0.15, 8), mat('#6b4a2b'), 0, 0.52, -0.03)] },
-  guard: { name: 'Guard', icon: '💂', height: 1, make: () => [
-    ...person('#b8322a'), part(cyl(0.15, 0.16, 0.14, 10), metal('#9aa3ad'), 0, 0.8, 0),
-    part(cyl(0.02, 0.02, 1, 6), mat('#6b4a2b'), 0.24, 0.55, 0.05), part(cone(0.05, 0.16, 5), metal('#c9ccd2'), 0.24, 1.12, 0.05)] },
   pirate: { name: 'Pirate', icon: '🏴‍☠️', height: 0.95, make: () => [
     ...person('#2b2b30'), part(box(0.44, 0.04, 0.2), mat('#1b1b1f'), 0, 0.8, 0), part(cyl(0.12, 0.14, 0.1, 8), mat('#1b1b1f'), 0, 0.85, 0),
     part(box(0.34, 0.07, 0.3), mat('#b8322a'), 0, 0.34, 0), lay(part(box(0.03, 0.36, 0.05), metal('#c9ccd2'), 0.22, 0.42, 0.1), 0.6)] },
-  witch: { name: 'Witch', icon: '🧹', height: 1.1, make: () => [
-    part(cone(0.24, 0.56, 10), mat('#2b2530'), 0, 0.36, 0), part(ball(0.14, 10), mat('#a8c98a'), 0, 0.68, 0), ...eyes(0.7, 0.125, 0.055, 0.022),
-    part(cyl(0.26, 0.26, 0.025, 12), mat('#1b1b1f'), 0, 0.78, 0), lay(part(cone(0.13, 0.4, 10), mat('#1b1b1f'), 0.03, 0.97, 0), 0, 0, -0.2),
-    lay(part(cyl(0.02, 0.02, 0.8, 5), mat('#8a623a'), 0.25, 0.4, 0), 0.2), part(cone(0.07, 0.2, 6), mat('#c9a84f'), 0.25, 0.1, -0.07)] },
   // beasts
-  bear: { name: 'Bear', icon: '🐻', height: 0.8, make: () => beast('#6b4a2b', 0.62, 0.5, { head: 0.26, snout: 0.1 }) },
   horse: { name: 'Horse', icon: '🐴', height: 0.95, make: () => [
     ...beast('#8a5c33', 0.66, 0.62, { head: 0.2, snout: 0.16, tail: 0.3 }), part(box(0.05, 0.2, 0.3), mat('#3a2f25'), 0, 0.92, 0.2)] },
-  cat: { name: 'Cat', icon: '🐈', height: 0.45, make: () => beast('#d98a2b', 0.34, 0.22, { head: 0.15, tail: 0.3 }) },
   dog: { name: 'Dog', icon: '🐕', height: 0.55, make: () => beast('#c9a06a', 0.42, 0.3, { head: 0.17, snout: 0.09, tail: 0.2 }) },
   rat: { name: 'Giant rat', icon: '🐀', height: 0.4, make: () => beast('#6f6b75', 0.36, 0.18, { head: 0.14, snout: 0.08, tail: 0.36 }) },
-  boar: { name: 'Boar', icon: '🐗', height: 0.6, make: () => [
-    ...beast('#5a4636', 0.5, 0.34, { head: 0.22, snout: 0.1 }),
-    lay(part(cone(0.025, 0.1, 4), mat('#f1ecdd'), -0.07, 0.42, 0.42), -0.6), lay(part(cone(0.025, 0.1, 4), mat('#f1ecdd'), 0.07, 0.42, 0.42), -0.6)] },
   bat: { name: 'Bat', icon: '🦇', height: 0.7, make: () => [
     part(ball(0.12, 8), mat('#3a3240'), 0, 0.5, 0), ...eyes(0.53, 0.1, 0.045, 0.02, '#ff3b3b'),
     ...[-1, 1].map((s) => lay(squash(part(cone(0.22, 0.02, 3), mat('#2b2530', { side: THREE.DoubleSide }), s * 0.26, 0.52, 0), 1.2, 1, 0.8), 0, 0, s * 0.3)),
@@ -610,22 +550,10 @@ Object.assign(MINIS, {
     ...person('#a8322a', { skin: '#c43c32', h: 0.3, w: 0.14 }),
     part(cone(0.03, 0.12, 5), mat('#2b2530'), -0.08, 0.6, 0), part(cone(0.03, 0.12, 5), mat('#2b2530'), 0.08, 0.6, 0),
     ...[-1, 1].map((s) => lay(squash(part(cone(0.16, 0.02, 3), mat('#7a1f1a', { side: THREE.DoubleSide }), s * 0.2, 0.36, -0.1), 1, 1, 0.8), 0, 0, s * 0.5))] },
-  golem: { name: 'Golem', icon: '🗿', height: 1.15, make: () => [
-    part(box(0.5, 0.5, 0.36), flat('#7d8189'), 0, 0.5, 0), part(box(0.26, 0.24, 0.26), flat('#8d9199'), 0, 0.88, 0),
-    part(box(0.16, 0.5, 0.18), flat('#6d7179'), -0.34, 0.45, 0), part(box(0.16, 0.5, 0.18), flat('#6d7179'), 0.34, 0.45, 0),
-    part(box(0.18, 0.26, 0.2), flat('#6d7179'), -0.13, 0.2, 0), part(box(0.18, 0.26, 0.2), flat('#6d7179'), 0.13, 0.2, 0),
-    ...eyes(0.9, 0.135, 0.06, 0.03, '#58d6e8')] },
-  treant: { name: 'Treant', icon: '🌳', height: 1.3, make: () => [
-    part(cyl(0.15, 0.22, 0.8, 7), mat('#6b4a2b'), 0, 0.48, 0), part(ball(0.36, 8), flat('#3f8a3a'), 0, 1.08, 0),
-    lay(part(cyl(0.04, 0.06, 0.45, 5), mat('#6b4a2b'), -0.28, 0.6, 0), 0, 0, 1), lay(part(cyl(0.04, 0.06, 0.45, 5), mat('#6b4a2b'), 0.28, 0.6, 0), 0, 0, -1),
-    ...eyes(0.66, 0.17, 0.06, 0.03, '#ffd34a')] },
   mimic: { name: 'Mimic', icon: '🧰', height: 0.6, make: () => [
     part(box(0.6, 0.26, 0.42), mat('#7a4d22'), 0, 0.21, 0), lay(part(box(0.6, 0.16, 0.42), mat('#8a5a2a'), 0, 0.46, -0.06), -0.45),
     ...[-0.2, -0.07, 0.07, 0.2].map((x) => part(cone(0.03, 0.09, 4), mat('#f1ecdd'), x, 0.38, 0.18)),
     part(box(0.3, 0.03, 0.2), mat('#c43c6a'), 0, 0.35, 0.1), ...eyes(0.5, 0.16, 0.12, 0.035, '#ffd34a')] },
-  elemental: { name: 'Fire elemental', icon: '🔥', height: 1.05, make: () => [
-    part(cone(0.28, 0.75, 7), glow('#ff7a1a', 1.1), 0, 0.45, 0), part(cone(0.18, 0.5, 6), glow('#ffd34a', 1.3), 0.03, 0.62, 0.03),
-    part(cone(0.1, 0.3, 5), glow('#ff9a1f', 1.2), -0.2, 0.38, 0.05), part(cone(0.1, 0.3, 5), glow('#ff9a1f', 1.2), 0.2, 0.42, 0), ...eyes(0.6, 0.15, 0.06, 0.03)] },
   ogre: { name: 'Ogre', icon: '👹', height: 1.2, make: () => [
     ...person('#7a5a3c', { skin: '#c9a06a', h: 0.7, w: 0.3 }), part(box(0.5, 0.12, 0.4), mat('#5a3b21'), 0, 0.4, 0),
     lay(part(cyl(0.06, 0.11, 0.8, 6), mat('#6b4a2b'), 0.4, 0.45, 0.1), 0.3)] },
@@ -641,16 +569,15 @@ export const BLOCK_SHELVES: Record<string, string[]> = {
   Building: ['cobble', 'brick', 'wood', 'darkwood', 'plaster', 'sandstone', 'marble', 'slate', 'roof', 'thatch', 'carpet', 'iron', 'gold', 'glass', 'obsidian'],
 };
 export const PROP_SHELVES: Record<string, string[]> = {
-  Nature: ['tree', 'pine', 'palm', 'deadtree', 'bush', 'reeds', 'flowers', 'mushroom', 'cactus', 'rock', 'stalagmite', 'crystal', 'log', 'stump'],
-  Structures: ['door', 'gate', 'arch', 'stairs', 'ladder', 'fence', 'bridge', 'pillar', 'well', 'fountain', 'statue', 'tent', 'banner', 'tombstone', 'altar'],
+  Nature: ['tree', 'birch', 'poplar', 'pine', 'palm', 'deadtree', 'bush', 'reeds', 'flowers', 'mushroom', 'cactus', 'rock', 'stalagmite', 'crystal', 'log', 'stump'],
+  Structures: ['wall', 'wallwin', 'wallwood', 'woodwin', 'walldoor', 'post', 'door', 'gate', 'arch', 'stairs', 'ladder', 'fence', 'bridge', 'pillar', 'well', 'fountain', 'statue', 'tent', 'banner', 'tombstone', 'altar'],
   Furniture: ['table', 'chair', 'bench', 'bed', 'bookshelf', 'throne', 'rug', 'barrel', 'crate', 'sacks', 'cauldron', 'anvil', 'candles'],
   Dungeon: ['torch', 'campfire', 'chest', 'hoard', 'potion', 'cage', 'bones', 'spikes', 'coffin', 'portal'],
 };
 export const MINI_SHELVES: Record<string, string[]> = {
-  Heroes: ['knight', 'paladin', 'barbarian', 'mage', 'cleric', 'druid', 'rogue', 'ranger', 'monk', 'bard'],
-  Folk: ['villager', 'merchant', 'guard', 'king', 'child', 'pirate', 'witch'],
-  Beasts: ['bunny', 'cat', 'dog', 'wolf', 'bear', 'boar', 'horse', 'rat', 'bat', 'snake', 'spider'],
-  Monsters: ['goblin', 'orc', 'ogre', 'troll', 'skeleton', 'zombie', 'ghost', 'imp', 'slime', 'mimic', 'golem', 'treant', 'elemental', 'dragon'],
+  Heroes: ['knight', 'barbarian', 'mage', 'rogue', 'ranger', 'pirate'],
+  Beasts: ['bunny', 'dog', 'wolf', 'horse', 'rat', 'bat', 'snake', 'spider'],
+  Monsters: ['ogre', 'troll', 'skeleton', 'zombie', 'ghost', 'imp', 'slime', 'mimic', 'dragon'],
   Markers: ['marker', 'flag', 'cross'],
 };
 
@@ -709,10 +636,22 @@ function copies(key: string, parts: () => THREE.Object3D[]): THREE.Mesh[] {
   });
 }
 /** A prop ready for the table (cheap: shares its geometry with every other copy). */
-export function makeProp(id: string): THREE.Group {
+export function makeProp(id: string, at: [number, number, number] = [0, 0, 0], crowd?: [number, number]): THREE.Group {
+  const k = kitProp(id, ...at, crowd);
+  if (k) return group(k);
+  if (kitPending(`p_${id}`)) { // its pack is still downloading: hold the place, and the board stands it up on arrival
+    const waiting = new THREE.Group();
+    waiting.userData.pending = true;
+    return waiting;
+  }
   return group(...copies(`p:${id}`, () => PROPS[id].make().children.slice()));
 }
 /** The figure of a mini, without its base. */
-export const makeMini = (kind: string): THREE.Mesh[] => copies(`m:${kind}`, () => MINIS[kind].make());
+export function makeMini(kind: string): THREE.Mesh[] {
+  const k = kitMesh(`m_${kind}`);
+  if (k) return [k];
+  if (kitPending(`m_${kind}`)) return []; // its pack is still downloading: just the base for now, and the board adds the figure on arrival
+  return copies(`m:${kind}`, () => MINIS[kind].make());
+}
 
 export const PLAYER_COLORS = ['#e5484d', '#f2a33a', '#f5d90a', '#46a758', '#12a594', '#3e63dd', '#8e4ec6', '#e93d82', '#f1f5f9', '#30323a'];

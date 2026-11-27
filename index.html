@@ -47,7 +47,7 @@
         <button data-act="boards">🗺️ Boards</button>
         <button data-act="atmo">🌗 Atmosphere &amp; sound</button>
         <button data-act="redo" data-gm>↪️ Redo</button>
-        <button data-act="meadow" data-gm>🌱 Add a starter meadow</button>
+        <button data-act="meadow" data-gm>🏡 Add a starter scene</button>
         <button data-act="export">💾 Export table</button>
         <button data-act="import" data-gm>📂 Import table</button>
         <button data-act="clear" data-gm>🧹 Clear table</button>
@@ -139,6 +139,8 @@
     <div id="atmo" class="panel sheet closed">
       <span class="row"><b class="grow">🌗 Atmosphere</b><button data-close aria-label="Close">✕</button></span>
       <div id="skies" class="choices"></div>
+      <p class="hint">Season — trees turn, blossom and stand bare</p>
+      <div id="seasons" class="choices"></div>
       <p class="hint">Soundscape — the GM picks it for the whole table</p>
       <div id="scapes" class="choices"></div>
       <button id="soundOn"></button>
