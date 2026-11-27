@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS } from './catalog';
+import { DiceView } from './dice';
 import type { Store } from './store';
 
 export type Tool = 'move' | 'build' | 'erase' | 'mini' | 'ping';
@@ -127,6 +128,7 @@ export class Board {
   brush = 'grass';
   rot = 0;
   selected: string | null = null;
+  readonly dice: DiceView;
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -218,6 +220,7 @@ export class Board {
     this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene));
+    this.dice = new DiceView(this.scene);
 
     // Capture phase so we can claim a drag before OrbitControls sees it.
     canvas.addEventListener('pointerdown', (e) => this.onDown(e), true);
@@ -370,6 +373,16 @@ export class Board {
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.store.set(k, v);
     if (this.gesture?.touch) navigator.vibrate?.(6);
+  }
+
+  /** Where thrown dice should land (the middle of the view) and where the thrower stands. */
+  throwSpot(): { target: Vec; cam: Vec; tray: number } {
+    this.ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const p = this.pickSurface()?.point ?? this.controls.target;
+    // Size the invisible dice tray to what this screen shows there (narrow on a portrait phone).
+    const half = Math.tan((this.camera.fov * Math.PI) / 360) * this.camera.position.distanceTo(p);
+    const tray = Math.min(6, Math.max(2, half * Math.min(1, this.camera.aspect) * 0.8));
+    return { target: [p.x, Math.max(0, p.y), p.z], cam: this.camera.position.toArray(), tray };
   }
 
   focus(x: number, y: number, z: number): void {
@@ -662,6 +675,7 @@ export class Board {
     const dt = Math.min((now - this.last) / 1000, 0.1);
     this.last = now;
     let busy = this.controls.update() || this.dirty;
+    if (this.dice.update(dt)) busy = true;
     for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); busy = true; }
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {

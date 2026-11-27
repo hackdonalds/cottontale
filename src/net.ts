@@ -9,6 +9,7 @@
 //   - kind 30078 (addressable app data): each player's snapshot of the board,
 //     split in chunks, so late joiners and returning players get the full map.
 import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
+import type { Throw } from './dice';
 import type { Row, Store } from './store';
 
 export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
@@ -21,7 +22,7 @@ export type Msg =
   | { y: 'hi'; n: string; c: string; re?: boolean }
   | { y: 'bye' }
   | { y: 'chat'; m: string }
-  | { y: 'roll'; d: string; r: number[]; mod: number }
+  | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw }
   | { y: 'ping'; p: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] };
 

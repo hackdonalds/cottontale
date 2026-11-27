@@ -30,7 +30,10 @@ opens dice and chat. Add it to your home screen to run it full-screen like an ap
 **Desktop:** left-drag orbits, right-drag pans, wheel zooms. Keys: `1`–`5`
 tools, `R` rotate, `Ctrl+Z` undo, `Del` remove mini, `Enter` chat.
 
-Chat understands `/r 2d6+3`. The ☰ menu has a starter meadow, export/import,
+**Dice are real:** pick how many (`1×`) and tap a die, and they are thrown onto
+the table where you are looking, bouncing off the terrain. Everyone watches the
+same tumble, and the faces that end up on top are the result. Chat understands
+`/r 2d6+3`. The ☰ menu has a starter meadow, export/import,
 and clear.
 
 `npm run build` produces a static site in `dist/` that can be hosted anywhere
@@ -46,6 +49,9 @@ with HTTPS (the browser's crypto API requires it).
   board as addressable events (kind `30078`, chunked). Late joiners and
   returning players rebuild the table from these. A copy is also kept in
   `localStorage` and re-published if the relays have lost it.
+- A dice throw is simulated on the thrower's device (`src/dice.ts`, physics
+  engine loaded on demand), recorded, and sent inside the roll event; everyone
+  replays the recording, so all players see identical dice.
 - State is a last-writer-wins map (`src/store.ts`), so ops and snapshots merge
   in any order and all players converge.
 - Your Nostr key is generated on first visit and stays in the browser.

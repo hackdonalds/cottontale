@@ -12,6 +12,7 @@
     "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
+    "cannon-es": "^0.20.0",
     "nostr-tools": "^2.26.1",
     "three": "^0.187.0"
   },
