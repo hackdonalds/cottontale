@@ -240,10 +240,25 @@ function textSprite(draw: (g: CanvasRenderingContext2D) => void, w: number, h: n
   return s;
 }
 
-/** Name plate with an optional hit-point bar, floating over a mini. */
-function plate(v: MiniVal): THREE.Sprite {
-  const bar = typeof v.mhp === 'number' && v.mhp > 0;
+/** What is drawn over a mini besides its name: its bar, and marks for the conditions it is under. */
+export interface Face { hp?: number; mhp?: number; marks?: string }
+
+/** Name plate with an optional hit-point bar, floating over a mini. Marks sit in a row above it, on the same plate. */
+function plate(v: MiniVal, f: Face = v): THREE.Sprite {
+  const bar = typeof f.mhp === 'number' && f.mhp > 0;
+  const marks = f.marks ?? '', up = marks ? 40 : 0;
   const s = textSprite((g) => {
+    if (marks) {
+      g.font = '28px system-ui, sans-serif';
+      const w = Math.min(244, g.measureText(marks).width + 20);
+      g.fillStyle = 'rgba(15,17,23,.72)';
+      g.beginPath();
+      g.roundRect(128 - w / 2, 2, w, 36, 12);
+      g.fill();
+      g.fillStyle = '#fff';
+      g.fillText(marks, 128, 21, 232);
+      g.translate(0, up);
+    }
     if (v.n) {
       g.font = '600 30px system-ui, sans-serif';
       const w = Math.min(244, g.measureText(v.n).width + 24);
@@ -255,21 +270,23 @@ function plate(v: MiniVal): THREE.Sprite {
       g.fillText(v.n, 128, 27, 232);
     }
     if (bar) {
-      const f = Math.max(0, Math.min(1, (v.hp ?? 0) / v.mhp!));
+      const hp = f.hp ?? 0, mhp = f.mhp!;
+      const full = Math.max(0, Math.min(1, hp / mhp));
       g.fillStyle = 'rgba(15,17,23,.85)';
       g.beginPath();
       g.roundRect(38, 56, 180, 30, 10);
       g.fill();
-      g.fillStyle = f > 0.5 ? '#46a758' : f > 0.25 ? '#f2a33a' : '#e5484d';
+      g.fillStyle = full > 0.5 ? '#46a758' : full > 0.25 ? '#f2a33a' : '#e5484d';
       g.beginPath();
-      g.roundRect(42, 60, Math.max(8, 172 * f), 22, 7);
+      g.roundRect(42, 60, Math.max(8, 172 * full), 22, 7);
       g.fill();
       g.fillStyle = '#fff';
       g.font = '700 20px system-ui, sans-serif';
-      g.fillText(`${v.hp ?? 0}/${v.mhp}`, 128, 72);
+      g.fillText(`${hp}/${mhp}`, 128, 72);
     }
-  }, 256, 96, 1.6);
-  s.visible = !!v.n || bar;
+  }, 256, 96 + up, 1.6);
+  s.center.set(0.5, 48 / (96 + up)); // the extra row grows upwards: name and bar stay where they were
+  s.visible = !!v.n || bar || !!marks;
   return s;
 }
 
@@ -293,6 +310,8 @@ export class Board {
   readonly dice: DiceView;
   /** Dice picked up and waiting to be thrown: while set, a drag on the table throws them. */
   hand: Kind[] = [];
+  /** How a piece's bar and marks follow from what it carries. A game system (src/system.ts) sets this; by default they are the piece's own. */
+  face: (v: MiniVal) => Face = (v) => v;
   diceColor = '#ffffff';
   /** Cutaway: blocks, props and minis at this height or above are not drawn (Infinity = show all). */
   cut = Infinity;
@@ -978,7 +997,8 @@ export class Board {
     }
     const ghost = this.full && !!v.h;
     const fly = Math.max(0, Math.min(12, v.e || 0));
-    const sig = [v.k, v.c, v.n, v.s, v.hp, v.mhp, fly, ghost, !!v.d].join('|');
+    const face = this.face(v);
+    const sig = [v.k, v.c, v.n, v.s, face.hp, face.mhp, face.marks, fly, ghost, !!v.d].join('|');
     const pos = new THREE.Vector3(v.x + 0.5, v.y, v.z + 0.5);
     if (!m || m.sig !== sig) {
       const group = new THREE.Group();
@@ -993,7 +1013,7 @@ export class Board {
       body.add(base, hit, ...makeMini(v.k));
       body.scale.setScalar(s);
       body.position.y = fly;
-      const label = plate(v);
+      const label = plate(v, face);
       label.position.y = fly + def.height * s + 0.5;
       group.add(body, label);
       if (fly) { // a stalk down to the spot it hovers over

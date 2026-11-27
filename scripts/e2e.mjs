@@ -10,9 +10,11 @@ let pw, channel;
 try { pw = require('playwright'); } catch { pw = require('playwright-core'); channel = 'chrome'; }
 const { chromium, devices } = pw;
 
+// E2E_PORT moves the site (and the relay, one port up) so several runs can share a machine.
+const PORT = Number(process.env.E2E_PORT ?? 4188), RELAY = process.env.E2E_PORT ? PORT + 1 : 7788;
 const procs = [
-  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: '7788' }, stdio: 'ignore' }),
-  spawn('npx', ['vite', 'preview', '--port', '4188', '--strictPort'], { stdio: 'ignore' }),
+  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: String(RELAY) }, stdio: 'ignore' }),
+  spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' }),
 ];
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
 const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
@@ -20,7 +22,7 @@ process.on('uncaughtException', (e) => { console.error(e); done(1); });
 await new Promise((r) => setTimeout(r, 2500));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const url = (room) => `http://localhost:4188/#room=${room}&relays=ws://localhost:7788`;
+const url = (room) => `http://localhost:${PORT}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
   page.on('pageerror', (e) => { console.log('pageerror', name, e.message); done(1); });
@@ -197,6 +199,72 @@ await a.press('#stats .st', 'Tab');
 assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return v.d === true && v.st?.[0] === 'AC 15'; }, id), 'knocked-down state and extra stats sync');
 await a.click('#ring [title="Emote"]');
 await a.click('#ring [title="Stand up"]');
+
+// ---- game systems: rules as data, with the GM's app as the referee ----
+{
+  const mini = (page) => page.evaluate((id) => window.__ct.store.get(`m:${id}`), id);
+  const chat = (page, re) => page.evaluate((src) => [...document.querySelectorAll('#msgs > div')].filter((d) => new RegExp(src).test(d.textContent)).length, re.source);
+  await a.click('#ring [title="Back"]');
+  assert(await a.evaluate(() => document.querySelectorAll('#ring button').length === 4 && getComputedStyle(document.querySelector('#sheetBtn')).display === 'none'), 'with no system on the table there is no sheet anywhere');
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("Lantern d20")');
+  assert(await ok(b, () => window.__ct.rules.system()?.id === 'lantern-d20' && document.body.classList.contains('sys')), 'the GM picks a system and it reaches the player');
+  await a.click('#rules [data-close]');
+
+  // The player opens the sheet of the piece they were handed, changes a stat, and rolls it.
+  await b.evaluate((id) => window.__ct.board.select(id), id);
+  await b.click('#ring [title="Character sheet"]');
+  await b.fill('#sheet [data-stat="str"]', '16');
+  await b.press('#sheet [data-stat="str"]', 'Tab');
+  assert(await ok(a, (id) => window.__ct.store.get(`m:${id}`).sv?.str === 16, id) && await b.evaluate(() => /d20\+3/.test(document.querySelector('#sheet [data-roll="str"]').textContent)), 'a stat entered on the sheet is stored raw; its modifier is derived');
+  await b.click('#sheet [data-roll="str"]');
+  assert(await b.evaluate(() => window.__ct.board.hand.join() === 'd20'), 'tapping a rollable stat puts its dice in the hand');
+  await fling(b);
+  const read = (page) => page.waitForFunction(() => /Strength 1d20\+3: (\d+) \[(\d+)\] \+ 3/.exec(document.querySelector('#msgs').textContent)?.slice(1, 3).join()).then((h) => h.jsonValue());
+  const [sa, sb] = await Promise.all([read(a), read(b)]);
+  const [tot, die] = sa.split(',').map(Number);
+  assert(sa === sb && tot === die + 3 && die >= 1 && die <= 20, `a sheet roll lands on the same face for both, and the total is the face plus the modifier (${die} + 3 = ${tot})`);
+
+  // The sheet got out of the way of the throw. With nothing selected, the dock opens the player's own character.
+  await b.evaluate(() => window.__ct.board.select(null));
+  await b.click('#sheetBtn');
+  assert(await b.evaluate(() => !document.querySelector('#sheet').classList.contains('closed') && document.querySelector('#sheet [data-stat="str"]')?.value === '16'), 'the dock opens the sheet of the piece the player was handed');
+  // A condition the GM puts on the piece shows for the player: on the piece, and in how they roll.
+  await a.click('#ring [title="Character sheet"]');
+  await a.click('#sheet [data-cond="poisoned"]');
+  assert(await ok(b, (id) => window.__ct.store.get(`m:${id}`).cn?.includes('poisoned') && window.__ct.board.minis.get(id).sig.includes('🤢')
+    && /2d20kl1\+3/.test(document.querySelector('#sheet [data-roll="str"]').textContent) && document.querySelector('#sheet [data-cond="poisoned"]').classList.contains('on'), id), 'a condition applied by the GM marks the piece for the player and changes their rolls');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/sheet-desktop.png` });
+
+  // A named roll that feeds the turn order, thrown with the dice the condition imposes.
+  await b.click('#sheet [data-roll="initiative"]');
+  assert(await b.evaluate(() => window.__ct.board.hand.join() === 'd20,d20'), 'poisoned: two dice are thrown, the lower is kept');
+  await fling(b);
+  assert(await ok(a, (id) => { const m = /Initiative 2d20kl1: (\d+) /.exec(document.querySelector('#msgs').textContent); return !!m && window.__ct.store.get(`m:${id}`).ini === +m[1]; }, id), 'the initiative roll puts the piece in the turn order with its total');
+
+  // A trigger: burning hurts at the start of the turn. Only the GM's app applies it, once.
+  await a.click('#sheet [data-cond="burning"]');
+  const hp0 = (await mini(a)).hp;
+  await a.click('#nextTurn');
+  assert(await ok(b, () => /Burning: \d/.test(document.querySelector('#msgs').textContent)), 'a trigger fires at the start of the turn and its line reaches the player');
+  await a.waitForTimeout(700);
+  const burn = +(await a.evaluate(() => /Burning: (\d)/.exec(document.querySelector('#msgs').textContent)[1]));
+  const [ma, mb] = [await mini(a), await mini(b)];
+  assert(burn >= 1 && burn <= 4 && ma.hp === hp0 - burn && mb.hp === ma.hp && (await chat(a, /Burning: \d/)) === 1 && (await chat(b, /Burning: \d/)) === 1
+    && ma.fx?.length === 1, `the trigger fired exactly once, on both tables (${hp0} − ${burn} = ${ma.hp})`);
+  // Dropping to nothing is a happening of its own: the rules mark the piece and say so.
+  await a.evaluate((id) => { const { store } = window.__ct; store.set(`m:${id}`, { ...store.get(`m:${id}`), hp: 0 }); }, id);
+  assert(await ok(b, (id) => window.__ct.store.get(`m:${id}`).cn?.includes('down') && /is down!/.test(document.querySelector('#msgs').textContent), id), 'hit points running out puts the piece down for everyone');
+  await a.evaluate((id) => { const { store } = window.__ct; const { cn: _, ...v } = store.get(`m:${id}`); store.set(`m:${id}`, { ...v, hp: 19 }); }, id);
+  await a.click('#endFight');
+  await a.click('#sheet [data-close]');
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("No rules")');
+  assert(await ok(b, () => !document.body.classList.contains('sys') && !window.__ct.rules.system()), 'clearing the rules puts the table back as it was');
+  await a.click('#rules [data-close]');
+}
 
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
@@ -490,6 +558,68 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     assert(fits && !bad.length, `${sheet} sheet opens on screen ${bad.join('; ')}`);
     await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${sheet}.png` });
     await p.tap(`#${sheet} [data-close]`);
+  }
+
+  // Rules: pick a system, then the character sheet the app draws from it.
+  {
+    const fitsOn = (sel) => p.evaluate((q) => { const r = document.querySelector(q).getBoundingClientRect(); return r.width > 200 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }, sel);
+    const piece = () => p.evaluate(() => { const { store } = window.__ct; return store.get([...store.keys('m:')][0]); });
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="rules"]');
+    await p.waitForSelector('#rulesList button:nth-child(4)');
+    bad = await layout();
+    assert(await fitsOn('#rules') && !bad.length, `rules sheet opens on screen ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-rules.png` });
+    await p.tap('#rulesList button:has-text("Lantern d20")');
+    await p.waitForFunction(() => document.body.classList.contains('sys'));
+    await p.tap('#rules [data-close]');
+    await p.evaluate(() => { const { board, store } = window.__ct; board.select([...store.keys('m:')][0].slice(2)); });
+    await p.tap('#sheetBtn');
+    bad = await layout();
+    assert(await fitsOn('#sheet') && !bad.length && await p.evaluate(() => document.querySelectorAll('#sheet .frow').length > 12), `character sheet opens on screen, drawn from the schema ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-charsheet.png` });
+    await p.tap('#sheet [title="More Strength"]');
+    await p.tap('#sheet [title="More Strength"]');
+    await p.tap('#sheet [data-cond="prone"]');
+    await p.fill('#sheet [data-stat="hp.max"]', '12');
+    await p.evaluate(() => document.activeElement.blur());
+    await settle();
+    const v = await piece();
+    assert(v.sv.str === 12 && v.cn.join() === 'prone' && v.mhp === 12 && await p.evaluate(() => /d20\+1/.test(document.querySelector('#sheet [data-roll="str"]').textContent)), `steppers, conditions and inputs edit the piece by touch ${JSON.stringify(v.sv)}`);
+    await p.evaluate(() => document.querySelector('#sheet .rolls').scrollIntoView({ block: 'end' }));
+    bad = await layout();
+    assert(!bad.length, `the rolls of the sheet are full-size targets ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-charsheet-rolls.png` });
+    await p.tap('#sheet [data-mode="adv"]');
+    await p.tap('#sheet [data-roll="attack"]');
+    assert(await p.evaluate(() => window.__ct.board.hand.join() === 'd20,d20' && document.querySelector('#sheet').classList.contains('closed') && document.querySelector('#logToggle').dataset.n === '2'), 'a roll from the sheet puts its dice in the hand and gets out of the way');
+    await touch('touchStart', [[cx - 40, cy - 60]]);
+    await p.waitForFunction(() => window.__ct.board.dice.held);
+    for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 40 + i * 10, cy - 60 - i * 6]]); await p.waitForTimeout(16); }
+    await touch('touchEnd', []);
+    await p.waitForFunction(() => /Attack 2d20kh1\+3: \d+ \[/.test(document.querySelector('#msgs').textContent));
+    assert(true, 'the thrown dice are read by the rules: advantage keeps the higher');
+    // A very different game, same app: three hearts and one die.
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="rules"]');
+    await p.tap('#rulesList button:has-text("Three Hearts")');
+    await p.waitForFunction(() => window.__ct.rules.system()?.id === 'three-hearts');
+    await p.tap('#rules [data-close]');
+    await p.evaluate(() => { const { board, store } = window.__ct; const k = [...store.keys('m:')][0]; store.set(k, { ...store.get(k), hp: 3 }); board.select(k.slice(2)); });
+    await p.tap('#sheetBtn');
+    await p.tap('#sheet [title="Less Hearts"]');
+    await settle();
+    bad = await layout();
+    const hearts = await p.evaluate(() => { const { board, store } = window.__ct; const id = [...store.keys('m:')][0].slice(2); return { hp: store.get(`m:${id}`).hp, sig: board.minis.get(id).sig, dice: [...document.querySelectorAll('#dice [data-d]')].filter((b) => !b.hidden).length }; });
+    assert(await fitsOn('#sheet') && !bad.length && hearts.hp === 2 && hearts.sig.includes('|2|3|') && hearts.dice === 1, `another system redraws the sheet; hearts are the piece's bar ${JSON.stringify(hearts)} ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-hearts.png` });
+    await p.tap('#sheet [data-close]');
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="rules"]');
+    await p.tap('#rulesList button:has-text("No rules")');
+    await p.waitForFunction(() => !document.body.classList.contains('sys'));
+    await p.tap('#rules [data-close]');
+    await p.waitForFunction(() => window.__ct.board.dice.playing.length === 0, null, { timeout: 60000 }); // the thrown dice are picked up again
   }
 
   await p.tap('#logToggle');

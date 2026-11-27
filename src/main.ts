@@ -5,11 +5,12 @@ import { loadKit, type Season } from './kit';
 import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
 import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
-import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
+import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start, type Throw } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
+import { mountSystem, renderSystemPicker, type SystemUI } from './ui/sheet';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -151,9 +152,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     onThrow: (starts, vel) => void throwHand(starts, vel),
   });
 
+  /** The table's game system, once the table is up (src/ui/sheet.ts). */
+  let rules: SystemUI | undefined;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
+    rules?.onStore(k, v, prev);
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
     later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
@@ -177,7 +181,18 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   });
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
-  Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
+  rules = mountSystem({
+    store, net, board, me: meId, pk: me, here: () => here, say, send: (m) => void send(m), openSheet,
+    hold: (kinds, text, landed) => {
+      hand.clear();
+      handMod = 0;
+      asked = { kinds, text, landed };
+      renderHand();
+      if (phoneSheet()) closeSheet();
+    },
+    secret: () => secret,
+  });
+  Object.assign(window, { __ct: { store, net, board, sound, rules, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
@@ -220,6 +235,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       }
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'sroll': case 'sys': rules?.onMsg(msg, from); break;
     }
   }
 
@@ -260,8 +276,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const meTag = `<b style="color:${myColor}">${esc(name)}</b>`;
   const hand = new Map<number, number>(); // sides → how many
   let handMod = 0;
-  const handKinds = (): Kind[] => [...hand].flatMap(([sides, n]) => kindsFor(n, sides) ?? []);
-  const handText = () => [...hand].map(([sides, n]) => `${n}d${sides}`).join('+') + (handMod ? (handMod > 0 ? '+' : '') + handMod : '');
+  /** Dice a character sheet put in the hand: it says what they are, and reads them when they land. */
+  let asked: { kinds: Kind[]; text: string; landed: (t: Throw) => void } | null = null;
+  const handKinds = (): Kind[] => asked?.kinds ?? [...hand].flatMap(([sides, n]) => kindsFor(n, sides) ?? []);
+  const handText = () => asked?.text ?? [...hand].map(([sides, n]) => `${n}d${sides}`).join('+') + (handMod ? (handMod > 0 ? '+' : '') + handMod : '');
   const phoneSheet = () => getComputedStyle($('logToggle')).display !== 'none';
 
   function renderHand(): void {
@@ -272,7 +290,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const n = hand.get(+b.dataset.d!);
       if (n) b.dataset.n = String(n); else delete b.dataset.n;
     }
-    const total = [...hand.values()].reduce((a, b) => a + b, 0);
+    const total = asked ? asked.kinds.length : [...hand.values()].reduce((a, b) => a + b, 0);
     if (total) $('logToggle').dataset.n = String(total); else delete $('logToggle').dataset.n;
     $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw` : 'Tap dice to pick them up';
     $('hand').classList.toggle('full', total > 0);
@@ -280,6 +298,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (total) void import('cannon-es'); // warm up the physics engine before the throw
   }
   function pickUp(sides: number, n = 1): boolean {
+    asked = null;
     const next = new Map(hand).set(sides, (hand.get(sides) ?? 0) + n);
     const kinds = [...next].map(([s, c]) => kindsFor(c, s));
     if (kinds.some((k) => !k) || kinds.flat().length > MAX_DICE) return false;
@@ -287,18 +306,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     return true;
   }
   function emptyHand(): void {
+    asked = null;
     hand.clear();
     handMod = 0;
     renderHand();
   }
 
   async function throwHand(starts: Start[], vel: Vec): Promise<void> {
-    const kinds = handKinds(), d = handText(), mod = handMod;
+    const kinds = handKinds(), d = handText(), mod = handMod, sheet = asked;
     emptyHand();
     const { target, tray } = board.throwSpot();
     // Simulate the throw, share the recording, and let everyone watch it land.
     const t = await simulate(kinds, starts, vel, target, store, tray);
     board.dice.endHold();
+    if (sheet) { navigator.vibrate?.(12); return sheet.landed(t); } // the sheet reads its own dice
     const r = rollValues(kinds, results(t)!);
     void send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
     navigator.vibrate?.(12);
@@ -748,6 +769,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderAtmo();
     renderPlayers();
     renderInit();
+    rules?.refresh();
     if (board.selected) showMiniPanel(board.selected);
     if (cutAuto) autoCut();
   }
@@ -841,6 +863,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       // Two to each side of the piece: its name and hit points float above it and must stay readable.
       const at = items.length === 1 ? [-25] : [-155, 155, -25, 25];
       items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
+      if (rules?.system()) { const b = button('Character sheet', ico('sheet'), () => rules!.open(board.selected)); b.dataset.a = '90'; el.append(b); }
     } else {
       const pop = document.createElement('div');
       pop.className = 'pop';
@@ -888,6 +911,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const wasOpen = !$('minipanel').hidden;
     $('minipanel').hidden = !id || !moreOpen;
     renderRing();
+    rules?.follow(id);
     // A piece is never left behind the panel it is being edited in: the view slides to keep it clear.
     if (id && (id !== shownFor || wasOpen !== moreOpen)) {
       const roof = $('top').getBoundingClientRect().bottom + 110;
@@ -963,6 +987,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('miniHide').onclick = () => patch({ h: !sel()?.h });
   $<HTMLSelectElement>('miniOwner').onchange = (e) => setOpt('o', (e.target as HTMLSelectElement).value);
   $('miniDel').onclick = () => { if (board.selected && full()) store.set(`m:${board.selected}`, null); };
+  $('miniSheet').onclick = () => rules?.open(board.selected);
+  $('sheetBtn').onclick = () => ($('sheet').classList.contains('closed') ? rules?.open() : openSheet(null));
 
   // ---- menu ----
 
@@ -993,6 +1019,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'los' && full()) store.set('set:los', !setting(store, 'los', false));
     if (act === 'boards' || act === 'atmo') openSheet(act);
+    if (act === 'rules') { renderSystemPicker($('rulesList')); openSheet('rules'); }
     if (act === 'gen' && full()) { renderGen(); openSheet('gen'); }
     if (act === 'redo') board.redo();
     if (act === 'meadow') meadow();

@@ -24,6 +24,11 @@ type Body =
   | { y: 'bye' }
   | { y: 'chat'; m: string; to?: string }
   | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw; s?: boolean }
+  // A roll made from a character sheet (src/ui/sheet.ts): `x` is the dice notation with its numbers worked
+  // out, `v` the numbers rolled for what has no physical die; the result is read from these and the throw.
+  | { y: 'sroll'; k: string; id: string; ri: string; n: string; x: string; v: number[]; t?: Throw; tg?: string; vs?: number; s?: boolean }
+  // A line the rules say, from the device that applies them. `k` names it, so it is shown once.
+  | { y: 'sys'; k: string; m: string }
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }

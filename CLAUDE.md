@@ -33,6 +33,15 @@ first, then enhance for larger screens.
 - `src/kit.ts` loads the modelled pieces (`public/kit/*.glb`), built by the Blender scripts in `assets/blender`
 - `src/gen.ts` seeded scene generators (wilderness, dungeon, cave, tavern): pure, whole numbers only, return ordinary edits — unit-test here
 - `src/sound.ts` synthesised soundscapes and effects (no audio files)
+- `src/system.ts` game systems as data (pure, whole numbers only — unit-test in `src/system.test.ts`): the format and
+  strict `parseSystem`, the expression language, dice notation (`planRoll` picks the physical dice, `readRoll` reads
+  the landed faces), `derive` (sheet from what was entered + condition modifiers), triggers (`fire`), `authority`.
+  Nothing game-specific in code: systems are files in `public/systems` (listed in `index.json`), copied whole into
+  `set:system` when picked. With none picked the app behaves as it always did.
+- `src/ui/sheet.ts` the character sheet drawn from a system's schema, the rules picker (`renderSystemPicker`), and the
+  referee: triggers are applied by one device only (the GM's; lowest id of several; the actor's with no GM here).
+- A mini stores only inputs and outcomes: `sv` (entered stats), `cn` (conditions), `fx` (ids of the last events applied
+  to it, so a repeat is harmless) beside the old `hp`/`mhp`/`ini`. Derived values are never stored.
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
 - Board-specific keys (`b:` `m:` `f:` `w:` `turn`) are scoped per board by the store;

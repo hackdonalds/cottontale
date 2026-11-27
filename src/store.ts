@@ -38,6 +38,12 @@ export class Store {
 
   set(key: string, value: unknown): void { this.setRaw(this.phys(key), value); }
 
+  /** When a key was last written, and by whom. */
+  stamp(key: string): { t: number; b: string } | null {
+    const e = this.entries.get(this.phys(key));
+    return e ? { t: e.t, b: e.b } : null;
+  }
+
   /** Write a stored key directly, whatever board it belongs to (copying or deleting whole boards). */
   setRaw(key: string, value: unknown): void {
     this.clock = Math.max(Date.now(), this.clock + 1);
