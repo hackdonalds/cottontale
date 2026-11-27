@@ -44,6 +44,9 @@ places minis, and moves everything; players move the minis the GM hands them
   character sheet, dice, conditions and what happens by itself. Each piece then has a sheet (Sheet in the dock, or the
   sheet button on a selected piece): tap a stat or a roll to put its dice in your hand; the faces that land are read
   by the rules (advantage, exploding dice, counted successes). Conditions show over the piece.
+  A system may also bring small scripts for what data cannot say (a critical-hit table, bleeding until a save):
+  they run only on the GM's device, boxed into a sandbox with no access to the app or the network, and only
+  after the GM allows them.
 
 With no GM the table is free play: everyone can do everything. These rules
 decide what each player's app shows — everyone at the table holds the same key,

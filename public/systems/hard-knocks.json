@@ -1,0 +1,39 @@
+{
+  "v": 1,
+  "id": "hard-knocks",
+  "name": "Hard Knocks",
+  "about": "Gritty skirmishes: wounds bleed until you staunch them, and a natural 20 rolls on the critical table. Brings scripts.",
+  "hp": "hp",
+  "dice": [6, 20],
+  "sections": [
+    { "name": "", "fields": [
+      { "id": "hp", "name": "Vigour", "type": "resource" },
+      { "id": "grit", "name": "Grit", "type": "number", "min": 0, "max": 10, "def": 2, "roll": "d20+@grit" },
+      { "id": "fight", "name": "Fight", "type": "number", "min": 0, "max": 10, "def": 3 },
+      { "id": "guard", "name": "Guard", "type": "derived", "formula": "10 + grit" }
+    ] }
+  ],
+  "rolls": [
+    { "id": "attack", "name": "Attack", "dice": "d20+@fight", "vs": "target.guard", "win": "Hit", "lose": "Miss" },
+    { "id": "damage", "name": "Damage", "dice": "1d6" },
+    { "id": "initiative", "name": "Initiative", "dice": "d20+@grit", "into": "ini" }
+  ],
+  "conditions": [
+    { "id": "bleeding", "name": "Bleeding", "icon": "🩸" },
+    { "id": "prone", "name": "Prone", "icon": "⤵", "mods": [{ "target": "guard", "op": "add", "value": -2 }] },
+    { "id": "down", "name": "Down", "icon": "💀" }
+  ],
+  "triggers": [
+    { "on": "roll", "roll": "damage", "if": "roll.target", "do": [
+      { "stat": "hp", "op": "add", "value": "0 - max(0, roll.total)", "who": "target" },
+      { "say": "{target} takes {max(0, roll.total)} damage." }
+    ] },
+    { "on": "roll", "roll": "attack", "if": "roll.nat == 20 && roll.target", "do": [{ "script": "crit" }] },
+    { "on": "turn.start", "if": "has(bleeding)", "do": [{ "script": "bleed" }] },
+    { "on": "hp.zero", "do": [{ "cond": "down", "on": true }, { "say": "{name} is down!" }] }
+  ],
+  "scripts": {
+    "bleed": "// Bleeding: at the start of the turn, try to staunch the wound (d20 + Grit against 12).\n// Made it: the bleeding stops. Missed: lose 1 Vigour and keep bleeding.\nif (!ctx.self) return [];\nvar grit = ctx.self.stats.grit || 0, die = roll(20), total = die + grit;\nvar sum = \"(\" + die + \" + \" + grit + \" = \" + total + \")\";\nif (total >= 12) return [\n  { cond: \"bleeding\", on: false },\n  { say: \"{name} staunches the wound \" + sum + \".\" }\n];\nreturn [\n  { stat: \"hp\", op: \"add\", value: -1 },\n  { say: \"{name} bleeds: 1 Vigour lost \" + sum + \", 12 would stop it.\" }\n];\n",
+    "crit": "// A natural 20 on an attack: roll on the critical table. The last row rolls twice more.\nconst TABLE = [\n  { upTo: 2, text: \"a deep cut\", bleed: true, hurt: 1 },\n  { upTo: 4, text: \"swept off their feet\", prone: true },\n  { upTo: 5, text: \"a crushing blow\", dice: 2 },\n  { upTo: 6, text: \"a flurry\", again: 2 }\n];\nfunction row(n) {\n  for (const r of TABLE) if (n <= r.upTo) return r;\n  return TABLE[0];\n}\nexport default function (ctx, roll) {\n  if (!ctx.target) return [];\n  const said = [];\n  let hurt = 0, bleed = false, prone = false, todo = 1;\n  for (let i = 0; i < todo && i < 5; i++) {\n    const r = row(roll(6));\n    said.push(r.text);\n    if (r.again) { todo += r.again; continue; }\n    hurt += r.hurt || 0;\n    for (let d = 0; d < (r.dice || 0); d++) hurt += roll(6);\n    bleed = bleed || !!r.bleed;\n    prone = prone || !!r.prone;\n  }\n  const edits = [];\n  if (hurt) edits.push({ stat: \"hp\", op: \"add\", value: -hurt, who: \"target\" });\n  if (bleed) edits.push({ cond: \"bleeding\", on: true, who: \"target\" });\n  if (prone) edits.push({ cond: \"prone\", on: true, who: \"target\" });\n  edits.push({ say: \"Critical on {target}: \" + said.join(\", \") + (hurt ? \" (\" + hurt + \" more).\" : \".\") });\n  return edits;\n}\n"
+  }
+}

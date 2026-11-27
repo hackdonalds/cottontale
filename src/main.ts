@@ -24,7 +24,8 @@ import { registerPacksPage } from './ui/packsPage';
 import { registerBuiltinPrepPages } from './ui/prepPages';
 import { initThemeEditor } from './ui/themeEditor';
 import { initSheets, popSheetPage, pushSheetPage, setSheetHeight, sheetHeight } from './ui/sheets';
-import { mountSystem, renderSystemPicker, type SystemUI } from './ui/sheet';
+import { mountSystem, renderSystemPicker, setPickerNote, setScriptRunner, type SystemUI } from './ui/sheet';
+import { authority } from './system';
 import { buzz, canBuzz, hapticsOn, rollBuzz, setHaptics, ticker } from './haptics';
 import { askShake, canShake, shakeNeedsAsking, watchShake, type Shake } from './shake';
 import { breakButton } from './breakui';
@@ -264,6 +265,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     secret: () => secret,
   });
   Object.assign(window, { __ct: { store, net, board, sound, registry, rules, catalog: { BLOCKS, PROPS, MINIS } } });
+  // Scripts a game system brings (src/script.ts): fetched only where the table's system has some and this device would referee.
+  let scripts: Promise<typeof import('./script')> | undefined;
+  const referee = () => authority(gms(store), [meId, ...[...net.peers.keys()].map(pid)], meId) === meId;
+  const syncScripts = () => {
+    if (!scripts && !(rules?.system()?.scripts && referee())) return;
+    void (scripts ??= import('./script')).then((m) => m.syncScripts({ system: () => rules!.system(), referee, say, setRunner: setScriptRunner, setNote: setPickerNote, redraw: () => { prep.refresh(); rules?.refresh(); } }));
+  };
   // The GM's own files (src/blob.ts). Servers: this device's list (local storage `cottontale:blossom`), else the table's (`set:blossom`), else the defaults.
   const blobs = new Blobs({
     key: deriveBlobKey(code), sk, net,
@@ -1158,6 +1166,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderPlayers();
     renderInit();
     rules?.refresh();
+    syncScripts();
     if (board.selected) showMiniPanel(board.selected);
     if (cutAuto) autoCut();
   }

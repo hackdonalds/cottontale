@@ -460,6 +460,98 @@ assert(await ok(b, () => { const v = window.__ct.store.get('m:tower'), l = windo
 await a.evaluate(() => { const { store } = window.__ct; for (const k of ['m:tower', 'm:lurker']) store.set(k, null); for (let y = 0; y < 3; y++) for (const x of [30, 40]) store.set(`b:${x},${y},30`, null); });
 await b.waitForFunction(() => !window.__ct.store.get('b:40,2,30'));
 
+// ---- scripts a system brings: boxed in (QuickJS in a worker), on the referee's device only, and only once allowed ----
+{
+  const mini = (page) => page.evaluate((id) => window.__ct.store.get(`m:${id}`), id);
+  const chat = (page, re) => page.evaluate((src) => [...document.querySelectorAll('#msgs > div')].filter((d) => new RegExp(src).test(d.textContent)).length, re.source);
+  const fetched = new Map([[a, []], [b, []]]);
+  for (const [page, list] of fetched) page.context().on('request', (r) => { if (/assets\/script|\.wasm/.test(r.url())) list.push(r.url().split('/').pop()); });
+  const box = (page) => fetched.get(page).filter((u) => /worker|wasm/.test(u));
+  const BLED = /Robot bleeds: 1 Vigour lost|Robot staunches the wound/;
+  const name = (await mini(a)).n;
+  await a.evaluate((id) => { const { store } = window.__ct; store.set(`m:${id}`, { ...store.get(`m:${id}`), n: 'Robot', hp: 10, mhp: 10, ini: 12, cn: ['bleeding'] }); }, id);
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("Hard Knocks")');
+  await a.waitForSelector('#rulesList [data-scripts="later"]');
+  assert(await ok(b, () => window.__ct.rules.system()?.id === 'hard-knocks') && box(a).length === 0, 'a system that brings scripts asks the GM first, in the page, and has loaded no engine yet');
+  await b.click('#menuBtn');
+  await b.click('[data-act="rules"]');
+  await b.waitForSelector('#rulesList button:has-text("Hard Knocks").on');
+  assert(await b.evaluate(() => !document.querySelector('[data-scripts]')), 'a player who does not referee is not asked');
+  await b.click('#rules [data-close]');
+
+  // Not now: the system works, its scripts do not run, and nothing was fetched for them.
+  await a.click('#rulesList [data-scripts="later"]');
+  await a.waitForSelector('#rulesList [data-scripts="allow"]');
+  await a.click('#rules [data-close]');
+  await a.click('#nextTurn');
+  await ok(b, (id) => window.__ct.store.get('turn')?.id === id, id);
+  await a.waitForTimeout(1500);
+  let [ma, mb] = [await mini(a), await mini(b)];
+  assert(ma.hp === 10 && mb.hp === 10 && mb.cn.join() === 'bleeding' && !(await chat(a, BLED)) && !(await chat(b, BLED)) && box(a).length === 0 && box(b).length === 0
+    && await a.evaluate(() => !localStorage.getItem('cottontale:scripts') || localStorage.getItem('cottontale:scripts') === '[]'), `with "Not now" the trigger's script does not run and the engine is never downloaded (${box(a).length} requests for it)`);
+
+  // Allow: from now on the referee's device runs them, in the box.
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList [data-scripts="allow"]');
+  await a.waitForSelector('#rulesList [data-scripts="off"]');
+  await a.click('#rules [data-close]');
+  await a.click('#nextTurn');
+  assert(await ok(b, (src) => new RegExp(src).test(document.querySelector('#msgs').textContent), BLED.source), 'once allowed, the script runs on the turn and its line reaches the player');
+  const stopped = (await chat(b, /staunches/)) === 1;
+  const landed = await ok(b, ([id, stopped]) => { const v = window.__ct.store.get(`m:${id}`); return stopped ? v.hp === 10 && !v.cn?.includes('bleeding') : v.hp === 9 && !!v.cn?.includes('bleeding'); }, [id, stopped]);
+  await a.waitForTimeout(1000);
+  [ma, mb] = [await mini(a), await mini(b)];
+  assert(landed && (await chat(a, BLED)) === 1 && (await chat(b, BLED)) === 1 && ma.hp === mb.hp && mb.hp === (stopped ? 10 : 9),
+    `the script ran exactly once and the player sees what it did (${stopped ? 'the bleeding stopped' : 'bled to 9'}; ${ma.hp}/${mb.hp} ${mb.cn ?? ''})`);
+  assert(box(a).some((u) => /script\.worker/.test(u)) && box(a).some((u) => /\.wasm$/.test(u)) && fetched.get(b).length === 0
+    && await a.evaluate(() => JSON.parse(localStorage.getItem('cottontale:scripts')).length === 1) && await b.evaluate(() => !localStorage.getItem('cottontale:scripts')),
+    `only the referee fetched the worker and the engine, each when first needed (GM: ${[...new Set(fetched.get(a))].join(', ')}; player: ${fetched.get(b).length})`);
+
+  // Other scripts are another question: the answer was for that exact set. And what a script can see is nothing of ours.
+  const swap = async (bleed, tag) => {
+    await a.evaluate(([id, bleed]) => {
+      const { store } = window.__ct;
+      store.set('set:system', { ...store.get('set:system'), scripts: { bleed } });
+      store.set(`m:${id}`, { ...store.get(`m:${id}`), hp: 10, cn: ['bleeding'] });
+    }, [id, bleed]);
+    await ok(b, (bleed) => window.__ct.rules.system()?.scripts?.bleed === bleed, bleed);
+    await a.click('#menuBtn');
+    await a.click('[data-act="rules"]');
+    await a.waitForSelector('#rulesList [data-scripts="later"]');
+    assert(true, `changed scripts are asked about again (${tag})`);
+    await a.click('#rulesList [data-scripts="allow"]');
+    await a.waitForSelector('#rulesList [data-scripts="off"]');
+    await a.click('#rules [data-close]');
+    await a.click('#nextTurn');
+  };
+  const tail = (page) => page.evaluate(() => [...document.querySelectorAll('#msgs > div')].slice(-4).map((d) => d.textContent).join(' | '));
+  await swap('while (true) {}', 'an endless loop');
+  const STOPPED = /Script "bleed"(: it ran too long| did not answer and was stopped)/;
+  assert(await ok(a, (src) => new RegExp(src).test(document.querySelector('#msgs').textContent), STOPPED.source), `a script that will not stop is interrupted, and the GM is told (${(await tail(a)).split(' | ').pop()})`);
+  // What the engine cannot interrupt (one long built-in after another) ends with the worker.
+  await swap('var a = new Array(200000).fill("b"); for (;;) a.sort();', 'a hog');
+  assert(await ok(a, () => /Script "bleed" did not answer and was stopped/.test(document.querySelector('#msgs').textContent)), `a script the engine cannot interrupt is ended with its worker (${(await tail(a)).split(' | ').pop()})`);
+  await a.waitForTimeout(600);
+  [ma, mb] = [await mini(a), await mini(b)];
+  assert(ma.hp === 10 && mb.hp === 10 && !(await chat(b, /Script "bleed"/)) && await a.evaluate(() => 1 + 1) === 2, 'neither changed anything, only the GM was told, and the table carries on');
+  // A new worker takes the next script. What that one can see is nothing of ours.
+  await swap('return [{ say: "probe " + [typeof fetch, typeof XMLHttpRequest, typeof WebSocket, typeof importScripts, typeof self, typeof postMessage, typeof document, typeof localStorage, typeof indexedDB, typeof Date].join("") }, { script: "bleed" }];', 'a probe');
+  const probed = await ok(b, () => /probe (undefined){10}$/m.test([...document.querySelectorAll('#msgs > div')].map((d) => d.textContent).join('\n')));
+  assert(probed && (await chat(b, /probe/)) === 1, `in the worker, a script finds no network, no page, no storage and no clock${probed ? '' : ` (GM: ${await tail(a)}; player: ${await tail(b)})`}`);
+
+  // Clearing the rules takes the runner away again.
+  await a.click('#endFight');
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("No rules")');
+  assert(await ok(b, () => !window.__ct.rules.system()) && await a.evaluate(() => !document.querySelector('[data-scripts]')), 'clearing the rules clears the question too');
+  await a.click('#rules [data-close]');
+  await a.evaluate(([id, n]) => { const { store } = window.__ct; const { cn: _c, ini: _i, n: _n, ...v } = store.get(`m:${id}`); store.set(`m:${id}`, { ...v, ...(n ? { n } : {}), hp: 19 }); }, [id, name]);
+}
+
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
@@ -1329,6 +1421,17 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     await p.tap('#sheet [data-close]');
     await p.tap('#menuBtn');
     await p.tap('[data-act="rules"]');
+    // A system with scripts asks first, with buttons a thumb can hit.
+    await p.tap('#rulesList button:has-text("Hard Knocks")');
+    await p.waitForSelector('#rulesList [data-scripts="later"]');
+    await p.evaluate(() => document.querySelector('#rulesList .scriptask').scrollIntoView({ block: 'end' }));
+    bad = await layout();
+    const asks = await p.evaluate(() => [...document.querySelectorAll('#rulesList [data-scripts]')].map((e) => { const r = e.getBoundingClientRect(); return Math.round(Math.min(r.width, r.height)); }));
+    assert(await fitsOn('#rules') && !bad.length && asks.length === 2 && asks.every((n) => n >= 44), `the question about a system's scripts fits a phone, with full-size targets ${asks} ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-scripts.png` });
+    await p.tap('#rulesList [data-scripts="later"]');
+    await p.waitForSelector('#rulesList [data-scripts="allow"]');
+    await p.evaluate(() => document.querySelector('#rulesList').firstElementChild.scrollIntoView());
     await p.tap('#rulesList button:has-text("No rules")');
     await p.waitForFunction(() => !document.body.classList.contains('sys'));
     await p.tap('#rules [data-close]');
