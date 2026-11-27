@@ -1000,7 +1000,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     await p.tap('[data-act="gm"]');
   }
   if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn');
-  await p.tap('#logToggle');
+  if (await p.evaluate(() => document.querySelector('#log').classList.contains('closed'))) await p.tap('#logToggle'); // (it may be open still)
   bad = await layout();
   await p.tap('#boulder');
   assert(await p.evaluate(() => window.__ct.board.boulderArmed && document.querySelector('#log').classList.contains('closed')) && !bad.length, `the GM picks up a boulder from the dice sheet ${bad.join('; ')}`);
