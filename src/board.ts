@@ -9,6 +9,7 @@ import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { Look } from './look';
+import { TABLE_SPAN, tableTexture } from './table';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 export type { CellVal, MiniVal };
@@ -40,6 +41,8 @@ export interface BoardHooks {
   onSlab(slab: Slab): void;
   /** A light was stepped to another strength with the light brush. */
   onLight(name: string): void;
+  /** A carried mini touched down (`mine`: this player put it there). */
+  onLand(mine: boolean): void;
   /** The picture was just redrawn: anything pinned to a spot on the table should follow. */
   onView(): void;
 }
@@ -196,7 +199,11 @@ interface Gesture {
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
 const LONG_PRESS = 550;
 
-interface Mini { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string }
+interface Mini {
+  group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string;
+  /** How the piece handles: its lean (and how fast that is changing) as it is carried, and the settle after it is put down. */
+  lean: THREE.Vector2; leanV: THREE.Vector2; air: boolean; land: number;
+}
 
 // Shared by every mini: one base shape, one material per base colour, one invisible hit area.
 const BASE = new THREE.CylinderGeometry(0.38, 0.4, 0.08, 24);
@@ -353,6 +360,8 @@ export class Board {
   private quality = 0;
   private slow = 0;
   private dragPos: Vec | null = null;
+  /** The mini this player has just let go of: its landing is felt as well as heard. */
+  private landing: string | null = null;
   private lastLive = 0;
   private lastRuler = 0;
   private undoStack: Undo[][] = [];
@@ -423,22 +432,13 @@ export class Board {
 
     // The grid is painted into the ground texture (not hairline GL lines), so
     // its thickness scales with the cells and stays visible on high-DPI phones.
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = 128;
-    const g = cv.getContext('2d')!;
-    g.fillStyle = '#2a2420'; // a dark table top: the scene is the bright thing on it
-    g.fillRect(0, 0, 128, 128);
-    g.strokeStyle = '#463c35';
-    g.lineWidth = 6; // half of it falls outside the tile, leaving a 3px line per edge
-    g.strokeRect(0, 0, 128, 128);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.setScalar(LIMIT * 2);
+    // A wooden table top, at a size a phone can hold.
+    const tex = tableTexture(this.coarse ? 512 : 1024);
+    tex.repeat.setScalar((LIMIT * 2) / TABLE_SPAN);
     tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(LIMIT * 2, LIMIT * 2).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ map: tex, roughness: 1 }),
+      new THREE.MeshStandardMaterial({ map: tex, roughness: 0.62 }), // oiled wood: a soft sheen from the room
     );
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
@@ -1016,7 +1016,7 @@ export class Board {
       group.position.copy(m ? m.group.position : pos);
       group.visible = m ? m.group.visible : false; // decided by refreshMinis before the next frame
       if (m) this.scene.remove(m.group);
-      m = { group, target: pos, val: v, sig };
+      m = { group, target: pos, val: v, sig, lean: m?.lean ?? new THREE.Vector2(), leanV: m?.leanV ?? new THREE.Vector2(), air: m?.air ?? false, land: m?.land ?? -1 };
       this.minis.set(id, m);
       this.scene.add(group);
       if (this.selected === id) this.attachRing(m);
@@ -1825,7 +1825,7 @@ export class Board {
       const m = this.minis.get(g.mini);
       const p = this.dragPos;
       this.dragPos = null;
-      if (m && g.moved && p) this.store.set(`m:${g.mini}`, { ...m.val, x: p[0], y: p[1], z: p[2] });
+      if (m && g.moved && p) { this.landing = g.mini; this.store.set(`m:${g.mini}`, { ...m.val, x: p[0], y: p[1], z: p[2] }); }
       else if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
       this.select(g.mini);
       return;
@@ -1984,8 +1984,35 @@ export class Board {
     if ((changed || this.controls.target.distanceToSquared(this.litAt) > 4) && this.relight()) changed = true;
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {
-      if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;
-      m.group.position.lerp(m.target, k);
+      const p = m.group.position, far = p.distanceToSquared(m.target) >= 1e-6;
+      const still = !far && m.land < 0 && m.lean.lengthSq() + m.leanV.lengthSq() < 1e-6;
+      if (still) continue;
+      // A carried piece is held, not slid: it swings behind the hand, and rocks upright when it stops.
+      const vx = far ? (m.target.x - p.x) * 14 : 0, vz = far ? (m.target.z - p.z) * 14 : 0;
+      const gx = Math.max(-0.3, Math.min(0.3, vx * 0.035)), gz = Math.max(-0.3, Math.min(0.3, vz * 0.035));
+      // In small fixed steps: a spring worked out over one long frame on a slow phone would fly apart.
+      for (let left = dt; left > 1e-5; left -= 1 / 120) {
+        const h = Math.min(left, 1 / 120);
+        m.leanV.x += ((gx - m.lean.x) * 260 - m.leanV.x * 13) * h;
+        m.leanV.y += ((gz - m.lean.y) * 260 - m.leanV.y * 13) * h;
+        m.lean.addScaledVector(m.leanV, h);
+      }
+      if (far) {
+        // Coming down is quicker than being carried: a piece is put down, it does not float down.
+        const fall = m.target.y < p.y ? 1 - Math.exp(-dt * 30) : k;
+        p.set(p.x + (m.target.x - p.x) * k, p.y + (m.target.y - p.y) * fall, p.z + (m.target.z - p.z) * k);
+      } else p.copy(m.target);
+      const rest = m.target.y === m.val.y, up = p.y - m.val.y > 0.06;
+      if (m.air && !up && rest) { m.land = 0; this.hooks.onLand(this.landing === m.group.userData.mini); this.landing = null; }
+      m.air = up;
+      let squash = 0;
+      if (m.land >= 0) {
+        m.land += dt;
+        squash = 0.1 * Math.exp(-m.land * 11) * Math.cos(m.land * 26);
+        if (m.land > 0.45) { m.land = -1; squash = 0; }
+      }
+      m.group.scale.set(1 + squash * 0.5, 1 - squash, 1 + squash * 0.5);
+      m.group.rotation.set(-m.lean.y, 0, m.lean.x);
       changed = true;
     }
     let busy = moving || changed || this.dirty;

@@ -199,6 +199,12 @@ export class Sound {
   clack(strength: number): void {
     if (this.ready()) this.burst(this.master!, 2200 + Math.random() * 1500, 0.1 + strength * 0.35, 0.035, 'bandpass');
   }
+  /** A mini set down on the table: a soft knock of plastic on wood. */
+  thud(): void {
+    if (!this.ready()) return;
+    this.note(this.master!, 'sine', 150 + Math.random() * 30, 0.3, 0.09, 0.002, 70);
+    this.burst(this.master!, 900 + Math.random() * 500, 0.12, 0.03, 'bandpass');
+  }
   ping(): void {
     if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
   }

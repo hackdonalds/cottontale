@@ -129,6 +129,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const board = new Board($<HTMLCanvasElement>('c'), store, {
     onSelect: showMiniPanel,
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
+    onLand: (mine) => { sound.thud(); if (mine) navigator.vibrate?.(8); },
     onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
     canMove: (id) => {
@@ -374,6 +375,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('logToggle').onclick = () => openSheet($('log').classList.contains('closed') ? 'log' : null);
   for (const b of document.querySelectorAll<HTMLElement>('[data-close]')) b.onclick = () => openSheet(null);
   $('undo').onclick = () => board.undo();
+  /** Erase is a brush like any other; tapping it again picks the last one back up. */
+  let unerased = '';
+  $('erase').onclick = () => {
+    if (building() && board.brush === 'erase') board.brush = unerased || 'raise';
+    else { if (board.brush !== 'erase') unerased = board.brush; board.brush = 'erase'; }
+    setTool('build');
+  };
 
   // ---- tools & palette ----
 
@@ -396,6 +404,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       if (b.dataset.cat) b.classList.toggle('on', b.dataset.cat === cat);
     }
     for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', (b.dataset.mode === 'build') === build);
+    $('edits').hidden = !build;
+    document.body.classList.toggle('building', build);
     if (build) openSheet(null);
     renderPalette();
     renderRing();
@@ -445,6 +455,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const el = $('palette');
     el.innerHTML = '';
     el.classList.toggle('tray', building());
+    $('erase').classList.toggle('on', board.tool === 'build' && board.brush === 'erase');
     // In Play with the Move tool there is no palette: what you can do with the selected mini
     // sits around the mini itself (see renderRing).
     if (building()) {
@@ -499,7 +510,6 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       };
       const svg = (id: string) => `<svg><use href="#i-${id}"/></svg>`;
       const brush = (id: string) => () => { board.brush = id; trayOpen = false; }; // a brush in hand: fold the shelf
-      const eraser = () => chip('Erase', board.brush === 'erase', brush('erase'), svg('erase'));
       const turn = () => chip('Turn', false, () => { board.rot = (board.rot + 1) % 4; }, svg('turn'), 'Turn the next piece (R)');
       const blocks = (ids: string[]) => { for (const id of ids) tile(BLOCKS[id].name, board.brush === id, brush(id), `b_${id}`, BLOCKS[id].color); };
       const props = (ids: string[]) => { for (const id of ids) tile(PROPS[id].name, board.brush === id, brush(id), `p_${id}`, undefined, PROPS[id].icon); };
@@ -510,7 +520,6 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         }
         chip(`Size ${board.reach * 2 + 1}`, false, () => { board.reach = (board.reach + 1) % 3; }, '', `Brush size: ${board.reach * 2 + 1} across`);
         chip('Repaint', board.surface, () => { board.surface = !board.surface; }, '', 'Repaint the surface instead of stacking');
-        eraser();
         blocks(themed(BLOCK_SHELVES.Terrain));
       } else if (cat === 'walls') {
         // A whole room in one drag: floor, walls, windows and a doorway.
@@ -518,7 +527,6 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
           chip(timber ? 'Timber room' : 'Stone room', board.brush === 'room' && board.roomTimber === timber, () => { board.brush = 'room'; board.roomTimber = timber; }, '', 'Drag out its floor');
         }
         turn();
-        eraser();
         props(PROP_SHELVES.Structures);
         blocks(themed(BLOCK_SHELVES.Building));
       } else if (cat === 'things') {
@@ -530,7 +538,6 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         }
         turn();
         chip('Light', board.brush === 'light', brush('light'), svg('sun'), 'Tap a torch, fire or crystal to step its light: normal, bright, dim, out');
-        eraser();
         props(thingIds());
       } else if (cat === 'figures') {
         const mine = gameTheme();
@@ -904,8 +911,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const el = $('ring');
     if (el.hidden || !board.selected) return;
     const spot = board.spotOf(board.selected);
-    el.style.visibility = spot ? '' : 'hidden';
-    if (!spot) return;
+    // Panned out of view: the actions go with the piece instead of clinging to the edge.
+    const seen = !!spot && spot.x >= 0 && spot.x <= innerWidth && spot.y >= 0 && spot.y <= innerHeight;
+    el.style.visibility = seen ? '' : 'hidden';
+    if (!spot || !seen) return;
     const pop = el.querySelector<HTMLElement>('.pop'), r = Math.max(60, Math.min(104, spot.size * 0.7 + 40));
     // Never let it slide under the top bar or off an edge: the ring shifts, the piece stays put.
     const roof = $('top').getBoundingClientRect().bottom + 12, half = pop ? pop.offsetWidth / 2 + 8 : r + 26;
