@@ -1,0 +1,54 @@
+{
+ "v": 1,
+ "id": "cosy",
+ "name": "Cosy",
+ "icon": "🐇",
+ "mood": {
+  "sky": "day",
+  "season": "spring",
+  "glow": 1,
+  "amb": "calm"
+ },
+ "gen": "forest",
+ "pieces": {
+  "blocks": [
+   "meadow",
+   "grass",
+   "dirt",
+   "wood",
+   "thatch",
+   "plaster",
+   "carpet",
+   "water"
+  ],
+  "props": [
+   "tree",
+   "birch",
+   "flowers",
+   "mushroom",
+   "bush",
+   "stump",
+   "log",
+   "fence",
+   "well",
+   "tent",
+   "campfire",
+   "table",
+   "bench",
+   "bed",
+   "rug",
+   "cauldron"
+  ],
+  "minis": [
+   "bunny",
+   "dog",
+   "horse",
+   "child",
+   "villager",
+   "merchant",
+   "druid",
+   "ranger",
+   "witch"
+  ]
+ }
+}

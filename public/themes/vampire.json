@@ -1,0 +1,56 @@
+{
+ "v": 1,
+ "id": "vampire",
+ "name": "Vampires",
+ "icon": "🦇",
+ "mood": {
+  "sky": "night",
+  "season": "winter",
+  "glow": 1.75,
+  "amb": "rain"
+ },
+ "gen": "dungeon",
+ "pieces": {
+  "blocks": [
+   "cobble",
+   "slate",
+   "darkwood",
+   "marble",
+   "carpet",
+   "obsidian",
+   "glass",
+   "snow"
+  ],
+  "props": [
+   "coffin",
+   "tombstone",
+   "candles",
+   "deadtree",
+   "altar",
+   "statue",
+   "gate",
+   "fence",
+   "cage",
+   "bones",
+   "throne",
+   "bookshelf",
+   "bed",
+   "potion",
+   "torch"
+  ],
+  "minis": [
+   "bat",
+   "ghost",
+   "skeleton",
+   "zombie",
+   "wolf",
+   "rat",
+   "spider",
+   "witch",
+   "villager",
+   "guard",
+   "cleric",
+   "child"
+  ]
+ }
+}

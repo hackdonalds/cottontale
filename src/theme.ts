@@ -3,8 +3,10 @@
 // first in the library), and the scene generator that suits it. The GM picks one and
 // the whole table follows.
 //
-// A theme travels through the store like any other value, so one written by somebody
-// else is untrusted: `parseTheme` keeps what it understands, clamps the numbers and
+// No theme is written into the app. The ones it offers are files (public/themes/*.json,
+// listed in index.json), and picking one copies the whole theme into the table
+// (`set:theme`), so it travels with the table and needs no file on anyone else's device.
+// Either way it is somebody else's data and untrusted: `parseTheme` keeps what it understands, clamps the numbers and
 // drops ids this build does not know. That is also what lets a newer app share a
 // theme with an older one.
 
@@ -19,7 +21,7 @@ export interface Pieces { blocks: string[]; props: string[]; minis: string[] }
 export interface GameTheme {
   /** The format this was written in. A reader ignores themes from a format it does not know. */
   v: number;
-  /** Built-in themes have plain ids; others are `<author>:<name>` so two tables' themes cannot collide. */
+  /** The themes shipped as files have plain ids; others are `<author>:<name>` so two tables' themes cannot collide. */
   id: string;
   name: string;
   /** One emoji, for the picker. */
@@ -58,38 +60,19 @@ export function parseTheme(raw: unknown, known: Known): GameTheme | null {
   };
 }
 
-/** The table's theme: `set:theme` holds the id of a built-in one, or a whole theme somebody made. */
-export function activeTheme(value: unknown, known: Known): GameTheme | null {
-  return parseTheme(typeof value === 'string' ? THEMES[value] : value, known);
+/** The table's theme, read from `set:theme`. */
+export const activeTheme = parseTheme;
+
+/** The themes on offer: `<dir>/index.json` lists them, one file each. A missing or broken one is skipped. */
+export async function loadThemes(dir: string, known: Known, get: (url: string) => Promise<unknown> = async (url) => (await fetch(url)).json()): Promise<GameTheme[]> {
+  const list = await get(`${dir}/index.json`).catch(() => null);
+  if (!Array.isArray(list)) return [];
+  const names = list.filter((n): n is string => typeof n === 'string' && /^[a-z0-9_-]+$/.test(n)).slice(0, 64);
+  const all = await Promise.all(names.map((n) => get(`${dir}/${n}.json`).then((raw) => parseTheme(raw, known), () => null)));
+  return all.filter((t): t is GameTheme => !!t);
 }
 
 /** The settings a theme's mood stands for: what picking it writes to the table, in one go. */
 export function moodEdits(t: GameTheme): [key: string, value: unknown][] {
   return [['set:sky', t.mood.sky], ['set:season', t.mood.season], ['set:glow', t.mood.glow], ['set:amb', t.mood.amb]];
 }
-
-const theme = (id: string, name: string, icon: string, mood: Mood, gen: string, pieces: Pieces): GameTheme => ({ v: THEME_FORMAT, id, name, icon, mood, pieces, gen });
-
-/** The themes that come with the app. They are written in the same format anybody else's would be. */
-export const THEMES: Record<string, GameTheme> = Object.fromEntries([
-  theme('cosy', 'Cosy', '🐇', { sky: 'day', season: 'spring', glow: 1, amb: 'calm' }, 'forest', {
-    blocks: ['meadow', 'grass', 'dirt', 'wood', 'thatch', 'plaster', 'carpet', 'water'],
-    props: ['tree', 'birch', 'flowers', 'mushroom', 'bush', 'stump', 'log', 'fence', 'well', 'tent', 'campfire', 'table', 'bench', 'bed', 'rug', 'cauldron'],
-    minis: ['bunny', 'dog', 'horse', 'child', 'villager', 'merchant', 'druid', 'ranger', 'witch'],
-  }),
-  theme('pirate', 'Pirates', '🏴‍☠️', { sky: 'day', season: 'summer', glow: 1, amb: 'wind' }, 'tavern', {
-    blocks: ['sand', 'water', 'wood', 'darkwood', 'gravel', 'stone', 'gold'],
-    props: ['palm', 'rock', 'reeds', 'barrel', 'crate', 'sacks', 'chest', 'hoard', 'bridge', 'ladder', 'post', 'banner', 'tent', 'cage', 'bones', 'torch'],
-    minis: ['pirate', 'merchant', 'guard', 'rogue', 'barbarian', 'rat', 'snake', 'skeleton', 'ghost', 'flag', 'cross'],
-  }),
-  theme('dark', 'Dark fantasy', '⚔️', { sky: 'dusk', season: 'autumn', glow: 1.5, amb: 'battle' }, 'dungeon', {
-    blocks: ['cobble', 'stone', 'basalt', 'slate', 'mud', 'iron', 'obsidian', 'lava'],
-    props: ['deadtree', 'rock', 'bones', 'spikes', 'cage', 'altar', 'statue', 'pillar', 'gate', 'torch', 'crystal', 'portal', 'chest', 'hoard', 'throne', 'anvil'],
-    minis: ['knight', 'paladin', 'mage', 'cleric', 'rogue', 'barbarian', 'ogre', 'troll', 'skeleton', 'imp', 'mimic', 'dragon'],
-  }),
-  theme('vampire', 'Vampires', '🦇', { sky: 'night', season: 'winter', glow: 1.75, amb: 'rain' }, 'dungeon', {
-    blocks: ['cobble', 'slate', 'darkwood', 'marble', 'carpet', 'obsidian', 'glass', 'snow'],
-    props: ['coffin', 'tombstone', 'candles', 'deadtree', 'altar', 'statue', 'gate', 'fence', 'cage', 'bones', 'throne', 'bookshelf', 'bed', 'potion', 'torch'],
-    minis: ['bat', 'ghost', 'skeleton', 'zombie', 'wolf', 'rat', 'spider', 'witch', 'villager', 'guard', 'cleric', 'child'],
-  }),
-].map((t) => [t.id, t]));

@@ -1,0 +1,55 @@
+{
+ "v": 1,
+ "id": "pirate",
+ "name": "Pirates",
+ "icon": "🏴‍☠️",
+ "mood": {
+  "sky": "day",
+  "season": "summer",
+  "glow": 1,
+  "amb": "wind"
+ },
+ "gen": "tavern",
+ "pieces": {
+  "blocks": [
+   "sand",
+   "water",
+   "wood",
+   "darkwood",
+   "gravel",
+   "stone",
+   "gold"
+  ],
+  "props": [
+   "palm",
+   "rock",
+   "reeds",
+   "barrel",
+   "crate",
+   "sacks",
+   "chest",
+   "hoard",
+   "bridge",
+   "ladder",
+   "post",
+   "banner",
+   "tent",
+   "cage",
+   "bones",
+   "torch"
+  ],
+  "minis": [
+   "pirate",
+   "merchant",
+   "guard",
+   "rogue",
+   "barbarian",
+   "rat",
+   "snake",
+   "skeleton",
+   "ghost",
+   "flag",
+   "cross"
+  ]
+ }
+}

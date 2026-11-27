@@ -249,7 +249,7 @@ await a.fill('#glow', '1');
 await a.evaluate(() => { window.__ct.store.set('b:6,1,6', null); window.__ct.store.set('b:6,0,6', null); });
 // A theme: one tap sets the whole mood for everyone and brings its pieces to the front of the library.
 await a.click('#themes button:has-text("Vampires")');
-assert(await ok(b, () => { const s = window.__ct.store; return s.get('set:theme') === 'vampire' && s.get('set:sky') === 'night' && s.get('set:season') === 'winter' && s.get('set:amb') === 'rain'; }), 'picking a theme sets sky, season and soundscape for the table');
+assert(await ok(b, () => { const s = window.__ct.store; return s.get('set:theme')?.id === 'vampire' && s.get('set:sky') === 'night' && s.get('set:season') === 'winter' && s.get('set:amb') === 'rain'; }), 'picking a theme sets sky, season and soundscape for the table');
 await a.click('#themes button:has-text("Vampires")');
 assert(await ok(b, () => window.__ct.store.get('set:theme') === null && window.__ct.store.get('set:sky') === 'night'), 'tapping it again lets go of the theme and keeps the mood');
 await a.click('#skies button:has-text("Day")');

@@ -522,15 +522,26 @@ describe('terrain', () => {
 });
 
 describe('themes', async () => {
-  const { MAX_PIECES, THEMES: GAME, activeTheme, moodEdits, parseTheme } = await import('./theme');
+  const { MAX_PIECES, activeTheme, loadThemes, moodEdits, parseTheme } = await import('./theme');
   const { SOUNDSCAPES } = await import('./sound');
+  const { readFile } = await import('node:fs/promises' as string) as { readFile: (path: string, enc: string) => Promise<string> }; // no node types in this project
   const known = { block: (id: string) => id in BLOCKS, prop: (id: string) => id in PROPS, mini: (id: string) => id in MINIS, amb: (id: string) => id in SOUNDSCAPES, gen: (id: string) => id in THEMES };
+  const file = async (url: string): Promise<unknown> => JSON.parse(await readFile(url, 'utf8'));
 
-  it('every built-in theme names only pieces, sounds and generators that exist', () => {
-    for (const t of Object.values(GAME)) {
-      expect(parseTheme(JSON.parse(JSON.stringify(t)), known), t.id).toEqual(t);
+  it('every theme file that ships names only pieces, sounds and generators that exist', async () => {
+    const names = await file('public/themes/index.json') as string[], shipped = await loadThemes('public/themes', known, file);
+    expect(shipped.map((t) => t.id)).toEqual(names);
+    for (const t of shipped) {
+      expect(t, t.id).toEqual(await file(`public/themes/${t.id}.json`)); // nothing dropped or clamped
       expect(t.pieces.props.length && t.pieces.minis.length && t.pieces.blocks.length, t.id).toBeTruthy();
     }
+  });
+
+  it('offers what it can read and skips the rest', async () => {
+    const files: Record<string, unknown> = { 'd/index.json': ['a', '../x', 'gone', 'bad', 7], 'd/a.json': { v: 1, id: 'a', name: 'A' }, 'd/bad.json': { v: 9, id: 'bad', name: 'B' } };
+    const get = async (url: string) => { if (!(url in files)) throw new Error(url); return files[url]; };
+    expect((await loadThemes('d', known, get)).map((t) => t.id)).toEqual(['a']);
+    expect(await loadThemes('nowhere', known, get)).toEqual([]);
   });
 
   it('reads a theme somebody else wrote, keeping only what it understands', () => {
@@ -552,11 +563,9 @@ describe('themes', async () => {
     for (const bad of [null, 'pirate', 7, [], {}, { v: 2, id: 'x', name: 'X' }, { v: 1, id: 'Bad Id', name: 'X' }, { v: 1, id: 'x', name: '' }]) expect(parseTheme(bad, known)).toBeNull();
   });
 
-  it('the table holds a built-in theme by id or a whole custom one, and a mood is four settings', () => {
-    expect(activeTheme('pirate', known)?.name).toBe('Pirates');
-    expect(activeTheme('nope', known)).toBeNull();
+  it('the table carries its whole theme, and a mood is four settings', () => {
+    const t = activeTheme({ v: 1, id: 'ada:x', name: 'Mine', mood: { sky: 'night', season: 'winter', glow: 1.75, amb: 'rain' } }, known)!;
     expect(activeTheme(null, known)).toBeNull();
-    expect(activeTheme({ v: 1, id: 'ada:x', name: 'Mine' }, known)?.mood).toEqual({ sky: 'day', season: 'summer', glow: 1, amb: 'off' });
-    expect(moodEdits(GAME.vampire)).toEqual([['set:sky', 'night'], ['set:season', 'winter'], ['set:glow', 1.75], ['set:amb', 'rain']]);
+    expect(moodEdits(t)).toEqual([['set:sky', 'night'], ['set:season', 'winter'], ['set:glow', 1.75], ['set:amb', 'rain']]);
   });
 });

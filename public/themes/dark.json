@@ -1,0 +1,57 @@
+{
+ "v": 1,
+ "id": "dark",
+ "name": "Dark fantasy",
+ "icon": "⚔️",
+ "mood": {
+  "sky": "dusk",
+  "season": "autumn",
+  "glow": 1.5,
+  "amb": "battle"
+ },
+ "gen": "dungeon",
+ "pieces": {
+  "blocks": [
+   "cobble",
+   "stone",
+   "basalt",
+   "slate",
+   "mud",
+   "iron",
+   "obsidian",
+   "lava"
+  ],
+  "props": [
+   "deadtree",
+   "rock",
+   "bones",
+   "spikes",
+   "cage",
+   "altar",
+   "statue",
+   "pillar",
+   "gate",
+   "torch",
+   "crystal",
+   "portal",
+   "chest",
+   "hoard",
+   "throne",
+   "anvil"
+  ],
+  "minis": [
+   "knight",
+   "paladin",
+   "mage",
+   "cleric",
+   "rogue",
+   "barbarian",
+   "ogre",
+   "troll",
+   "skeleton",
+   "imp",
+   "mimic",
+   "dragon"
+  ]
+ }
+}

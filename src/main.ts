@@ -10,7 +10,7 @@ import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } f
 import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
-import { THEMES as GAME_THEMES, activeTheme, moodEdits, type GameTheme, type Known } from './theme';
+import { activeTheme, loadThemes, moodEdits, type GameTheme, type Known } from './theme';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -424,6 +424,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const MINE = '★';
   const known: Known = { block: (id) => id in BLOCKS, prop: (id) => id in PROPS, mini: (id) => id in MINIS, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in THEMES };
   const gameTheme = (): GameTheme | null => activeTheme(store.get('set:theme'), known);
+  /** The themes on offer (public/themes): data that arrives after the table is up, never part of the app. */
+  let gameThemes: GameTheme[] = [];
+  void loadThemes('./themes', known).then((list) => { gameThemes = list; renderThemes(); });
   const thingIds = (): string[] => (thingShelf === MINE ? gameTheme()?.pieces.props : PROP_SHELVES[thingShelf]) ?? [];
   const miniIds = (): string[] => (miniShelf === MINE ? gameTheme()?.pieces.minis : MINI_SHELVES[miniShelf]) ?? [];
   const themed = (shelf: string[]): string[] => {
@@ -711,7 +714,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
     el.innerHTML = '';
-    for (const t of Object.values(GAME_THEMES)) {
+    const offered = [...gameThemes], mine = gameTheme();
+    if (mine && !offered.some((t) => t.id === mine.id)) offered.push(mine); // a theme the table brought with it
+    $('themeHint').hidden = el.hidden = !offered.length;
+    for (const t of offered) {
       const b = document.createElement('button');
       b.textContent = `${t.icon} ${t.name}`;
       b.classList.toggle('on', t.id === cur);
@@ -719,7 +725,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       b.disabled = !f;
       b.onclick = () => {
         if (t.id === cur) { store.set('set:theme', null); return; }
-        store.set('set:theme', t.id);
+        store.set('set:theme', t); // the whole theme, so the table carries it
         for (const [k, v] of moodEdits(t)) store.set(k, v);
         if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
         if (t.pieces.props.length) thingShelf = MINE;

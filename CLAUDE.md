@@ -33,7 +33,7 @@ first, then enhance for larger screens.
 - `src/kit.ts` loads the modelled pieces (`public/kit/*.glb`), built by the Blender scripts in `assets/blender`
 - `src/gen.ts` seeded scene generators (wilderness, dungeon, cave, tavern): pure, whole numbers only, return ordinary edits — unit-test here
 - `src/sound.ts` synthesised soundscapes and effects (no audio files)
-- `src/theme.ts` themes (pirate, vampire…): plain data, never code — a mood, the pieces shown first, a generator. `set:theme` holds a built-in id or a whole theme; anything read from the store goes through `parseTheme` — unit-test here
+- `src/theme.ts` themes: plain data, never code — a mood, the pieces shown first, a generator. None is written into the app: the ones on offer are files (`public/themes/*.json`, listed in `index.json`), and picking one copies it whole into `set:theme`. Everything goes through `parseTheme` — unit-test here
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
 - Board-specific keys (`b:` `m:` `f:` `w:` `turn`) are scoped per board by the store;
