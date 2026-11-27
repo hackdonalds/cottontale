@@ -247,6 +247,13 @@ await a.fill('#glow', '0');
 assert(await ok(b, () => window.__ct.board.lamps.every((l) => l.intensity === 0)), 'and at zero puts them out');
 await a.fill('#glow', '1');
 await a.evaluate(() => { window.__ct.store.set('b:6,1,6', null); window.__ct.store.set('b:6,0,6', null); });
+// A theme: one tap sets the whole mood for everyone and brings its pieces to the front of the library.
+await a.click('#themes button:has-text("Vampires")');
+assert(await ok(b, () => { const s = window.__ct.store; return s.get('set:theme') === 'vampire' && s.get('set:sky') === 'night' && s.get('set:season') === 'winter' && s.get('set:amb') === 'rain'; }), 'picking a theme sets sky, season and soundscape for the table');
+await a.click('#themes button:has-text("Vampires")');
+assert(await ok(b, () => window.__ct.store.get('set:theme') === null && window.__ct.store.get('set:sky') === 'night'), 'tapping it again lets go of the theme and keeps the mood');
+await a.click('#skies button:has-text("Day")');
+await a.click('#seasons button:has-text("Summer")');
 await a.click('#scapes button:has-text("Silence")');
 await a.click('#skies button:has-text("Day")');
 await a.click('#atmo [data-close]');
@@ -393,6 +400,22 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     assert(!bad.length && await p.evaluate(() => document.querySelector('#palette').classList.contains('tray')), `${cat} tray layout clean ${bad.join('; ')}`);
   }
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-build.png` });
+  // A theme, picked by touch: its shelf leads the things and the figures, with nothing overlapping.
+  await p.tap('#menuBtn');
+  await p.tap('[data-act="atmo"]');
+  bad = await layout();
+  await p.tap('#themes button:has-text("Pirates")');
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme.png` });
+  await p.tap('#atmo [data-close]');
+  await p.tap('[data-mode="build"]');
+  await p.tap('[data-cat="things"]');
+  const mine = await p.evaluate(() => ({ chip: document.querySelector('#palette .chip.on')?.textContent, palm: !!document.querySelector('#palette [title="Palm"]'), first: document.querySelector('#palette .tile')?.title }));
+  await p.tap('[data-cat="figures"]');
+  const crew = await p.evaluate(() => document.querySelector('#palette .tile')?.title);
+  bad.push(...await layout());
+  assert(mine.chip?.includes('Pirates') && mine.palm && crew === 'Pirate' && !bad.length, `a theme picked by touch puts its own shelf first ${JSON.stringify(mine)} ${crew} ${bad.join('; ')}`);
+  await p.evaluate(() => { const s = window.__ct.store; s.set('set:theme', null); s.set('set:amb', 'off'); });
+  await p.tap('[data-cat="land"]');
   const keys = (prefix) => p.evaluate((q) => [...window.__ct.store.keys(q)], prefix);
   const drag = async (x0, y0, x1, y1) => {
     await touch('touchStart', [[x0, y0]]);

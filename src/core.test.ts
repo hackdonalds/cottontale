@@ -520,3 +520,43 @@ describe('terrain', () => {
     expect(t.side.some(Boolean)).toBe(true);
   });
 });
+
+describe('themes', async () => {
+  const { MAX_PIECES, THEMES: GAME, activeTheme, moodEdits, parseTheme } = await import('./theme');
+  const { SOUNDSCAPES } = await import('./sound');
+  const known = { block: (id: string) => id in BLOCKS, prop: (id: string) => id in PROPS, mini: (id: string) => id in MINIS, amb: (id: string) => id in SOUNDSCAPES, gen: (id: string) => id in THEMES };
+
+  it('every built-in theme names only pieces, sounds and generators that exist', () => {
+    for (const t of Object.values(GAME)) {
+      expect(parseTheme(JSON.parse(JSON.stringify(t)), known), t.id).toEqual(t);
+      expect(t.pieces.props.length && t.pieces.minis.length && t.pieces.blocks.length, t.id).toBeTruthy();
+    }
+  });
+
+  it('reads a theme somebody else wrote, keeping only what it understands', () => {
+    const t = parseTheme({
+      v: 1, id: 'ada:space', name: '  Space opera  ', icon: '🚀🚀🚀🚀🚀🚀', gen: 'asteroid', extra: { run: 'alert(1)' },
+      mood: { sky: 'noon', season: 'winter', glow: 99, amb: 'lasers' },
+      pieces: { blocks: ['stone', 'stone', 'moonrock', 7], props: Array(60).fill(0).map((_, i) => Object.keys(PROPS)[i % 40]), minis: 'knight' },
+    }, known)!;
+    expect(t).toMatchObject({ id: 'ada:space', name: 'Space opera', gen: '', mood: { sky: 'day', season: 'winter', glow: 2, amb: 'off' } });
+    expect([...t.icon].length).toBe(4);
+    expect(t.pieces.blocks).toEqual(['stone']);
+    expect(t.pieces.props.length).toBe(MAX_PIECES);
+    expect(new Set(t.pieces.props).size).toBe(MAX_PIECES);
+    expect(t.pieces.minis).toEqual([]);
+    expect('extra' in t).toBe(false);
+  });
+
+  it('refuses what is not a theme, or is from a format it does not know', () => {
+    for (const bad of [null, 'pirate', 7, [], {}, { v: 2, id: 'x', name: 'X' }, { v: 1, id: 'Bad Id', name: 'X' }, { v: 1, id: 'x', name: '' }]) expect(parseTheme(bad, known)).toBeNull();
+  });
+
+  it('the table holds a built-in theme by id or a whole custom one, and a mood is four settings', () => {
+    expect(activeTheme('pirate', known)?.name).toBe('Pirates');
+    expect(activeTheme('nope', known)).toBeNull();
+    expect(activeTheme(null, known)).toBeNull();
+    expect(activeTheme({ v: 1, id: 'ada:x', name: 'Mine' }, known)?.mood).toEqual({ sky: 'day', season: 'summer', glow: 1, amb: 'off' });
+    expect(moodEdits(GAME.vampire)).toEqual([['set:sky', 'night'], ['set:season', 'winter'], ['set:glow', 1.75], ['set:amb', 'rain']]);
+  });
+});

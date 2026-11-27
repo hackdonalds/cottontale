@@ -163,7 +163,7 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 .sheet { overflow-y: auto; }
 .sheet > * { flex: none; }
 #soundOn { justify-content: center; }
-#genThemes { grid-template-columns: repeat(2, 1fr); }
+#genThemes, #themes { grid-template-columns: repeat(2, 1fr); }
 #genRooms { display: flex; flex-direction: column; gap: 4px; }
 #genRooms .row { align-items: center; gap: 6px; }
 #genRooms .row button { min-width: 44px; min-height: 44px; }

@@ -10,6 +10,7 @@ import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } f
 import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
+import { THEMES as GAME_THEMES, activeTheme, moodEdits, type GameTheme, type Known } from './theme';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -154,6 +155,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
+    if (k === 'set:theme') renderPalette(); // its pieces come to the front of the library
     later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
   };
@@ -405,11 +407,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const fits: Record<Cat, (id: string) => boolean> = {
       land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
       walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
-      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light',
+      things: (id) => thingIds().includes(id) || id === 'erase' || id === 'light',
       figures: () => true,
       scenes: (id) => id === 'copy' || id === 'paste',
     };
-    if (!fits[c](board.brush)) board.brush = { land: 'raise', walls: 'wall', things: PROP_SHELVES[thingShelf][0], figures: board.brush, scenes: 'copy' }[c];
+    if (!fits[c](board.brush)) board.brush = { land: 'raise', walls: 'wall', things: thingIds()[0] ?? PROP_SHELVES.Nature[0], figures: board.brush, scenes: 'copy' }[c];
     setTool(c === 'figures' ? 'mini' : 'build');
   }
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.onclick = () => setTool(b.dataset.tool as Tool);
@@ -417,6 +419,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => (b.dataset.mode === 'build' ? setCat(cat) : setTool('move'));
 
   let thingShelf = 'Nature', miniShelf = 'Heroes';
+  // The table's theme (see theme.ts) puts a shelf of its own in front of the others and its
+  // ground and building blocks first on theirs: more to choose from, and no more chrome.
+  const MINE = '★';
+  const known: Known = { block: (id) => id in BLOCKS, prop: (id) => id in PROPS, mini: (id) => id in MINIS, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in THEMES };
+  const gameTheme = (): GameTheme | null => activeTheme(store.get('set:theme'), known);
+  const thingIds = (): string[] => (thingShelf === MINE ? gameTheme()?.pieces.props : PROP_SHELVES[thingShelf]) ?? [];
+  const miniIds = (): string[] => (miniShelf === MINE ? gameTheme()?.pieces.minis : MINI_SHELVES[miniShelf]) ?? [];
+  const themed = (shelf: string[]): string[] => {
+    const first = (gameTheme()?.pieces.blocks ?? []).filter((id) => shelf.includes(id));
+    return [...first, ...shelf.filter((id) => !first.includes(id))];
+  };
   /** Where a piece's picture is on the sheet of thumbnails (see assets/blender/thumbs.py). */
   const thumb = (family: string): string | null => {
     const i = (THUMBS.at as Record<string, number>)[family];
@@ -495,7 +508,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         chip(`Size ${board.reach * 2 + 1}`, false, () => { board.reach = (board.reach + 1) % 3; }, '', `Brush size: ${board.reach * 2 + 1} across`);
         chip('Repaint', board.surface, () => { board.surface = !board.surface; }, '', 'Repaint the surface instead of stacking');
         eraser();
-        blocks(BLOCK_SHELVES.Terrain);
+        blocks(themed(BLOCK_SHELVES.Terrain));
       } else if (cat === 'walls') {
         // A whole room in one drag: floor, walls, windows and a doorway.
         for (const timber of [false, true]) {
@@ -504,19 +517,25 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         turn();
         eraser();
         props(PROP_SHELVES.Structures);
-        blocks(BLOCK_SHELVES.Building);
+        blocks(themed(BLOCK_SHELVES.Building));
       } else if (cat === 'things') {
+        const mine = gameTheme();
+        if (mine?.pieces.props.length) chip(`${mine.icon} ${mine.name}`, thingShelf === MINE, () => { thingShelf = MINE; board.brush = mine.pieces.props[0]; });
+        else if (thingShelf === MINE) thingShelf = 'Nature';
         for (const name of Object.keys(PROP_SHELVES)) {
           if (name !== 'Structures') chip(name, thingShelf === name, () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
         turn();
         chip('Light', board.brush === 'light', brush('light'), svg('sun'), 'Tap a torch, fire or crystal to step its light: normal, bright, dim, out');
         eraser();
-        props(PROP_SHELVES[thingShelf]);
+        props(thingIds());
       } else if (cat === 'figures') {
+        const mine = gameTheme();
+        if (mine?.pieces.minis.length) chip(`${mine.icon} ${mine.name}`, miniShelf === MINE, () => { miniShelf = MINE; miniKind = mine.pieces.minis[0]; });
+        else if (miniShelf === MINE) miniShelf = 'Heroes';
         for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
-        for (const id of MINI_SHELVES[miniShelf]) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon);
+        for (const id of miniIds()) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon);
       } else {
         chip('Generate…', false, () => { renderGen(); openSheet('gen'); }, svg('spark'), 'Generate a scene');
         chip('Starter scene', false, meadow);
@@ -688,7 +707,29 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       el.append(b);
     }
   }
+  /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
+  function renderThemes(): void {
+    const el = $('themes'), f = full(), cur = gameTheme()?.id;
+    el.innerHTML = '';
+    for (const t of Object.values(GAME_THEMES)) {
+      const b = document.createElement('button');
+      b.textContent = `${t.icon} ${t.name}`;
+      b.classList.toggle('on', t.id === cur);
+      b.setAttribute('aria-pressed', String(t.id === cur));
+      b.disabled = !f;
+      b.onclick = () => {
+        if (t.id === cur) { store.set('set:theme', null); return; }
+        store.set('set:theme', t.id);
+        for (const [k, v] of moodEdits(t)) store.set(k, v);
+        if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
+        if (t.pieces.props.length) thingShelf = MINE;
+        if (t.pieces.minis.length) miniShelf = MINE;
+      };
+      el.append(b);
+    }
+  }
   function renderAtmo(): void {
+    renderThemes();
     choices($('skies'), SKY_NAMES, 'sky', 'day');
     choices($('seasons'), SEASON_NAMES, 'season', 'summer');
     choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
