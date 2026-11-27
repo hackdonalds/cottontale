@@ -10,9 +10,11 @@ let pw, channel;
 try { pw = require('playwright'); } catch { pw = require('playwright-core'); channel = 'chrome'; }
 const { chromium, devices } = pw;
 
+// Ports can be moved (E2E_WEB, E2E_RELAY) so several checkouts can run their checks at once.
+const WEB = process.env.E2E_WEB ?? '4188', RELAY = process.env.E2E_RELAY ?? '7788';
 const procs = [
-  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: '7788' }, stdio: 'ignore' }),
-  spawn('npx', ['vite', 'preview', '--port', '4188', '--strictPort'], { stdio: 'ignore' }),
+  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: RELAY }, stdio: 'ignore' }),
+  spawn('npx', ['vite', 'preview', '--port', WEB, '--strictPort'], { stdio: 'ignore' }),
 ];
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
 const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
@@ -20,7 +22,7 @@ process.on('uncaughtException', (e) => { console.error(e); done(1); });
 await new Promise((r) => setTimeout(r, 2500));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const url = (room) => `http://localhost:4188/#room=${room}&relays=ws://localhost:7788`;
+const url = (room) => `http://localhost:${WEB}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
   page.on('pageerror', (e) => { console.log('pageerror', name, e.message); done(1); });
