@@ -16,6 +16,8 @@ const ls = {
   get: (k: string) => { try { return localStorage.getItem(`cottontale:${k}`); } catch { return null; } },
   set: (k: string, v: string) => { try { localStorage.setItem(`cottontale:${k}`, v); } catch { /* storage full or blocked */ } },
 };
+/** A drawing from the icon set in index.html. */
+const ico = (id: string) => `<svg><use href="#i-${id}"/></svg>`;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
 function randomCode(): string {
@@ -178,7 +180,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('hud').hidden = false;
   stayAwake();
   $('help').innerHTML = coarse
-    ? 'One finger: look around — or use the selected tool (🧱 tap or drag to paint, 📏 drag to measure).<br />Two fingers: pan, pinch to zoom, twist to turn.<br />Press and hold the table to ping. ▲▼ on the right hides upper floors.<br />🎲 Pick dice up, then drag on the table and let go to throw.'
+    ? 'One finger: look around — or use the selected tool (in Build, tap or drag to place; Measure, drag to measure).<br />Two fingers: pan, pinch to zoom, twist to turn.<br />Press and hold the table to ping. The arrows on the right hide upper floors.<br />Dice: pick them up, then drag on the table and let go to throw.'
     : 'Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z / Ctrl+Y · Del remove<br />Hold the mouse on the table to ping<br />Dice: pick them up, drag on the table, let go to throw';
   say(`<span class="sys">Welcome, ${esc(name)}! Share the invite link to bring others to the table.</span>`);
 
@@ -223,7 +225,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderPlayers(): void {
     const g = gms(store);
     const all = [{ id: meId, name, color: myColor }, ...[...net.peers].map(([pk, p]) => ({ id: pid(pk), ...p }))];
-    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? '🎩 ' : ''}${esc(p.name)}</span>`).join('');
+    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}${esc(p.name)}</span>`).join('');
   }
   renderPlayers();
 
@@ -518,16 +520,28 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         chip('Import', false, () => void importSlab(), '', 'Paste a shared code');
         tiles.remove();
       }
-    } else if (board.tool === 'ruler') {
-      const modes: [RulerMode, string, string][] = [['line', '📏', 'Distance'], ['circle', '⭕', 'Radius'], ['cone', '🔺', 'Cone']];
-      for (const [m, icon, title] of modes) add(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
-      sep();
-      add('Put the ruler away', '✕', false, () => { board.showRuler('me', null, ''); void send({ y: 'ruler', r: null }); });
-    } else if (board.tool === 'fog') {
-      add('Hide: drag to cover an area', '🌫️', board.fogHide, () => { board.fogHide = true; });
-      add('Reveal: drag to uncover', '👁️', !board.fogHide, () => { board.fogHide = false; });
-      sep();
-      add('Reveal everything', '☀️', false, () => { for (const k of [...store.keys('f:')]) store.set(k, null); });
+    } else if (board.tool === 'ruler' || board.tool === 'fog') {
+      el.classList.add('tray');
+      const row = document.createElement('div');
+      el.append(row);
+      const chip = (label: string, icon: string, on: boolean, click: () => void, title = label) => {
+        const b = document.createElement('button');
+        b.className = 'chip';
+        b.title = title;
+        b.innerHTML = `${ico(icon)}${label}`;
+        b.classList.toggle('on', on);
+        b.onclick = () => { click(); renderPalette(); };
+        row.append(b);
+      };
+      if (board.tool === 'ruler') {
+        const modes: [RulerMode, string, string][] = [['line', 'line', 'Distance'], ['circle', 'circle', 'Radius'], ['cone', 'cone', 'Cone']];
+        for (const [m, icon, title] of modes) chip(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
+        chip('Put away', 'x', false, () => { board.showRuler('me', null, ''); void send({ y: 'ruler', r: null }); }, 'Put the ruler away');
+      } else {
+        chip('Hide', 'fog', board.fogHide, () => { board.fogHide = true; }, 'Hide: drag to cover an area');
+        chip('Reveal', 'eye', !board.fogHide, () => { board.fogHide = false; }, 'Reveal: drag to uncover');
+        chip('Reveal all', 'sun', false, () => { for (const k of [...store.keys('f:')]) store.set(k, null); }, 'Reveal everything');
+      }
     }
     el.hidden = !el.childElementCount;
   }
@@ -616,7 +630,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     const prepping = f && here !== active;
     $('prep').hidden = !prepping;
-    $('prepText').textContent = prepping ? `👁️ Preparing “${boardName(here)}” — players are on “${boardName(active)}”` : '';
+    $('prepText').textContent = prepping ? `Preparing “${boardName(here)}” — players are on “${boardName(active)}”` : '';
   }
   function newBoard(copy: boolean): void {
     if (!full()) return;
@@ -640,7 +654,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     el.innerHTML = '';
     for (const [id, label] of Object.entries(items)) {
       const b = document.createElement('button');
-      b.textContent = label;
+      b.textContent = label.replace(/^[^\p{L}]+/u, ''); // the names carry an emoji for the chat log; the buttons do without
       b.classList.toggle('on', id === cur);
       b.disabled = !f;
       b.onclick = () => store.set(`set:${key}`, id);
@@ -651,7 +665,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     choices($('skies'), SKY_NAMES, 'sky', 'day');
     choices($('seasons'), SEASON_NAMES, 'season', 'summer');
     choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
-    $('soundOn').textContent = sound.enabled ? '🔊 Sound on this device: on' : '🔈 Sound on this device: off';
+    $('soundOn').innerHTML = sound.enabled ? `${ico('sound')}Sound on this device: on` : `${ico('mute')}Sound on this device: off`;
   }
   $('soundOn').onclick = () => {
     sound.setEnabled(!sound.enabled);
@@ -690,8 +704,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     board.setSky(sky);
     board.setSeason(setting<Season>(store, 'season', 'summer'));
     const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
-    act('gm').textContent = amGM ? '🎩 Stop being the GM' : '🎩 Become the GM';
-    act('los').textContent = `👁️ Line of sight: ${l ? 'on' : 'off'}`;
+    act('gm').innerHTML = `${ico('crown')}${amGM ? 'Stop being the GM' : 'Become the GM'}`;
+    act('los').innerHTML = `${ico(l ? 'eye' : 'eyeoff')}Line of sight: ${l ? 'on' : 'off'}`;
     sound.scape(setting(store, 'amb', 'off'));
     renderAtmo();
     renderPlayers();
@@ -721,7 +735,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     // The GM advances turns; the player whose mini is up may end their own.
     const mine = !!current && canControl(store, meId, current.v);
     $('nextTurn').hidden = !(f || mine);
-    $('nextTurn').textContent = current ? '⏭️' : '▶️';
+    $('nextTurn').innerHTML = ico(current ? 'next' : 'play');
   }
   $('nextTurn').onclick = () => { const t = nextTurn(store); if (t) store.set('turn', t); };
   $('endFight').onclick = () => {
@@ -779,8 +793,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     // Other people's minis show their stats if they have any; your own on request.
     $('stats').hidden = mine ? !statsOpen : !v.st?.some(Boolean);
     $('miniMore').classList.toggle('on', statsOpen);
-    $('miniFly').textContent = `🕊️ ${v.e || 0}`;
-    $('miniHide').textContent = v.h ? '🙈 Hidden' : '👁️ Visible';
+    $('miniFly').innerHTML = `${ico('wing')}${v.e || 0}`;
+    $('miniHide').innerHTML = v.h ? `${ico('eyeoff')}Hidden` : `${ico('eye')}Visible`;
     $('miniHide').classList.toggle('on', !!v.h);
     const owner = $<HTMLSelectElement>('miniOwner');
     if (document.activeElement !== owner) {
@@ -902,7 +916,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     themes.innerHTML = sliders.innerHTML = recent.innerHTML = list.innerHTML = '';
     for (const [id, t] of Object.entries(THEMES) as [Theme, (typeof THEMES)[Theme]][]) {
       const b = document.createElement('button');
-      b.textContent = `${t.icon} ${t.name}`;
+      b.innerHTML = `${ico(t.icon)}${t.name}`;
       b.classList.toggle('on', id === genOpts.theme);
       b.onclick = () => { genOpts = { ...genOpts, theme: id }; renderGen(); };
       themes.append(b);
@@ -919,18 +933,18 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     // The rooms of the scene on the table: look at one, redo its furnishing, or lock it so a new layout keeps it.
     const rec = sceneRec();
     if (rec?.rooms.length) {
-      list.insertAdjacentHTML('beforeend', '<p class="hint">Rooms — 🎲 refurnishes one, 🔒 keeps it when you build another</p>');
+      list.insertAdjacentHTML('beforeend', '<p class="hint">Rooms — the dice refurnish one; the lock keeps it when you build another</p>');
       rec.rooms.forEach((q, i) => {
         const row = document.createElement('span'), name = document.createElement('button'), dice = document.createElement('button'), lock = document.createElement('button');
         row.className = 'row';
         name.className = 'grow';
         name.textContent = ROOM_NAMES[q.kind] ?? q.kind;
         name.onclick = () => board.lookAt((q.x0 + q.x1 + 1) / 2, 1, (q.z0 + q.z1 + 1) / 2);
-        dice.textContent = '🎲';
+        dice.innerHTML = ico('dice');
         dice.title = dice.ariaLabel = 'Refurnish this room';
         dice.disabled = !!q.lock;
         dice.onclick = () => buildScene(rec.o, rec.rooms.map((r, j) => (j === i ? { ...r, seed: newSeed() } : r)), true);
-        lock.textContent = q.lock ? '🔒' : '🔓';
+        lock.innerHTML = ico(q.lock ? 'lock' : 'unlock');
         lock.title = lock.ariaLabel = q.lock ? 'Locked: unlock this room' : 'Lock this room';
         lock.classList.toggle('on', !!q.lock);
         lock.onclick = () => store.set('gen', { o: rec.o, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock: !r.lock } : r)) });
@@ -940,7 +954,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     for (const o of genRecent) {
       const b = document.createElement('button');
-      b.textContent = `${THEMES[o.theme].icon} #${o.seed}`;
+      b.innerHTML = `${ico(THEMES[o.theme].icon)}#${o.seed}`;
       b.title = `${THEMES[o.theme].name}, seed ${o.seed}`;
       b.onclick = () => { genOpts = { ...o }; buildScene(genOpts); };
       recent.append(b);

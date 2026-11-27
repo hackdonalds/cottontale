@@ -14,16 +14,17 @@ export type Edit = [key: string, value: unknown];
 /** A room of a scene. Its furnishing has a seed of its own, so one room can be redone; a locked room survives a new layout. */
 export interface GenRoom { kind: string; x0: number; x1: number; z0: number; z1: number; seed: number; lock?: boolean }
 export const ROOM_NAMES: Record<string, string> = {
-  guard: '🛡️ Guard room', store: '📦 Store', crypt: '⚰️ Crypt', shrine: '🕯️ Shrine', treasure: '💰 Treasury',
-  cell: '⛓️ Cells', lair: '🦴 Lair', hall: '🍺 Hall', bedroom: '🛏️ Bedroom',
+  guard: 'Guard room', store: 'Store', crypt: 'Crypt', shrine: 'Shrine', treasure: 'Treasury',
+  cell: 'Cells', lair: 'Lair', hall: 'Hall', bedroom: 'Bedroom',
 };
 export interface Scene { edits: Edit[]; bounds: [x0: number, x1: number, z0: number, z1: number]; rooms: GenRoom[] }
 
+/** `icon` names a drawing in the app's icon set. */
 export const THEMES: Record<Theme, { name: string; icon: string; sliders: [string, string, string] }> = {
-  forest: { name: 'Wilderness', icon: '🌲', sliders: ['Size', 'Growth', 'Hills'] },
-  dungeon: { name: 'Dungeon', icon: '🗝️', sliders: ['Size', 'Rooms', 'Clutter'] },
-  cave: { name: 'Cave', icon: '🕳️', sliders: ['Size', 'Openness', 'Clutter'] },
-  tavern: { name: 'Tavern', icon: '🍺', sliders: ['Size', 'Tables', 'Clutter'] },
+  forest: { name: 'Wilderness', icon: 'tree', sliders: ['Size', 'Growth', 'Hills'] },
+  dungeon: { name: 'Dungeon', icon: 'key', sliders: ['Size', 'Rooms', 'Clutter'] },
+  cave: { name: 'Cave', icon: 'cave', sliders: ['Size', 'Openness', 'Clutter'] },
+  tavern: { name: 'Tavern', icon: 'mug', sliders: ['Size', 'Tables', 'Clutter'] },
 };
 
 // ---- chance, in whole numbers --------------------------------------------------------
