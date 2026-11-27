@@ -79,10 +79,11 @@
 
     <div id="log" class="panel closed">
       <div id="msgs"></div>
+      <p id="hand" class="hint"></p>
       <div id="dice">
-        <button id="diceN" title="Number of dice">1×</button>
-        <button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button>
-        <button data-d="10">d10</button><button data-d="12">d12</button><button data-d="20">d20</button><button data-d="100">d100</button>
+        <button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button><button data-d="10">d10</button>
+        <button data-d="12">d12</button><button data-d="20">d20</button><button data-d="100">d100</button>
+        <button id="diceClear" title="Put the dice back" aria-label="Put the dice back">✕</button>
       </div>
       <form id="chat"><input id="chatIn" maxlength="300" placeholder="Say something… or /r 2d6+3" autocomplete="off" enterkeyhint="send" /></form>
     </div>

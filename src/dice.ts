@@ -148,16 +148,27 @@ export function results(t: Throw): number[] | null {
   return d && t.k.map((k, i) => reading(k, d.rot[i][t.n - 1]));
 }
 
-/** Turn die labels into the values of a roll of `sides`-sided dice (d100 = a tens die + a units die). */
-export function values(sides: number, labels: number[]): number[] {
-  if (sides === 100) return Array.from({ length: labels.length / 2 }, (_, i) => labels[i * 2] * 10 + labels[i * 2 + 1] || 100);
-  return labels.map((l) => (sides === 10 ? l || 10 : l));
+/** Values of a throw: a tens die followed by a d10 is one percentile roll; a lone d10's 0 is ten. */
+export function rollValues(kinds: Kind[], labels: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < kinds.length; i++) {
+    if (kinds[i] === 'd100' && kinds[i + 1] === 'd10') { out.push(labels[i] * 10 + labels[i + 1] || 100); i++; }
+    else out.push(kinds[i] === 'd10' ? labels[i] || 10 : labels[i]);
+  }
+  return out;
+}
+/** What to show floating above each die once it has landed. */
+function faceTexts(kinds: Kind[], labels: number[]): string[] {
+  return kinds.map((k, i) => (k === 'd100' ? `${labels[i]}0` : k === 'd10' && kinds[i - 1] !== 'd100' ? String(labels[i] || 10) : String(labels[i])));
 }
 export function kindsFor(n: number, sides: number): Kind[] | null {
   const k: Kind[] = sides === 100 ? ['d100', 'd10'] : [`d${sides}` as Kind];
-  if (!(k[0] in RADIUS) || n * k.length > MAX_DICE) return null;
+  if (!(k[0] in RADIUS) || sides === 1 || n * k.length > MAX_DICE) return null;
   return Array.from({ length: n }, () => k).flat();
 }
+
+/** Where a held die is when it leaves the hand. */
+export interface Start { p: V3; q: [number, number, number, number] }
 
 // ---- simulation (thrower only) ------------------------------------------------------
 
@@ -165,15 +176,17 @@ const rnd = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
 const spread = (r: number) => (rnd() * 2 - 1) * r;
 
 /**
- * Throw dice from the camera's side towards `target` and record what happens.
- * The physics engine is loaded on first use, keeping it out of the initial download.
+ * Fling dice from where they were held, with the velocity of the hand, and
+ * record what happens. `center`/`tray` describe the visible patch of table the
+ * dice are kept on. The physics engine is loaded on first use, keeping it out
+ * of the initial download.
  */
-export async function simulate(kinds: Kind[], target: V3, cam: V3, store: Store, tray = 6): Promise<Throw> {
+export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: V3, store: Store, tray = 6): Promise<Throw> {
   const C = await import('cannon-es');
   const world = new C.World({ gravity: new C.Vec3(0, -32, 0), allowSleep: true });
   world.defaultContactMaterial.friction = 0.32;
   world.defaultContactMaterial.restitution = 0.38;
-  const o = target.map((v) => Math.round(v * 100) / 100) as V3;
+  const o = center.map((v) => Math.round(v * 100) / 100) as V3;
 
   // The table, an invisible tray so dice stay in view, and the terrain around the landing spot.
   const fixed = (shape: InstanceType<typeof C.Shape>, x: number, y: number, z: number, ex = 0, ey = 0) => {
@@ -205,28 +218,27 @@ export async function simulate(kinds: Kind[], target: V3, cam: V3, store: Store,
     }
   }
 
-  // Launch from the thrower's side of the landing spot, clear of any terrain there.
-  const dir = new THREE.Vector3(o[0] - cam[0], 0, o[2] - cam[2]);
-  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
-  dir.normalize();
-  const side = new THREE.Vector3(-dir.z, 0, dir.x);
+  // Let go: every die leaves with the hand's velocity plus a little of its own. A
+  // plain tap (no fling) still gets a gentle toss so the dice tumble.
+  const fling = new THREE.Vector3(vel[0], 0, vel[2]);
+  if (fling.length() < 2) fling.set(spread(1), 0, spread(1)).setLength(2 + rnd());
+  fling.clampLength(0, 16);
+  const spin = 10 + fling.length() * 1.6;
   const bodies = kinds.map((kind, i) => {
-    const sh = shape(kind);
-    const p = new THREE.Vector3(...o).addScaledVector(dir, -Math.min(3.2, TRAY * 0.6) + spread(0.3))
-      .addScaledVector(side, ((i % 4) - (Math.min(kinds.length, 4) - 1) / 2) * Math.min(0.95, TRAY / 3) + spread(0.1));
-    const ground = tops.get(`${Math.floor(p.x)},${Math.floor(p.z)}`) ?? 0;
-    p.y = Math.max(o[1] + 2.6, ground + 1.4) + Math.floor(i / 4) * 1.1 + (i % 2) * 0.4;
-    const speed = (4.5 + rnd() * 2.5) * Math.min(1, TRAY / 4);
+    const sh = shape(kind), st = starts[i];
+    const clamp = (v: number, c: number) => Math.min(c + TRAY - 0.6, Math.max(c - TRAY + 0.6, v));
+    const x = clamp(st.p[0], o[0]), z = clamp(st.p[2], o[2]);
+    const ground = tops.get(`${Math.floor(x)},${Math.floor(z)}`) ?? 0;
     const body = new C.Body({
       mass: 1,
       shape: new C.ConvexPolyhedron({ vertices: sh.verts.map((v) => new C.Vec3(v.x, v.y, v.z)), faces: sh.faces.map((f) => [...f]) }),
-      position: new C.Vec3(p.x, p.y, p.z),
-      velocity: new C.Vec3(dir.x * speed + side.x * spread(1), 1 + rnd() * 2, dir.z * speed + side.z * spread(1)),
-      angularVelocity: new C.Vec3(spread(22), spread(22), spread(22)),
+      position: new C.Vec3(x, Math.max(st.p[1], ground + 0.7), z),
+      quaternion: new C.Quaternion(...st.q),
+      velocity: new C.Vec3(fling.x * (0.85 + rnd() * 0.3) + spread(0.8), 1.5 + rnd() * 1.5, fling.z * (0.85 + rnd() * 0.3) + spread(0.8)),
+      angularVelocity: new C.Vec3(spread(spin), spread(spin), spread(spin)),
       linearDamping: 0.12, angularDamping: 0.12,
       allowSleep: true, sleepSpeedLimit: 0.25, sleepTimeLimit: 0.3,
     });
-    body.quaternion.setFromEuler(spread(Math.PI), spread(Math.PI), spread(Math.PI));
     world.addBody(body);
     return body;
   });
@@ -344,13 +356,70 @@ function material(kind: Kind, color: string): THREE.MeshStandardMaterial {
   return m;
 }
 
-interface Playing { owner: string; t: number; n: number; meshes: THREE.Mesh[]; pos: THREE.Vector3[][]; rot: THREE.Quaternion[][]; done: () => void; settled: boolean }
-const LINGER = 6; // seconds the dice stay on the table after settling
+const sprites = new Map<string, THREE.SpriteMaterial>();
+function numberSprite(text: string): THREE.Sprite {
+  let m = sprites.get(text);
+  if (!m) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 96;
+    const g = cv.getContext('2d')!;
+    g.fillStyle = 'rgba(15,17,23,.85)';
+    g.beginPath();
+    g.arc(48, 48, 44, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#ffd166';
+    g.font = `800 ${text.length > 2 ? 38 : 50}px system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(text, 48, 51);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    m = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+    sprites.set(text, m);
+  }
+  const s = new THREE.Sprite(m);
+  s.scale.setScalar(0.62);
+  s.renderOrder = 20;
+  return s;
+}
 
-/** Plays recorded throws in the scene. */
+interface Playing {
+  owner: string; t: number; n: number; kinds: Kind[]; done: () => void; settled: boolean;
+  meshes: THREE.Object3D[]; pos: THREE.Vector3[][]; rot: THREE.Quaternion[][];
+}
+interface Held { meshes: THREE.Mesh[]; axes: THREE.Vector3[]; offs: THREE.Vector3[]; at: THREE.Vector3; to: THREE.Vector3 }
+const LINGER = 12; // seconds the dice stay on the table after settling
+
+/** Shows dice: the ones in your hand, and recorded throws playing back. */
 export class DiceView {
   private playing: Playing[] = [];
+  private held: Held | null = null;
   constructor(private scene: THREE.Scene) {}
+
+  /** Pick the dice up: they hover and tumble at `at` until thrown. */
+  hold(kinds: Kind[], color: string, at: THREE.Vector3): void {
+    this.endHold();
+    const meshes = kinds.map((kind) => {
+      const m = new THREE.Mesh(geometry(kind), material(kind, color));
+      m.castShadow = true;
+      m.quaternion.setFromEuler(new THREE.Euler(spread(Math.PI), spread(Math.PI), spread(Math.PI)));
+      this.scene.add(m);
+      return m;
+    });
+    // A loose cluster (sunflower layout), so a dozen dice still read as one handful.
+    const offs = kinds.map((_, i) => new THREE.Vector3(Math.cos(i * 2.4), 0, Math.sin(i * 2.4)).multiplyScalar(0.62 * Math.sqrt(i)).setY((i % 3) * 0.25));
+    const axes = kinds.map(() => new THREE.Vector3(spread(1), spread(1), spread(1)).normalize());
+    this.held = { meshes, axes, offs, at: at.clone(), to: at.clone() };
+  }
+  moveHold(at: THREE.Vector3): void { this.held?.to.copy(at); }
+  /** Exact pose of each held die, so the throw starts where the hand let go. */
+  holdStarts(): Start[] {
+    return (this.held?.meshes ?? []).map((m) => ({ p: m.position.toArray(), q: m.quaternion.toArray() as Start['q'] }));
+  }
+  endHold(): void {
+    for (const m of this.held?.meshes ?? []) this.scene.remove(m);
+    this.held = null;
+  }
 
   /** Play a throw; resolves when the dice have come to rest. Each player has one set of dice on the table. */
   play(t: Throw, color: string, owner: string): Promise<void> {
@@ -366,13 +435,22 @@ export class DiceView {
         this.scene.add(m);
         return m;
       });
-      this.playing.push({ owner, t: 0, n: t.n, meshes, ...d, done, settled: false });
+      this.playing.push({ owner, t: 0, n: t.n, kinds: t.k, meshes, ...d, done, settled: false });
     });
   }
 
   /** Advance animations. Returns true while something on screen is changing. */
   update(dt: number): boolean {
     let busy = false;
+    const h = this.held;
+    if (h) {
+      h.at.lerp(h.to, 1 - Math.exp(-dt * 18));
+      h.meshes.forEach((m, i) => {
+        m.position.copy(h.at).add(h.offs[i]);
+        m.rotateOnWorldAxis(h.axes[i], dt * 7);
+      });
+      busy = true;
+    }
     for (let i = this.playing.length - 1; i >= 0; i--) {
       const p = this.playing[i];
       const end = (p.n - 1) / FPS;
@@ -380,17 +458,29 @@ export class DiceView {
       p.t += dt;
       if (was < end) {
         const f = Math.min(p.t * FPS, p.n - 1), a = Math.floor(f), b = Math.min(a + 1, p.n - 1);
-        p.meshes.forEach((m, k) => {
-          m.position.lerpVectors(p.pos[k][a], p.pos[k][b], f - a);
-          m.quaternion.slerpQuaternions(p.rot[k][a], p.rot[k][b], f - a);
+        p.kinds.forEach((_, k) => {
+          p.meshes[k].position.lerpVectors(p.pos[k][a], p.pos[k][b], f - a);
+          p.meshes[k].quaternion.slerpQuaternions(p.rot[k][a], p.rot[k][b], f - a);
         });
         busy = true;
       }
-      if (!p.settled && p.t >= end) { p.settled = true; p.done(); }
+      if (!p.settled && p.t >= end) {
+        p.settled = true;
+        // Float each die's number above it, so the roll reads at a glance from any angle.
+        const labels = p.kinds.map((k, j) => reading(k, p.rot[j][p.n - 1]));
+        faceTexts(p.kinds, labels).forEach((text, j) => {
+          const s = numberSprite(text);
+          s.position.copy(p.pos[j][p.n - 1]).y += 0.85;
+          this.scene.add(s);
+          p.meshes.push(s);
+        });
+        p.done();
+        busy = true;
+      }
       const fade = p.t - end - LINGER;
       if (fade > 0) {
         const s = Math.max(0, 1 - fade / 0.3);
-        for (const m of p.meshes) m.scale.setScalar(s);
+        p.meshes.forEach((m, k) => m.scale.setScalar(s * (k < p.kinds.length ? 1 : 0.62)));
         busy = true;
         if (s === 0) {
           for (const m of p.meshes) this.scene.remove(m);

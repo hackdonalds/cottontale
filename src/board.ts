@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS } from './catalog';
-import { DiceView } from './dice';
+import { DiceView, type Kind, type Start } from './dice';
 import type { Store } from './store';
 
 export type Tool = 'move' | 'build' | 'erase' | 'mini' | 'ping';
@@ -16,6 +16,10 @@ export interface BoardHooks {
   onPing(p: Vec): void;
   /** Template for a mini about to be placed at a cell. */
   newMini(): Omit<MiniVal, 'x' | 'y' | 'z'>;
+  /** The player touched the table with dice in hand. */
+  onGrab(): void;
+  /** The dice left the hand at these poses with this velocity (units/s). */
+  onThrow(starts: Start[], vel: Vec): void;
 }
 
 const LIMIT = 96;
@@ -92,6 +96,8 @@ interface Gesture {
   id: number; x: number; y: number; button: number;
   touch: boolean; moved: boolean;
   mini: string | null;
+  /** Holding dice: recent hand positions, to measure the fling. */
+  throwing: { t: number; p: THREE.Vector3 }[] | null;
   /** Touch editing: what the first contact pointed at, and the flat layer a drag paints on. */
   first: Vec | null;
   stroke: { level: number; plane: number } | null;
@@ -129,6 +135,9 @@ export class Board {
   rot = 0;
   selected: string | null = null;
   readonly dice: DiceView;
+  /** Dice picked up and waiting to be thrown: while set, a drag on the table throws them. */
+  hand: Kind[] = [];
+  diceColor = '#ffffff';
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -464,10 +473,20 @@ export class Board {
     }
     const g: Gesture = {
       id: e.pointerId, x: e.clientX, y: e.clientY, button: e.button,
-      touch: e.pointerType !== 'mouse', moved: false, mini: null, first: null, stroke: null,
+      touch: e.pointerType !== 'mouse', moved: false, mini: null, throwing: null, first: null, stroke: null,
     };
     this.gesture = g;
     if (e.button !== 0) return;
+    if (this.hand.length) {
+      // Dice in hand: this finger holds them over the table until it lets go.
+      g.throwing = [];
+      this.controls.enabled = false;
+      this.canvas.setPointerCapture(e.pointerId);
+      this.hooks.onGrab();
+      const at = this.holdPoint(e, g);
+      if (at) this.dice.hold(this.hand, this.diceColor, at);
+      return;
+    }
     this.aim(e);
     if (this.tool === 'move') {
       const id = this.pickMini();
@@ -509,6 +528,11 @@ export class Board {
       return;
     }
     if (!g.moved && Math.hypot(e.clientX - g.x, e.clientY - g.y) > (g.touch ? 12 : 6)) g.moved = true;
+    if (g.throwing) {
+      const at = this.holdPoint(e, g);
+      if (at) this.dice.moveHold(at);
+      return;
+    }
     if (g.mini) {
       if (!g.moved) return;
       this.aim(e, g.touch ? TOUCH_LIFT : 0);
@@ -595,6 +619,18 @@ export class Board {
     const g = this.gesture;
     if (!g || g.id !== e.pointerId) return;
     this.gesture = null;
+    if (g.throwing) {
+      this.controls.enabled = true;
+      this.holdPoint(e, g);
+      // The fling is how far the hand travelled over the last ~120 ms.
+      const s = g.throwing, last = s[s.length - 1];
+      const from = s.find((x) => last.t - x.t <= 120) ?? last;
+      const dt = Math.max((last?.t - from?.t) / 1000, 0.03);
+      const vel: Vec = last && from !== last ? [(last.p.x - from.p.x) / dt, 0, (last.p.z - from.p.z) / dt] : [0, 0, 0];
+      const starts = this.dice.holdStarts();
+      if (starts.length) this.hooks.onThrow(starts, vel);
+      return;
+    }
     if (g.mini) {
       this.controls.enabled = true;
       const m = this.minis.get(g.mini);
@@ -657,6 +693,18 @@ export class Board {
     this.hideGhost();
     const m = g?.mini ? this.minis.get(g.mini) : null;
     if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
+    if (g?.throwing) this.dice.endHold(); // back in the hand
+  }
+
+  /** Where held dice hover for this pointer: above the surface under it (and above the fingertip). */
+  private holdPoint(e: PointerEvent, g: Gesture): THREE.Vector3 | null {
+    this.aim(e, g.touch ? TOUCH_LIFT : 0);
+    const p = this.pickSurface()?.point ?? this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, 0), new THREE.Vector3());
+    if (!p || p.distanceTo(this.camera.position) > 120) return null;
+    const at = p.clone().setY(Math.max(0, p.y) + 1.5);
+    g.throwing!.push({ t: performance.now(), p: at });
+    if (g.throwing!.length > 24) g.throwing!.shift();
+    return at;
   }
 
   // ---- frame ---------------------------------------------------------------------

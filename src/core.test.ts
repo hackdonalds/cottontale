@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { kindsFor, reading, results, shape, simulate, values, type Kind } from './dice';
+import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, seal, unseal } from './net';
 import { Store, type Row } from './store';
 
@@ -81,8 +81,9 @@ describe('dice', () => {
   });
 
   it('maps labels to values, including percentile dice', () => {
-    expect(values(10, [0, 7])).toEqual([10, 7]);
-    expect(values(100, [0, 0, 4, 2, 0, 5])).toEqual([100, 42, 5]);
+    expect(rollValues(['d10', 'd10'], [0, 7])).toEqual([10, 7]);
+    expect(rollValues(kindsFor(3, 100)!, [0, 0, 4, 2, 0, 5])).toEqual([100, 42, 5]);
+    expect(rollValues(['d6', 'd100', 'd10', 'd10'], [3, 9, 0, 0])).toEqual([3, 90, 10]); // mixed hands
     expect(kindsFor(2, 100)).toEqual(['d100', 'd10', 'd100', 'd10']);
     expect(kindsFor(1, 7)).toBeNull();
     expect(kindsFor(13, 6)).toBeNull();
@@ -92,7 +93,9 @@ describe('dice', () => {
     const store = new Store('a');
     for (let x = -2; x < 2; x++) for (let z = -2; z < 2; z++) store.set(`b:${x},0,${z}`, { i: 'grass' });
     const kinds = kindsFor(3, 6)!.concat(kindsFor(1, 20)!, kindsFor(1, 4)!, kindsFor(1, 100)!);
-    const t = await simulate(kinds, [0, 1, 0], [6, 8, 9], store);
+    const starts = kinds.map((_, i) => ({ p: [-2 + i * 0.6, 2.5, 3] as [number, number, number], q: [0, 0, 0, 1] as [number, number, number, number] }));
+    const t = await simulate(kinds, starts, [2, 0, -9], [0, 1, 0], store);
+    expect(t.q[0].slice(0, 3)).toEqual([-200, 150, 300]); // starts exactly where the hand let go
     expect(t.n).toBeGreaterThan(20);
     expect(t.n).toBeLessThan(190); // came to rest before the time limit
     const labels = results(t)!;

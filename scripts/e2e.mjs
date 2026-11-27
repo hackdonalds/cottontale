@@ -63,7 +63,17 @@ await b.waitForFunction((x) => [...window.__ct.store.entries.values()].some((e) 
 assert(true, 'mini placed, dragged, and the move reached the peer');
 
 // Dice + chat.
+// Dice: pick up, hold over the table, fling.
+const fling = async (page) => {
+  await page.mouse.move(560, 300);
+  await page.mouse.down();
+  await page.waitForFunction(() => window.__ct.board.dice.held);
+  for (let i = 1; i <= 6; i++) { await page.mouse.move(560 + i * 14, 300 + i * 10); await page.waitForTimeout(16); }
+  await page.mouse.up();
+};
 await a.click('#dice [data-d="20"]');
+assert(await a.evaluate(() => window.__ct.board.dice.playing.length === 0 && /1d20 in hand/.test(document.querySelector('#hand').textContent)), 'tapping a die puts it in your hand, not on the table');
+await fling(a);
 await a.fill('#chatIn', 'hello table');
 await a.press('#chatIn', 'Enter');
 await b.waitForFunction(() => window.__ct.board.dice.playing.length === 1);
@@ -71,14 +81,20 @@ assert(true, 'thrown dice appear on the peer\'s table');
 const rolled = (page) => page.waitForFunction(() => /rolled 1d20: (\d+)/.exec(document.querySelector('#msgs').textContent)?.[1]).then((h) => h.jsonValue());
 const [ra, rb] = await Promise.all([rolled(a), rolled(b)]);
 assert(ra === rb && +ra >= 1 && +ra <= 20, `physics roll lands on the same result for both players (${ra})`);
-await a.click('#diceN');
 await a.click('#dice [data-d="100"]');
+await a.click('#dice [data-d="100"]');
+await a.click('#dice [data-d="8"]');
+await fling(a);
+await a.waitForFunction(() => /rolled 2d100\+1d8: /.test(document.querySelector('#msgs').textContent));
 await a.fill('#chatIn', '/r 4d6+2');
 await a.press('#chatIn', 'Enter');
-await a.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /rolled 2d100/.test(document.querySelector('#msgs').textContent));
-await b.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /Ada: hello table/.test(document.querySelector('#msgs').textContent));
+await fling(a);
+await a.fill('#chatIn', '/r 3d7');
+await a.press('#chatIn', 'Enter');
+await a.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /rolled 3d7/.test(document.querySelector('#msgs').textContent));
+await b.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /rolled 2d100\+1d8/.test(document.querySelector('#msgs').textContent) && /Ada: hello table/.test(document.querySelector('#msgs').textContent));
 await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/dice-desktop.png` });
-assert(true, 'multi-dice, percentile and chat delivered');
+assert(true, 'mixed hands, percentile, /r and chat delivered');
 
 // A big edit, then a late joiner must receive everything from relay snapshots.
 await a.click('#menuBtn');
@@ -179,18 +195,29 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const sheet = await p.evaluate(() => { const r = document.querySelector('#log').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; });
   assert(sheet && !bad.length, `dice & chat sheet opens on screen ${bad.join('; ')}`);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sheet.png` });
-  await p.tap('#diceN');
-  await p.tap('#diceN');
-  await p.tap('#dice [data-d="6"]');
-  await p.waitForFunction(() => window.__ct.board.dice.playing.length === 1 && document.querySelector('#log').classList.contains('closed'));
-  await p.waitForTimeout(700);
+  for (let i = 0; i < 3; i++) await p.tap('#dice [data-d="6"]');
+  assert(await p.evaluate(() => document.querySelector('#logToggle').dataset.n === '3'), 'hand of three dice is shown on the dice button');
+  // Second finger while holding: dice go back to the hand, nothing is thrown.
+  await touch('touchStart', [[cx, cy - 80]]);
+  await touch('touchStart', [[cx, cy - 80], [cx + 80, cy - 80]]);
+  await touch('touchEnd', []);
+  await settle();
+  assert(await p.evaluate(() => !window.__ct.board.dice.held && window.__ct.board.dice.playing.length === 0 && window.__ct.board.hand.length === 3), 'a second finger cancels the hold without throwing');
+  // Hold with one finger (the sheet gets out of the way), flick, release.
+  await touch('touchStart', [[cx - 40, cy - 60]]);
+  await p.waitForFunction(() => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice-held.png` });
+  for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 40 + i * 10, cy - 60 - i * 6]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', []);
+  await p.waitForFunction(() => window.__ct.board.dice.playing.length === 1 && !window.__ct.board.dice.held);
+  await p.waitForTimeout(500);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice-air.png` });
   await p.waitForFunction(() => /rolled 3d6/.test(document.querySelector('#msgs').textContent));
   const onScreen = await p.evaluate(() => {
     const { board } = window.__ct;
-    return board.dice.playing[0].meshes.every((m) => { const v = m.position.clone().project(board.camera); return Math.abs(v.x) < 1 && Math.abs(v.y) < 1; });
+    return board.dice.playing[0].meshes.slice(0, 3).every((m) => { const v = m.position.clone().project(board.camera); return Math.abs(v.x) < 1 && Math.abs(v.y) < 1; });
   });
-  assert(onScreen, 'throw clears the sheet and the dice come to rest in view');
+  assert(onScreen && (await cells()).length === 1, 'flung dice come to rest in view, and the throw edits nothing');
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
   await p.context().close();
 }

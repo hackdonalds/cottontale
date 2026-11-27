@@ -30,11 +30,13 @@ opens dice and chat. Add it to your home screen to run it full-screen like an ap
 **Desktop:** left-drag orbits, right-drag pans, wheel zooms. Keys: `1`–`5`
 tools, `R` rotate, `Ctrl+Z` undo, `Del` remove mini, `Enter` chat.
 
-**Dice are real:** pick how many (`1×`) and tap a die, and they are thrown onto
-the table where you are looking, bouncing off the terrain. Everyone watches the
-same tumble, and the faces that end up on top are the result. Chat understands
-`/r 2d6+3`. The ☰ menu has a starter meadow, export/import,
-and clear.
+**Dice are real:** tap dice in the 🎲 sheet to pick them up (any mix, up to 12),
+then touch the table — they hover and tumble under your finger — and let go to
+throw. A flick flings them; they bounce off the terrain, everyone watches the
+same tumble, and the faces that end up on top are the result. `/r 2d6+1d20+3`
+in chat puts those dice in your hand.
+
+The ☰ menu has a starter meadow, export/import, and clear.
 
 `npm run build` produces a static site in `dist/` that can be hosted anywhere
 with HTTPS (the browser's crypto API requires it).

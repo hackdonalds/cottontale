@@ -78,7 +78,11 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 #msgs b { font-weight: 650; }
 #msgs .tot { font-weight: 800; color: var(--acc); }
 #dice { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-#dice button { padding: 0; }
+#dice button { padding: 0; position: relative; }
+/* How many of each die are in your hand. */
+#dice button[data-n]::after, #logToggle[data-n]::after { content: attr(data-n); position: absolute; top: -5px; right: -3px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--acc); color: #201a05; font: 700 12px/20px system-ui, sans-serif; }
+#hand { font-size: 13px; opacity: .8; min-height: 18px; }
+#hand.full { color: var(--acc); opacity: 1; }
 
 #toast { position: absolute; left: 50%; top: 20%; transform: translateX(-50%); width: max-content; max-width: 90%; pointer-events: none !important; text-align: center; font-size: 20px; font-weight: 700; text-shadow: 0 2px 12px #000; opacity: 0; transition: opacity .4s; }
 #toast.show { opacity: 1; transition: none; }

@@ -1,7 +1,7 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { Board, type MiniVal, type Tool, type Vec } from './board';
 import { BLOCKS, MINIS, PLAYER_COLORS, PROPS } from './catalog';
-import { kindsFor, results, simulate, values } from './dice';
+import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, unhex, type Msg } from './net';
 import { Store, type Row } from './store';
 
@@ -102,6 +102,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     onLiveMove: (id, p) => void net.send({ y: 'mv', id, p }),
     onPing: (p) => { board.ping(p, myColor); void net.send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
+    onGrab: () => { if (phoneSheet()) closeSheet(); },
+    onThrow: (starts, vel) => void throwHand(starts, vel),
   });
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -133,8 +135,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('hud').hidden = false;
   stayAwake();
   $('help').innerHTML = coarse
-    ? 'One finger: look around — or, with 🧱 ⛏️, tap to edit and drag to paint.<br />Two fingers: pan, pinch to zoom, twist to turn.'
-    : 'Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z undo · Del remove';
+    ? 'One finger: look around — or, with 🧱 ⛏️, tap to edit and drag to paint.<br />Two fingers: pan, pinch to zoom, twist to turn.<br />🎲 Pick dice up, then drag on the table and let go to throw.'
+    : 'Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z undo · Del remove<br />Dice: pick them up, drag on the table, let go to throw';
   say(`<span class="sys">Welcome, ${esc(name)}! Share the invite link to bring others to the table.</span>`);
 
   function handle(msg: Msg, from: string): void {
@@ -144,9 +146,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       case 'roll': {
         // With a recorded throw, watch the dice land first; what they show is the result.
         const labels = msg.t ? results(msg.t) : null;
-        const sides = +(/d(\d+)/.exec(String(msg.d))?.[1] ?? 0);
         if (!msg.t || !labels) { showRoll(who, msg, false); break; }
-        const shown = { ...msg, r: values(sides, labels) };
+        const shown = { ...msg, r: rollValues(msg.t.k, labels) };
         void board.dice.play(msg.t, net.colorOf(from), from).then(() => showRoll(who, shown, false));
         break;
       }
@@ -187,35 +188,89 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
   }
 
-  async function roll(n: number, sides: number, mod = 0): Promise<void> {
-    n = Math.min(Math.max(n, 1), 20);
-    const d = `${n}d${sides}${mod ? (mod > 0 ? '+' : '') + mod : ''}`;
-    const me = `<b style="color:${myColor}">${esc(name)}</b>`;
-    const kinds = kindsFor(n, sides);
-    if (!kinds) { // odd dice (d7...) or too many to throw: just draw numbers
-      const r = [...crypto.getRandomValues(new Uint32Array(n))].map((x) => (x % sides) + 1);
-      showRoll(me, { d, r, mod }, true);
-      void net.send({ y: 'roll', d, r, mod });
-      return;
+  // Dice work like at a real table: pick some up, hold them over the board, let go.
+  const meTag = `<b style="color:${myColor}">${esc(name)}</b>`;
+  const hand = new Map<number, number>(); // sides → how many
+  let handMod = 0;
+  const handKinds = (): Kind[] => [...hand].flatMap(([sides, n]) => kindsFor(n, sides) ?? []);
+  const handText = () => [...hand].map(([sides, n]) => `${n}d${sides}`).join('+') + (handMod ? (handMod > 0 ? '+' : '') + handMod : '');
+  const phoneSheet = () => getComputedStyle($('logToggle')).display !== 'none';
+
+  function renderHand(): void {
+    const kinds = handKinds();
+    board.hand = kinds;
+    board.diceColor = myColor;
+    for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) {
+      const n = hand.get(+b.dataset.d!);
+      if (n) b.dataset.n = String(n); else delete b.dataset.n;
     }
-    // Real dice: simulate the throw, share the recording, and let everyone watch it land.
-    const { target, cam, tray } = board.throwSpot();
-    const t = await simulate(kinds, target, cam, store, tray);
-    const r = values(sides, results(t)!);
+    const total = [...hand.values()].reduce((a, b) => a + b, 0);
+    if (total) $('logToggle').dataset.n = String(total); else delete $('logToggle').dataset.n;
+    $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw` : 'Tap dice to pick them up';
+    $('hand').classList.toggle('full', total > 0);
+    $<HTMLCanvasElement>('c').style.cursor = total ? 'grabbing' : '';
+    if (total) void import('cannon-es'); // warm up the physics engine before the throw
+  }
+  function pickUp(sides: number, n = 1): boolean {
+    const next = new Map(hand).set(sides, (hand.get(sides) ?? 0) + n);
+    const kinds = [...next].map(([s, c]) => kindsFor(c, s));
+    if (kinds.some((k) => !k) || kinds.flat().length > MAX_DICE) return false;
+    hand.set(sides, next.get(sides)!);
+    return true;
+  }
+  function emptyHand(): void {
+    hand.clear();
+    handMod = 0;
+    renderHand();
+  }
+
+  async function throwHand(starts: Start[], vel: Vec): Promise<void> {
+    const kinds = handKinds(), d = handText(), mod = handMod;
+    emptyHand();
+    const { target, tray } = board.throwSpot();
+    // Simulate the throw, share the recording, and let everyone watch it land.
+    const t = await simulate(kinds, starts, vel, target, store, tray);
+    board.dice.endHold();
+    const r = rollValues(kinds, results(t)!);
     void net.send({ y: 'roll', d, r, mod, t });
     navigator.vibrate?.(12);
-    if (!$('logToggle').hidden && getComputedStyle($('logToggle')).display !== 'none') closeSheet(); // phones: get the sheet out of the way
     await board.dice.play(t, myColor, me);
-    showRoll(me, { d, r, mod }, true);
+    showRoll(meTag, { d, r, mod }, true);
   }
   function closeSheet(): void {
     $('log').classList.add('closed');
     $('logToggle').classList.remove('on');
   }
 
-  let diceN = 1;
-  $('diceN').onclick = () => { diceN = (diceN % 6) + 1; $('diceN').textContent = `${diceN}×`; };
-  for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => void roll(diceN, +b.dataset.d!);
+  for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => { pickUp(+b.dataset.d!); renderHand(); };
+  $('diceClear').onclick = emptyHand;
+
+  /** `/r 2d6+1d20+3`: standard dice go into the hand; anything else (d7, 30 dice) is just rolled as numbers. */
+  function rollCommand(expr: string): boolean {
+    const dice: [number, number][] = [];
+    let mod = 0;
+    for (const term of expr.replace(/\s/g, '').match(/[+-]?[^+-]+/g) ?? []) {
+      const d = /^\+?(\d*)d(\d+)$/i.exec(term);
+      if (d && +d[2] >= 2 && +d[2] <= 1000) dice.push([Math.min(Math.max(+(d[1] || 1), 1), 20), +d[2]]);
+      else if (/^[+-]\d+$/.test(term)) mod += +term;
+      else return false;
+    }
+    if (!dice.length) return false;
+    hand.clear();
+    if (dice.every(([n, sides]) => pickUp(sides, n))) {
+      handMod = mod;
+      renderHand();
+      if (phoneSheet()) closeSheet();
+      say('<span class="sys">Dice in hand — drag on the table and let go to throw.</span>');
+      return true;
+    }
+    emptyHand();
+    const r = dice.flatMap(([n, sides]) => [...crypto.getRandomValues(new Uint32Array(n))].map((x) => (x % sides) + 1));
+    const d = dice.map(([n, sides]) => `${n}d${sides}`).join('+') + (mod ? (mod > 0 ? '+' : '') + mod : '');
+    showRoll(meTag, { d, r, mod }, true);
+    void net.send({ y: 'roll', d, r, mod });
+    return true;
+  }
 
   $<HTMLFormElement>('chat').onsubmit = (e) => {
     e.preventDefault();
@@ -223,9 +278,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const text = input.value.trim();
     input.value = '';
     if (!text) return;
-    const r = /^\/r(?:oll)?\s+(\d*)d(\d+)\s*([+-]\s*\d+)?$/i.exec(text);
-    if (r && +r[2] >= 2 && +r[2] <= 1000) return void roll(+(r[1] || 1), +r[2], r[3] ? +r[3].replace(/\s/g, '') : 0);
-    say(`<b style="color:${myColor}">${esc(name)}</b>: ${esc(text)}`);
+    const r = /^\/r(?:oll)?\s+(.+)$/i.exec(text);
+    if (r && rollCommand(r[1])) return;
+    say(`${meTag}: ${esc(text)}`);
     void net.send({ y: 'chat', m: text });
   };
   $('logToggle').onclick = () => {
@@ -383,4 +438,5 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   });
 
   setTool('move');
+  renderHand();
 }
