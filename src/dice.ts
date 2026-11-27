@@ -177,6 +177,28 @@ export interface Solid { p: V3; h: V3; round?: boolean }
 /** Where a held die is when it leaves the hand. */
 export interface Start { p: V3; q: [number, number, number, number] }
 
+/**
+ * The solid blocks within `edge` columns of a spot, as [x, y, z, height]: stacked blocks
+ * become one tall box, so there are fewer seams to snag on. Stacks come bottom to top.
+ */
+export function stacks(store: Store, cx: number, cz: number, edge: number): [x: number, y: number, z: number, h: number][] {
+  const solid = (x: number, y: number, z: number) => {
+    const v = store.get<{ i: string }>(`b:${x},${y},${z}`);
+    return !!v && !!BLOCKS[v.i];
+  };
+  const out: [number, number, number, number][] = [];
+  for (let x = cx - edge; x <= cx + edge; x++) for (let z = cz - edge; z <= cz + edge; z++) {
+    for (let y = 0; y < 40; y++) {
+      if (!solid(x, y, z)) continue;
+      let top = y;
+      while (solid(x, top + 1, z)) top++;
+      out.push([x, y, z, top - y + 1]);
+      y = top;
+    }
+  }
+  return out;
+}
+
 // ---- simulation (thrower only) ------------------------------------------------------
 
 const rnd = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
@@ -207,22 +229,10 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
   fixed(new C.Plane(), o[0] + TRAY, 0, o[2], 0, -Math.PI / 2);
   fixed(new C.Plane(), o[0], 0, o[2] - TRAY, 0, 0);
   fixed(new C.Plane(), o[0], 0, o[2] + TRAY, 0, Math.PI);
-  const solid = (x: number, y: number, z: number) => {
-    const v = store.get<{ i: string }>(`b:${x},${y},${z}`);
-    return !!v && !!BLOCKS[v.i];
-  };
   const tops = new Map<string, number>();
-  const cx = Math.floor(o[0]), cz = Math.floor(o[2]);
-  for (let x = cx - EDGE; x <= cx + EDGE; x++) for (let z = cz - EDGE; z <= cz + EDGE; z++) {
-    for (let y = 0; y < 40; y++) {
-      if (!solid(x, y, z)) continue;
-      let top = y;
-      while (solid(x, top + 1, z)) top++; // stacked blocks become one tall box: fewer seams to snag on
-      const h = top - y + 1;
-      fixed(new C.Box(new C.Vec3(0.5, h / 2, 0.5)), x + 0.5, y + h / 2, z + 0.5);
-      tops.set(`${x},${z}`, top + 1);
-      y = top;
-    }
+  for (const [x, y, z, h] of stacks(store, Math.floor(o[0]), Math.floor(o[2]), EDGE)) {
+    fixed(new C.Box(new C.Vec3(0.5, h / 2, 0.5)), x + 0.5, y + h / 2, z + 0.5);
+    tops.set(`${x},${z}`, y + h);
   }
 
   // Let go: every die leaves with the hand's velocity plus a little of its own. A

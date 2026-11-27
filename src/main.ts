@@ -1,4 +1,5 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { BOULDER_REACH, boulderHits, simulateBoulder } from './boulder';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
 import { loadKit, type Season } from './kit';
@@ -148,6 +149,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     },
     onGrab: () => { if (phoneSheet()) closeSheet(); },
     onThrow: (starts, vel) => void throwHand(starts, vel),
+    onBoulder: (start, vel) => void rollBoulder(start, vel),
   });
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -176,6 +178,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   });
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
+  board.boulder.onRumble = (level) => sound.rumble(level);
+  board.boulder.onThud = (strength) => sound.thud(strength);
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
@@ -217,6 +221,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         void board.dice.play(msg.t, net.colorOf(from), from).then(() => showRoll(who, shown, false));
         break;
       }
+      // Only a GM's boulder rolls (on a table without one, anybody's).
+      case 'boulder': if (!elsewhere && fullPowers(store, pid(from))) board.boulder.play(msg.t); break;
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
     }
@@ -277,6 +283,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('hand').classList.toggle('full', total > 0);
     $<HTMLCanvasElement>('c').style.cursor = total ? 'grabbing' : '';
     if (total) void import('cannon-es'); // warm up the physics engine before the throw
+    if (total) armBoulder(false); // dice in hand: the boulder is put back
   }
   function pickUp(sides: number, n = 1): boolean {
     const next = new Map(hand).set(sides, (hand.get(sides) ?? 0) + n);
@@ -303,6 +310,46 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     navigator.vibrate?.(12);
     await board.dice.play(t, myColor, me);
     showRoll(meTag, { d, r, mod }, true);
+  }
+
+  // The boulder trap, the GM's: tap Boulder, press on the table where it starts, flick the way it should roll.
+  function armBoulder(on: boolean): void {
+    board.boulderArmed = on && full();
+    $('boulder').classList.toggle('on', board.boulderArmed);
+    if (board.boulderArmed) void import('cannon-es'); // warm up the physics engine before the roll
+    else board.boulder.endHold();
+  }
+  $('boulder').onclick = () => {
+    emptyHand();
+    armBoulder(!board.boulderArmed);
+    if (!board.boulderArmed) return;
+    if (phoneSheet()) closeSheet();
+    say('<span class="sys">Boulder ready — press on the table where it starts and flick (or drag) the way it should roll.</span>');
+  };
+  async function rollBoulder(start: Vec, vel: Vec): Promise<void> {
+    if (!full()) return armBoulder(false);
+    if (Math.hypot(vel[0], vel[2]) < 1.5) { // no flick, no roll: it stays ready
+      board.boulder.endHold();
+      return say('<span class="sys">Flick or drag the way the boulder should roll.</span>');
+    }
+    board.boulderArmed = false; // one boulder a go; it stays in the hand until the roll is worked out
+    const at = here;
+    // Simulate the roll, share the recording, and let everyone watch it go.
+    const t = await simulateBoulder(start, vel, store, board.solidsNear(start, BOULDER_REACH, false));
+    armBoulder(false);
+    if (at !== here) return;
+    void send({ y: 'boulder', t });
+    navigator.vibrate?.(20);
+    // The figures in its way go down as it reaches them: ordinary edits, one undo step, made here only.
+    const hits = boulderHits(t, store);
+    let step: ReturnType<typeof board.commit> | undefined;
+    board.boulder.play(t, (f) => {
+      while (hits.length && hits[0].f <= f) {
+        const h = hits.shift()!, v = store.get<MiniVal>(`m:${h.id}`);
+        // Moved or removed since the boulder set off: it got out of the way.
+        if (v && v.x === h.from[0] && v.y === h.from[1] && v.z === h.from[2]) step = board.commit([[`m:${h.id}`, { ...v, x: h.to[0], y: h.to[1], z: h.to[2], d: true }]], step);
+      }
+    });
   }
   function closeSheet(): void { openSheet(null); }
 
@@ -614,6 +661,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     cutAuto = true;
     setCut(Infinity);
     emptyHand();
+    armBoulder(false);
   }
   function renderBoards(active: string): void {
     const f = full(), list = $('boardList');

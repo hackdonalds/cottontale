@@ -10,6 +10,7 @@
 //     split in chunks, so late joiners and returning players get the full map.
 import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
 import type { Ruler } from './board';
+import type { Roll } from './boulder';
 import type { Throw } from './dice';
 import type { Row, Store } from './store';
 
@@ -24,6 +25,7 @@ type Body =
   | { y: 'bye' }
   | { y: 'chat'; m: string; to?: string }
   | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw; s?: boolean }
+  | { y: 'boulder'; t: Roll }
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }
