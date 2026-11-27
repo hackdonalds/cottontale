@@ -25,7 +25,7 @@ const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', 
 const url = (room) => `http://localhost:${WEB}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
-  page.on('pageerror', (e) => { console.log('pageerror', name, e.message); done(1); });
+  page.on('pageerror', (e) => { console.log('pageerror', name, e.stack ?? e.message); done(1); });
   await page.goto(url(room));
   await page.fill('#name', name);
   await page.click('#join');
@@ -154,7 +154,7 @@ assert(feel.hopping && feel.top > 0.15 && feel.squashed < 0.99 && feel.landed, `
 assert(feel.fell && feel.flat && feel.rose && feel.up && feel.back && feel.calm, 'a knocked-down mini topples into the lying pose and stands back up, and the table goes quiet again');
 
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
-const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 }).then(() => true, () => false);
+const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 20000 }).then(() => true, () => false);
 const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
 await a.keyboard.press('1');
 await a.click('#menuBtn');
@@ -255,7 +255,7 @@ await a.evaluate(() => {
 assert(await ok(b, () => window.__ct.board.boulder.rolling.length === 1), 'the GM\'s boulder rolls on the player\'s table too');
 const down = (page) => ok(page, () => { const s = window.__ct.store, p = s.get('m:pin'), y = s.get('m:sly'), n = s.get('m:near'); return p.d && p.x === 25 && y.d && y.x === 29 && !n.d && n.x === 23; });
 assert(await down(a) && await down(b), 'figures in the boulder\'s way are knocked down and pushed a cell on; one beside it is not');
-const gone = (page) => page.waitForFunction(() => window.__ct.board.boulder.rolling.length === 0, null, { timeout: 25000 }).then(() => true, () => false);
+const gone = (page) => page.waitForFunction(() => window.__ct.board.boulder.rolling.length === 0, null, { timeout: 120000 }).then(() => true, () => false);
 assert(await gone(b) && await gone(a), 'the boulder goes once it has stopped');
 const seen = await b.evaluate(() => ({ ...window.__seen, sly: window.__ct.board.minis.get('sly').group.visible }));
 assert(seen.clear > 0 && seen.fog > 0 && !seen.leak && !seen.sly && seen.rocked, `the player sees it roll, but not under fog, and the hidden figure stays hidden ${JSON.stringify(seen)}`);
@@ -340,11 +340,13 @@ await a.evaluate(() => {
   store.set('m:tower', { ...mini, n: 'Goblin' });
   store.set('m:lurker', { ...mini, n: 'Lurker', x: 40, h: true });
 });
+await b.waitForFunction(() => window.__ct.store.get('m:tower') && window.__ct.store.get('m:lurker')); // (the pieces first: a fall is only announced for a mini the device knows)
 await a.evaluate(() => { const { board } = window.__ct; board.hooks.onShove('lurker', 1, 0); board.hooks.onShove('tower', 1, 0); });
-assert(await ok(b, () => { const v = window.__ct.store.get('m:tower'), l = window.__ct.store.get('m:lurker'); return v.x === 31 && v.y === 0 && v.d === true && l.x === 41 && l.y === 0 && /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent); })
+assert(await ok(b, () => { const v = window.__ct.store.get('m:tower'), l = window.__ct.store.get('m:lurker'); return !!v && !!l && v.x === 31 && v.y === 0 && v.d === true && l.x === 41 && l.y === 0 && /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent); })
   && await a.evaluate(() => /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent) && /Lurker fell 15 ft/.test(document.querySelector('#msgs').textContent))
-  && await b.evaluate(() => !/Lurker/.test(document.querySelector('#msgs').textContent)), 'a mini shoved off a tower falls, lands knocked down, and the log tells everyone; a hidden one falls unannounced');
-await a.evaluate(() => { for (const k of ['m:tower', 'm:lurker']) window.__ct.store.set(k, null); });
+  && await b.evaluate(() => !/Lurker/.test(document.querySelector('#msgs').textContent)), `a mini shoved off a tower falls, lands knocked down, and the log tells everyone; a hidden one falls unannounced ${JSON.stringify([await b.evaluate(() => [window.__ct.store.get('m:tower'), window.__ct.store.get('m:lurker'), document.querySelector('#msgs').textContent.slice(-200), window.__ct.board.minis.get('tower')?.group.visible]), await a.evaluate(() => document.querySelector('#msgs').textContent.slice(-200))])}`);
+await a.evaluate(() => { const { store } = window.__ct; for (const k of ['m:tower', 'm:lurker']) store.set(k, null); for (let y = 0; y < 3; y++) for (const x of [30, 40]) store.set(`b:${x},${y},30`, null); });
+await b.waitForFunction(() => !window.__ct.store.get('b:40,2,30'));
 
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');

@@ -2517,12 +2517,13 @@ export class Board {
     if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting || this.pouring))) { this.hideGhost(); return; }
     this.gesture = g; // so edit() knows whether to give haptic feedback
     switch (this.tool) {
-      case 'move':
-        if (this.shoving) { this.pointShove(); break; }
-        this.select(g.tapMini);
-        this.offer(g.tapMini ? null : this.breakTarget()); // a tap on a wall or a thing offers to break it
       case 'move': {
-        if (!this.aimed) { this.select(g.tapMini); break; }
+        if (this.shoving) { this.pointShove(); break; }
+        if (!this.aimed) {
+          this.select(g.tapMini);
+          this.offer(g.tapMini ? null : this.breakTarget()); // a tap on a wall or a thing offers to break it
+          break;
+        }
         const at = g.tapMini ? null : this.pickSurface()?.point;
         const target: string | Vec | null = g.tapMini ?? (at ? [Math.round(at.x * 2) / 2, Math.round(at.y * 2) / 2, Math.round(at.z * 2) / 2] : null);
         if (target) this.aimed(target);
