@@ -113,26 +113,33 @@ const eye = (v: MiniVal): [number, number, number] => [v.x + 0.5, v.y + (v.e ?? 
 const SIGHT = 60;
 
 function clear(store: Store, a: [number, number, number], b: [number, number, number]): boolean {
+  return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) <= SIGHT && openTo(store, a, b) === 1;
+}
+
+/**
+ * How far the straight line from `a` to `b` runs before something solid stands in it (a block,
+ * or a wall that is not a window or a doorway), as a share of the way: 1 when it is open.
+ */
+export function openTo(store: Store, a: [number, number, number], b: [number, number, number]): number {
   const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
   const len = Math.hypot(d[0], d[1], d[2]);
-  if (len > SIGHT) return false;
   const steps = Math.ceil(len / 0.2);
   let px = Math.floor(a[0]), pz = Math.floor(a[2]);
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const x = Math.floor(a[0] + d[0] * t), y = Math.floor(a[1] + d[1] * t), z = Math.floor(a[2] + d[2] * t);
-    if (i < steps && opaque(store, x, y, z)) return false;
+    if (i < steps && opaque(store, x, y, z)) return (i - 1) / steps;
     if (x !== px || z !== pz) {
       // Stepping into another cell: a wall on the edge crossed stops the eye. Across a corner,
       // either way round it must be open.
       if (x !== px && z !== pz) {
-        if ((walled(store, y, px, pz, x, pz) || walled(store, y, x, pz, x, z)) && (walled(store, y, px, pz, px, z) || walled(store, y, px, z, x, z))) return false;
-      } else if (walled(store, y, px, pz, x, z)) return false;
+        if ((walled(store, y, px, pz, x, pz) || walled(store, y, x, pz, x, z)) && (walled(store, y, px, pz, px, z) || walled(store, y, px, z, x, z))) return (i - 1) / steps;
+      } else if (walled(store, y, px, pz, x, z)) return (i - 1) / steps;
       px = x;
       pz = z;
     }
   }
-  return true;
+  return 1;
 }
 
 /** Line of sight between two minis: from the looker's eyes to the other's head or feet. */

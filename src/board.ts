@@ -5,6 +5,7 @@ import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
+import { SHOTS, ShotsView, shotPath, type Shot } from './shots';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
@@ -336,6 +337,9 @@ export class Board {
   fogHide = true;
   selected: string | null = null;
   readonly dice: DiceView;
+  readonly shots: ShotsView;
+  /** Set while a shot is being aimed: the next tap in play names its target (a mini, or a spot in half cells) instead of selecting. */
+  aimed: ((target: string | Vec) => void) | null = null;
   /** Dice picked up and waiting to be thrown: while set, a drag on the table throws them. */
   hand: Kind[] = [];
   diceColor = '#ffffff';
@@ -537,6 +541,7 @@ export class Board {
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
     this.dice = new DiceView(this.scene);
     this.dice.onBump = (at, dv) => this.bump(at, dv);
+    this.shots = new ShotsView(this.scene);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
     onKitPack(() => {
       for (const [key, g] of this.props) {
@@ -704,6 +709,7 @@ export class Board {
     this.rulers.clear();
     this.pings.length = this.anims.length = 0;
     this.wobbles.clear();
+    this.shots.clear();
     this.undoStack.length = this.redoStack.length = 0;
     this.fogDirty = this.visDirty = true;
     this.touched();
@@ -1210,6 +1216,24 @@ export class Board {
     return this.wobbles.size > 0;
   }
 
+  /**
+   * Fly a shot from a mini to another mini or a spot, and rock the mini it lands on. Only between
+   * minis this player is shown: a hidden one neither shoots, nor is shot at, nor flinches. False if not drawn.
+   */
+  shoot(shot: Shot): boolean {
+    if (this.visDirty) this.refreshMinis();
+    const seen = (id: string) => { const m = this.minis.get(id); return m?.group.visible ? m.val : null; };
+    const from = seen(shot.a), at = shot.b, to = typeof at === 'string' ? seen(at) : at;
+    if (!from || !to || !SHOTS[shot.k]) return false;
+    const path = shotPath(this.store, from, to);
+    this.shots.fire(shot.k, path.a, path.b, (vx, vz) => {
+      const push = SHOTS[shot.k].push;
+      if (path.hit && typeof at === 'string' && seen(at) && !seen(at)!.d) this.kick(at, vx * push, vz * push);
+    });
+    this.invalidate();
+    return true;
+  }
+
   /** Another player is dragging a mini: show it moving before they drop it. */
   liveMove(id: string, p: Vec): void {
     const m = this.minis.get(id);
@@ -1707,7 +1731,7 @@ export class Board {
     switch (this.tool) {
       case 'move': {
         const id = this.pickMini();
-        if (id && this.hooks.canMove(id)) {
+        if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
           g.mini = id;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
@@ -1990,9 +2014,13 @@ export class Board {
     if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting))) { this.hideGhost(); return; }
     this.gesture = g; // so edit() knows whether to give haptic feedback
     switch (this.tool) {
-      case 'move':
-        this.select(g.tapMini);
+      case 'move': {
+        if (!this.aimed) { this.select(g.tapMini); break; }
+        const at = g.tapMini ? null : this.pickSurface()?.point;
+        const target: string | Vec | null = g.tapMini ?? (at ? [Math.round(at.x * 2) / 2, Math.round(at.y * 2) / 2, Math.round(at.z * 2) / 2] : null);
+        if (target) this.aimed(target);
         break;
+      }
       case 'build': {
         if (this.pasting) {
           const at = this.pickSurface()?.place;
@@ -2126,6 +2154,7 @@ export class Board {
       changed = true;
     }
     let busy = moving || changed || this.dirty;
+    if (this.shots.update(dt)) busy = true; // in the air, they cast no shadow: the table itself is unchanged
     for (let i = this.pings.length - 1; i >= 0; i--) {
       const p = this.pings[i];
       p.t += dt;

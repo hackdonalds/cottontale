@@ -8,6 +8,7 @@ import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } 
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
+import { SHOTS, readShot } from './shots';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
 
@@ -176,6 +177,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   });
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
+  board.shots.onSound = (kind, hit) => sound.shot(kind, hit);
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
@@ -193,6 +195,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       case 'emote':
         if (!elsewhere && typeof msg.id === 'string') { board.emote(msg.id, String(msg.e)); sound.emote(String(msg.e)); }
         break;
+      case 'shot': {
+        const shot = elsewhere ? null : readShot(store, msg, pid(from));
+        if (shot) board.shoot(shot);
+        break;
+      }
       case 'chat':
         if (msg.to && msg.to !== meId) break; // a whisper for someone else
         say(`${who}${msg.to ? ' <span class="sys">whispers</span>' : ''}: ${esc(String(msg.m).slice(0, 300))}`);
@@ -574,6 +581,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     void send({ y: 'emote', id: board.selected, e: kind });
   }
 
+  /** Pick what to shoot: the next tap on a mini or on the table is the target. Shown to everyone, changes nothing. */
+  function aim(kind: string): void {
+    const a = board.selected;
+    if (!a) return;
+    board.aimed = (b) => {
+      board.aimed = null;
+      renderRing(); // back to the picker, ready for the next one
+      if (b === a) return; // tapping the shooter calls it off
+      board.shoot({ k: kind, a, b });
+      void send({ y: 'shot', k: kind, a, b });
+    };
+    renderRing();
+  }
+
   // Slabs travel as text, so they can be sent over any chat app.
   const SLAB_TAG = 'cottontale-slab:';
   async function shareSlab(): Promise<void> {
@@ -806,13 +827,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const FLY = [0, 1, 2, 3, 5, 8];
 
   // What you do to a piece in play sits in a ring around it; the full editor only opens on request.
-  let ringMode: 'main' | 'emote' | 'hp' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
+  let ringMode: 'main' | 'emote' | 'hp' | 'shot' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
   function renderRing(): void {
     const el = $('ring'), v = sel();
     el.innerHTML = '';
     el.hidden = !v || board.tool !== 'move';
+    const mine = !!v && canControl(store, meId, v);
+    if (!v || el.hidden || !mine) board.aimed = null; // nothing selected to shoot with any more
     if (!v || el.hidden) return;
-    const mine = canControl(store, meId, v);
     const button = (title: string, inner: string, click: () => void, on = false) => {
       const b = document.createElement('button');
       b.title = title;
@@ -830,14 +852,28 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         button('Emote', '👋', to('emote')),
         button('Hit points', `<span style="color:#ff6b7a;display:grid">${ico('heart')}</span>`, to('hp')),
         more,
+        button('Shoot', '🏹', to('shot')),
       ] : [more];
-      // Two to each side of the piece: its name and hit points float above it and must stay readable.
-      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25];
+      // Two to each side of the piece and one below: its name and hit points float above it and must stay readable.
+      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25, 90];
       items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
     } else {
       const pop = document.createElement('div');
       pop.className = 'pop';
-      if (ringMode === 'emote') {
+      if (board.aimed) {
+        pop.style.gridTemplateColumns = 'auto 46px';
+        const hint = document.createElement('b');
+        hint.textContent = 'Tap a target';
+        hint.style.cssText = 'padding:0 8px;white-space:nowrap';
+        pop.append(hint, button('Cancel', ico('x'), () => { board.aimed = null; renderRing(); }));
+        el.append(pop);
+        placeRing();
+        return;
+      }
+      if (ringMode === 'shot') {
+        pop.style.gridTemplateColumns = 'repeat(3, 46px)';
+        for (const [kind, k] of Object.entries(SHOTS)) pop.append(button(k.name, k.icon, () => aim(kind)));
+      } else if (ringMode === 'emote') {
         pop.style.gridTemplateColumns = 'repeat(5, 46px)';
         for (const [kind, icon] of Object.entries(EMOTES)) pop.append(button(kind, icon, () => emote(kind)));
         pop.append(button(v.d ? 'Stand up' : 'Knock down', '💀', () => patch({ d: !v.d }), !!v.d));
@@ -875,7 +911,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
 
   function showMiniPanel(id: string | null): void {
-    if (id !== ringFor) { ringFor = id; ringMode = 'main'; moreOpen = false; } // another piece: start from the ring
+    if (id !== ringFor) { ringFor = id; ringMode = 'main'; moreOpen = false; board.aimed = null; } // another piece: start from the ring
     const wasOpen = !$('minipanel').hidden;
     $('minipanel').hidden = !id || !moreOpen;
     renderRing();

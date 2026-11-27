@@ -202,6 +202,27 @@ export class Sound {
   ping(): void {
     if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
   }
+  /** Something let fly (a whoosh, a twang, a hum), or landing (`hit`: a thud, a crackle, a chime). */
+  shot(kind: string, hit: boolean): void {
+    if (!this.ready()) return;
+    const m = this.master!;
+    if (kind === 'fire') {
+      this.burst(m, hit ? 500 : 900, hit ? 0.4 : 0.22, hit ? 0.35 : 0.3, 'lowpass');
+      if (hit) this.note(m, 'sine', 110, 0.3, 0.25, 0.004, 45);
+    } else if (kind === 'missile') {
+      if (hit) [988, 1319].forEach((f) => this.note(m, 'triangle', f, 0.1, 0.3));
+      else this.note(m, 'sine', 420, 0.1, 0.4, 0.05, 1260);
+    } else if (kind === 'frost') {
+      if (hit) { this.burst(m, 5200, 0.2, 0.12); this.note(m, 'sine', 2100, 0.08, 0.3, 0.004, 1500); }
+      else this.note(m, 'sine', 1900, 0.07, 0.25, 0.02, 950);
+    } else if (hit) { // arrows and rocks: a knock, lower the heavier it is
+      this.note(m, 'sine', kind === 'rock' ? 120 : 190, kind === 'rock' ? 0.45 : 0.3, 0.14, 0.004, 48);
+      this.burst(m, kind === 'rock' ? 500 : 1500, 0.2, 0.06, 'bandpass');
+    } else {
+      this.burst(m, kind === 'rock' ? 500 : 1700, 0.14, kind === 'rock' ? 0.3 : 0.16, 'bandpass');
+      if (kind === 'arrow') this.note(m, 'triangle', 240, 0.12, 0.09, 0.003, 150); // the string
+    }
+  }
   /** A little sting for an emote. */
   emote(kind: string): void {
     if (!this.ready()) return;
