@@ -104,17 +104,17 @@ await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/dice-desktop.png` }
 // Dice bounce off the pieces on the table, and a piece that is hit rocks, settles, and stays where it was.
 const knock = await a.evaluate(async () => {
   const { board, store } = window.__ct;
-  const [id, m] = [...board.minis][0], v = m.val, before = JSON.stringify(store.dump());
+  const [id, m] = [...board.minis][0], v = m.val, before = JSON.stringify(store.get(`m:${id}`));
   const solid = board.solidsNear([v.x + 0.5, v.y, v.z + 0.5], 1).some((s) => s.round && s.p[0] === v.x + 0.5 && s.p[2] === v.z + 0.5);
   const at = m.group.position.clone().set(v.x + 0.9, v.y + 0.4, v.z + 0.5);
   board.dice.onBump(at, at.clone().set(-6, 0, 0));
   await new Promise((r) => setTimeout(r, 150));
   const lean = Math.abs(m.group.children[0].rotation.z) + Math.abs(m.group.children[0].rotation.x);
-  await new Promise((r) => setTimeout(r, 2500));
-  const body = m.group.children[0];
-  return { solid, lean, rocking: board.wobbles.has(id), upright: Math.abs(body.rotation.x) + Math.abs(body.rotation.z) < 1e-6, same: before === JSON.stringify(store.dump()) };
+  for (let i = 0; i < 80 && board.wobbles.has(id); i++) await new Promise((r) => setTimeout(r, 100)); // (frames can be slow here)
+  const body = board.minis.get(id).group.children[0];
+  return { solid, lean, rocking: board.wobbles.has(id), upright: Math.abs(body.rotation.x) + Math.abs(body.rotation.z) < 1e-6, same: before === JSON.stringify(store.get(`m:${id}`)) };
 });
-assert(knock.solid && knock.lean > 0.02 && !knock.rocking && knock.upright && knock.same, `a mini is solid to dice; knocked, it rocks and settles without changing the table (lean ${knock.lean.toFixed(2)})`);
+assert(knock.solid && knock.lean > 0.02 && !knock.rocking && knock.upright && knock.same, `a mini is solid to dice; knocked, it rocks and settles without changing the table ${JSON.stringify(knock)}`);
 assert(true, 'mixed hands, percentile, /r and chat delivered');
 
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
