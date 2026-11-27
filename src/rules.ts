@@ -10,7 +10,16 @@ import { BLOCKS } from './catalog';
 import { GROUND } from './terrain';
 import type { Store } from './store';
 
-export interface CellVal { i: string; r?: number }
+/** `l`: for something that sheds light, how strongly (absent = as modelled, 0 = unlit). */
+export interface CellVal { i: string; r?: number; l?: number }
+/** The strengths a light can be set to, in the order a tap steps through them. */
+export const LIGHT_LEVELS: [level: number, name: string][] = [[1, 'normal'], [2, 'bright'], [0.5, 'dim'], [0, 'out']];
+export function nextLight(v: CellVal): CellVal {
+  const i = LIGHT_LEVELS.findIndex(([l]) => l === (v.l ?? 1));
+  const [level] = LIGHT_LEVELS[(i + 1) % LIGHT_LEVELS.length];
+  const { l: _, ...rest } = v;
+  return level === 1 ? rest : { ...rest, l: level };
+}
 export interface MiniVal {
   x: number; y: number; z: number;
   k: string; c: string; n: string; r: number; s: number;

@@ -6,7 +6,7 @@ import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
 import { THEMES, generate, type GenOpts, type Theme } from './gen';
-import { EDGES, edgeBetween as between } from './rules';
+import { EDGES, edgeBetween as between, nextLight } from './rules';
 import { Store, type Row } from './store';
 
 describe('Store', () => {
@@ -199,6 +199,16 @@ describe('table rules', () => {
     for (let i = 0; i < 4; i++) { const t = nextTurn(s)!; s.set('turn', t); seq.push(`${t.id}${t.round}`); }
     expect(seq).toEqual(['b1', 'a1', 'b2', 'a2']);
     expect(measure([0.5, 0, 0.5], [3.5, 0, 4.5])).toEqual({ cells: 5, feet: 25 });
+  });
+});
+
+describe('lights', () => {
+  it('steps a light through its strengths and back, keeping what else it is', () => {
+    let v: { i: string; r?: number; l?: number } = { i: 'torch', r: 2 };
+    const seen = [];
+    for (let i = 0; i < 4; i++) { v = nextLight(v); seen.push(v.l ?? 1); expect(v.i).toBe('torch'); expect(v.r).toBe(2); }
+    expect(seen).toEqual([2, 0.5, 0, 1]);
+    expect(v).toEqual({ i: 'torch', r: 2 }); // back to normal leaves no trace
   });
 });
 

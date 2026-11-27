@@ -5,6 +5,7 @@ import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Kind, type Start } from './dice';
+import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { Look } from './look';
@@ -37,6 +38,8 @@ export interface BoardHooks {
   onRuler(r: Ruler | null): void;
   /** An area was copied with the copy brush. */
   onSlab(slab: Slab): void;
+  /** A light was stepped to another strength with the light brush. */
+  onLight(name: string): void;
 }
 
 const LIMIT = 96;
@@ -327,7 +330,7 @@ export class Board {
   private zoomGoal: number | null = null;
   private shadowDirty = true;
   /** Ground cover (tufts, flowers, pebbles): not stored anywhere, grown from the lie of the land. */
-  private cover: { tuft: Swarm[]; flower: Swarm[]; pebble: Swarm[] } | null = null;
+  private cover: { tuft: Swarm[]; flower: Swarm[]; pebble: Swarm[]; sward: Swarm[] } | null = null;
   private coverDirty = true;
   private season: Season = 'summer';
   /** Natural ground, drawn as one smooth surface instead of cubes (see terrain.ts). */
@@ -654,8 +657,10 @@ export class Board {
   private relight(): boolean {
     const at = this.litAt.copy(this.controls.target), near: { d: number; p: THREE.Vector3; glow: (typeof GLOWS)[string] }[] = [];
     for (const [key, g] of this.props) {
-      const glow = GLOWS[this.store.get<CellVal>(key)?.i ?? ''];
-      if (glow && g.visible) near.push({ d: g.position.distanceToSquared(at), p: g.position, glow });
+      const v = this.store.get<CellVal>(key), kind = GLOWS[v?.i ?? ''];
+      if (!kind || !g.visible || v!.l === 0) continue; // not a light, out of sight, or put out
+      const glow: (typeof GLOWS)[string] = [kind[0], kind[1] * (v!.l ?? 1), kind[2]];
+      near.push({ d: g.position.distanceToSquared(at), p: g.position, glow });
     }
     near.sort((a, b) => a.d - b.d);
     let moved = false;
@@ -666,6 +671,7 @@ export class Board {
       if (!n) return;
       const y = n.p.y + n.glow[2];
       if (lamp.position.x !== n.p.x || lamp.position.y !== y || lamp.position.z !== n.p.z) moved = true;
+      lamp.distance = 7.5 * Math.sqrt(Math.max(0.5, n.glow[1] / GLOWS.torch[1])); // a brighter light reaches further
       lamp.color.set(n.glow[0]);
       lamp.position.set(n.p.x, y, n.p.z);
     });
@@ -812,19 +818,23 @@ export class Board {
       if (!kit.get('g_tuft')) return;
       const mat = withDetail(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
       const swarms = (id: string) => (kit.get(id) ?? []).map((g) => new Swarm(g, mat, this.scene, false));
-      this.cover = { tuft: swarms('g_tuft'), flower: swarms('g_flower'), pebble: swarms('g_pebble') };
+      this.cover = { tuft: swarms('g_tuft'), flower: swarms('g_flower'), pebble: swarms('g_pebble'), sward: swarms('g_sward') };
     }
     const cover = this.cover;
-    const lots = new Map<Swarm, THREE.Matrix4[]>();
+    const lots = new Map<Swarm, [THREE.Matrix4, THREE.Color][]>();
+    const plain = new THREE.Color('#ffffff');
+    let shade = plain; // grass takes on the colour of the ground it grows from
     const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
     let salt = 0;
-    const grow = (kind: 'tuft' | 'flower' | 'pebble', x: number, y: number, z: number, px: number, pz: number, pick?: number, scale = 1) => {
+    const grow = (kind: 'tuft' | 'flower' | 'pebble' | 'sward', x: number, y: number, z: number, px: number, pz: number, pick?: number, scale = 1) => {
+      if (!cover[kind].length) return; // an older kit without this kind of growth
       const family = cover[kind], i = salt++;
       const swarm = family[pick ?? Math.floor(rand(x, y, z, 40 + i) * family.length)];
       const size = (0.8 + rand(x, y, z, 50 + i) * 0.7) * scale;
       const m = new THREE.Matrix4().compose(new THREE.Vector3(px, y + 1, pz), q.setFromAxisAngle(up, rand(x, y, z, 80 + i) * Math.PI * 2), new THREE.Vector3(size, size, size));
       if (!lots.has(swarm)) lots.set(swarm, []);
-      lots.get(swarm)!.push(m);
+      const grass = kind === 'tuft' || kind === 'sward';
+      lots.get(swarm)!.push([m, grass ? shade.clone().multiplyScalar(0.84 + rand(x, y, z, 90 + i) * 0.26) : plain]);
     };
     for (const [key, top] of this.columns) {
       if (GROUND[top.id]?.kind !== 3) continue; // only growing ground
@@ -833,6 +843,7 @@ export class Board {
       const reach = this.terrain?.sloped.has(key) ? 0.5 : 0.84;
       const on = this.what(x, y + 1, z);
       salt = 0;
+      shade = new THREE.Color(GROUND[top.id].color).multiplyScalar(1.5).lerp(plain, 0.45);
       if (on) {
         if (WILD[on]) { // a fringe around the foot of a trunk or boulder
           const n = 3 + Math.floor(rand(x, y, z, 21) * 4), r0 = on === 'rock' ? 0.36 : 0.2;
@@ -858,7 +869,12 @@ export class Board {
         if (this.what(x + dx, y + 1, z + dz)) crowded = true;
       }
       const thick = field(x, z, 5, 1), drift = field(x, z, 7, 2);
-      const n = Math.floor(rand(x, y, z, 20) * (paved ? 2.4 : 0.9 + thick * 5.5));
+      // The lawn itself: patches of short grass, thinner where feet have worn it and on phones.
+      if (!paved) {
+        const swards = Math.round((this.coarse ? 1.4 : 4.4) * (0.35 + thick) * (crowded ? 0.7 : 1));
+        for (let i = 0; i < swards; i++) grow('sward', x, y, z, x + 0.5 + (rand(x, y, z, 110 + i) - 0.5) * reach, z + 0.5 + (rand(x, y, z, 120 + i) - 0.5) * reach, undefined, 1.1);
+      }
+      const n = Math.floor(rand(x, y, z, 20) * (paved ? 2.4 : 1.4 + thick * 6.5));
       for (let i = 0; i < n; i++) {
         const r = rand(x, y, z, 30 + i);
         const kind = paved ? (r < 0.6 ? 'pebble' : 'tuft') : !crowded && drift > 0.62 && r < 0.5 ? 'flower' : r > 0.93 ? 'pebble' : 'tuft';
@@ -867,11 +883,10 @@ export class Board {
           kind === 'flower' ? Math.floor(field(x, z, 11, 3) * cover.flower.length * 0.999) : undefined);
       }
     }
-    const white = new THREE.Color('#ffffff');
     for (const swarm of Object.values(cover).flat()) {
       const list = lots.get(swarm) ?? [];
       swarm.begin(list.length);
-      for (const m of list) swarm.add(m, white);
+      for (const [m, c] of list) swarm.add(m, c);
       swarm.end();
     }
   }
@@ -1142,6 +1157,15 @@ export class Board {
   /** The brush is a wall piece: it goes on the edge of a cell, not in it. */
   private get edging(): boolean { return this.tool === 'build' && !!EDGES[this.brush]; }
   private get rooming(): boolean { return this.tool === 'build' && this.brush === 'room'; }
+  /** The brush that steps a torch, fire or crystal through its strengths. */
+  private get lighting(): boolean { return this.tool === 'build' && this.brush === 'light'; }
+  private stepLight(): void {
+    const p = this.pickProp(), v = p && this.store.get<CellVal>(p.key);
+    if (!p || !v || !GLOWS[v.i]) return;
+    const next = nextLight(v);
+    this.edit(p.key, next);
+    this.hooks.onLight(LIGHT_LEVELS.find(([l]) => l === (next.l ?? 1))![1]);
+  }
   /** The brush shapes or dresses the land rather than placing a piece. */
   private get shaping(): boolean {
     return this.tool === 'build' && (LAND.has(this.brush) || (this.surface && !!BLOCKS[this.brush]));
@@ -1266,7 +1290,7 @@ export class Board {
       const [x, z] = r === 1 ? [s.d - 1 - dz, dx] : r === 2 ? [s.w - 1 - dx, s.d - 1 - dz] : r === 3 ? [dz, s.w - 1 - dx] : [dx, dz];
       const c: Vec = [p[0] + x, p[1] + dy, p[2] + z];
       if (Math.abs(c[0]) >= LIMIT || Math.abs(c[2]) >= LIMIT || c[1] >= MAX_Y) continue;
-      this.edit(ck(...c), PROPS[v.i] ? { i: v.i, ...(((v.r ?? 0) + 4 - r) % 4 ? { r: ((v.r ?? 0) + 4 - r) % 4 } : {}) } : v);
+      this.edit(ck(...c), PROPS[v.i] ? { i: v.i, ...(((v.r ?? 0) + 4 - r) % 4 ? { r: ((v.r ?? 0) + 4 - r) % 4 } : {}), ...(v.l !== undefined ? { l: v.l } : {}) } : v);
     }
     this.batch = null;
   }
@@ -1544,7 +1568,7 @@ export class Board {
         this.updateGhost();
         if (this.pasting) break;
         if (this.edging) { g.edge = this.pickEdge(); break; }
-        if (this.shaping) break;
+        if (this.shaping || this.lighting) break;
         if (this.erasing) { const t = this.eraseTarget(); g.first = t && !t.startsWith('w:') ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
@@ -1667,7 +1691,7 @@ export class Board {
 
   private updateGhost(): void {
     this.hideGhost();
-    if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying || this.rooming) return;
+    if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying || this.rooming || this.lighting) return;
     if (this.edging) {
       const e = this.pickEdge();
       if (e) this.edgeGhost(e, '#ffffff');
@@ -1792,6 +1816,7 @@ export class Board {
           this.batch = null;
           break;
         }
+        if (this.lighting) { this.stepLight(); break; }
         if (this.erasing) {
           const t = this.eraseTarget();
           if (t) this.edit(t, null);

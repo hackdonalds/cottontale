@@ -312,7 +312,7 @@ class Piece:
                     k = 1 - ao * (hit / tot if tot else 0)
                     cache[key] = k
                 if l.vert[head_layer]:
-                    k = 1 - (1 - k) * 0.3  # leaves shade as a mass (see below), so only a hint of occlusion
+                    k = 1 - (1 - k) * getattr(self, 'leaf_ao', 0.3)  # leaves shade as a mass (see below), so only a hint of occlusion
                 c = l[self.col]
                 r = relief[l.vert.index]
                 edge, crease = min(1.0, max(0.0, -r * 2.4)), min(1.0, max(0.0, r * 2.4))

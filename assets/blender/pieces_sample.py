@@ -5,6 +5,7 @@
 # look stamped, so most pieces are a family grown from a seed; the app picks a
 # member by where the piece stands.
 import math
+import os
 
 from mathutils import Euler, Vector
 
@@ -416,6 +417,30 @@ def canopy(p, pads, lo, hi, tris=105, thick=0.44, tex='leaf'):
     """
     r = p.rng
     z0, z1 = min(c.z for c, _ in pads) - 0.16, max(c.z for c, _ in pads) + 0.2
+    style = os.environ.get('CANOPY', 'A')
+    if style != 'A':
+        # Clumped foliage: each shelf is a cluster of many small masses, so its surface is knobbly
+        # with leaf rather than smooth, and the hollows between the clumps hold shadow.
+        p.leaf_ao = 0.8
+        for c, w in pads:
+            w *= 1.12
+            lobes = [(c, w * 0.52, w * thick * 0.9)]
+            for _ in range(r.randint(9, 13)):
+                a, d = r.uniform(0, math.tau), w * 0.74 * math.sqrt(r.random())
+                at = c + Vector((math.cos(a) * d, math.sin(a) * d, r.uniform(-0.05, 0.09) * w / 0.34))
+                size = w * r.uniform(0.2, 0.34)
+                lobes.append((at, size, size * r.uniform(0.75, 1.0)))
+            p.fused(lobes, tris=int(tris * 2.4 * max(0.5, min(1.4, w / 0.34))), voxel=max(0.02, w * 0.065), rough=w * 0.05, col=(r.uniform(0.93, 1.05),), smooth=True,
+                    tex=tex, head=1, ramp=(lo, hi, z0, z1))
+            if style == 'C':  # sprigs of leaf breaking the outline
+                for _ in range(r.randint(10, 14)):
+                    a = r.uniform(0, math.tau)
+                    out = Vector((math.cos(a), math.sin(a), r.uniform(-0.15, 0.5))).normalized()
+                    at = c + Vector((out.x * w * 0.78, out.y * w * 0.78, out.z * w * thick * 0.8))
+                    t = max(0.0, min(1.0, (at.z - z0) / (z1 - z0)))
+                    p.leaf(at, out + Vector((0, 0, r.uniform(-0.2, 0.3))), Vector((-out.y, out.x, 0)), w * r.uniform(0.2, 0.3), w * r.uniform(0.1, 0.15),
+                           mix(lo, hi, t), out, head=1, tex=tex)
+        return
     for c, w in pads:
         w *= 1.1
         lobes = [(c, w * 0.7, w * thick)]
@@ -586,9 +611,19 @@ def p_rock(p):
 @piece(5, ground=False)
 def g_tuft(p):
     r = p.rng
-    for _ in range(r.randint(3, 7)):
-        p.cyl(r.uniform(0.016, 0.026), r.uniform(0.06, 0.17), (r.uniform(-0.06, 0.06), r.uniform(-0.06, 0.06), -0.005), p.vary(mix(hexcol('#7fae4c'), hexcol('#b4d368'), r.random()), 0.08),
-              seg=3, r2=0, bevel=0, grad=0.4, smooth=False, rot=(r.uniform(-0.45, 0.45), r.uniform(-0.45, 0.45), r.uniform(0, 3)))
+    for _ in range(r.randint(6, 11)):
+        p.cyl(r.uniform(0.014, 0.024), r.uniform(0.07, 0.2), (r.uniform(-0.08, 0.08), r.uniform(-0.08, 0.08), -0.005), p.vary(mix(hexcol('#6f9c46'), hexcol('#a9c862'), r.random()), 0.08),
+              seg=3, r2=0, bevel=0, grad=0.55, smooth=False, rot=(r.uniform(-0.5, 0.5), r.uniform(-0.5, 0.5), r.uniform(0, 3)))
+
+
+@piece(4, ground=False)
+def g_sward(p):
+    """A patch of short grass: what makes a lawn a lawn rather than a green sheet with tufts on it."""
+    r = p.rng
+    for _ in range(r.randint(15, 21)):
+        a, d = r.uniform(0, math.tau), 0.24 * math.sqrt(r.random())
+        p.cyl(r.uniform(0.012, 0.02), r.uniform(0.035, 0.1), (math.cos(a) * d, math.sin(a) * d, -0.004), p.vary(mix(hexcol('#62903f'), hexcol('#93b955'), r.random()), 0.07),
+              seg=3, r2=0, bevel=0, grad=0.6, smooth=False, rot=(r.uniform(-0.55, 0.55), r.uniform(-0.55, 0.55), r.uniform(0, 3)))
 
 
 @piece(4, ground=False)

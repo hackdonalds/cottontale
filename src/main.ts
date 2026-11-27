@@ -138,6 +138,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
     },
     onRuler: (r) => void send({ y: 'ruler', r }),
+    onLight: (name) => say(`<span class="sys">Light: ${name}.</span>`),
     onSlab: (slab) => {
       board.brush = 'paste';
       board.setTool('build');
@@ -399,7 +400,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const fits: Record<Cat, (id: string) => boolean> = {
       land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
       walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
-      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase',
+      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light',
       figures: () => true,
       scenes: (id) => id === 'copy' || id === 'paste',
     };
@@ -509,6 +510,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
           if (name !== 'Structures') chip(name, thingShelf === name, () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
         turn();
+        chip('Light', board.brush === 'light', brush('light'), svg('sun'), 'Tap a torch, fire or crystal to step its light: normal, bright, dim, out');
         eraser();
         props(PROP_SHELVES[thingShelf]);
       } else if (cat === 'figures') {
