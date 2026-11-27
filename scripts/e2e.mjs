@@ -50,7 +50,7 @@ const ys = await b.evaluate(() => [...window.__ct.store.keys('b:')].map((k) => +
 assert(ys.join() === '0,1', `blocks placed by click and stacked, synced to peer (y=${ys})`);
 
 // Place a mini and drag it.
-await a.keyboard.press('4');
+await a.keyboard.press('3');
 await a.mouse.click(500, 500);
 await b.waitForFunction(() => [...window.__ct.store.keys('m:')].length === 1);
 const before = await b.evaluate(() => Object.values(Object.fromEntries(window.__ct.store.entries)).find((e) => e.v?.k).v);
@@ -95,6 +95,75 @@ await a.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs
 await b.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /rolled 2d100\+1d8/.test(document.querySelector('#msgs').textContent) && /Ada: hello table/.test(document.querySelector('#msgs').textContent));
 await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/dice-desktop.png` });
 assert(true, 'mixed hands, percentile, /r and chat delivered');
+
+// ---- GM tools: one player runs the table, the other only sees and moves what they should ----
+const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 }).then(() => true, () => false);
+const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
+await a.keyboard.press('1');
+await a.click('#menuBtn');
+await a.click('[data-act="gm"]');
+assert(await ok(b, (id) => document.body.classList.contains('player') && getComputedStyle(document.querySelector('[data-tool="build"]')).display === 'none'
+  && !window.__ct.board.hooks.canMove(id) && /🎩/.test(document.querySelector('#players').textContent), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
+
+await a.evaluate((id) => window.__ct.board.select(id), id);
+await a.selectOption('#miniOwner', { label: '🎮 Bo' });
+assert(await ok(b, (id) => window.__ct.board.hooks.canMove(id), id), 'GM hands a mini to a player, who can then move it');
+
+await a.fill('#mhp', '20');
+await a.press('#mhp', 'Tab');
+await a.click('#hpDown');
+assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return v.mhp === 20 && v.hp === 19; }, id), 'hit points sync');
+
+await a.click('#miniHide');
+assert(await ok(b, (id) => window.__ct.board.minis.get(id).group.visible === false, id)
+  && await a.evaluate((id) => window.__ct.board.minis.get(id).group.visible, id), 'a hidden mini disappears for players but not for the GM');
+await a.click('#miniHide');
+assert(await ok(b, (id) => window.__ct.board.minis.get(id).group.visible === true, id), 'and comes back when revealed');
+
+await a.fill('#ini', '15');
+await a.press('#ini', 'Tab');
+await a.click('#nextTurn');
+assert(await ok(b, () => !document.querySelector('#init').hidden && document.querySelectorAll('#order button.on').length === 1
+  && /Round 1/.test(document.querySelector('#round').textContent) && !document.querySelector('#nextTurn').hidden), 'turn order shows for everyone; the player whose turn it is can end it');
+await a.click('#endFight');
+assert(await ok(b, () => document.querySelector('#init').hidden), 'ending the fight clears the turn order');
+
+const drawn = (page) => page.evaluate(() => [...window.__ct.board.layers.values()].reduce((n, l) => n + l.mesh.count, 0));
+await a.keyboard.press('5');
+await a.mouse.move(top[0] - 40, top[1]);
+await a.mouse.down();
+await a.mouse.move(top[0] + 40, top[1], { steps: 8 });
+await a.mouse.up();
+assert(await ok(b, () => [...window.__ct.store.keys('f:')].length > 0 && [...window.__ct.board.layers.values()].every((l) => l.mesh.count === 0))
+  && (await drawn(a)) === 2, 'fog painted by the GM hides the terrain under it from players only');
+await a.click('#palette [title="Reveal everything"]');
+assert(await ok(b, () => [...window.__ct.board.layers.values()].reduce((n, l) => n + l.mesh.count, 0) === 2), 'revealing brings it back');
+
+await a.keyboard.press('4');
+await a.mouse.move(300, 520);
+await a.mouse.down();
+await a.mouse.move(460, 600, { steps: 6 });
+await a.mouse.up();
+assert(await ok(b, () => window.__ct.board.rulers.size === 1), 'a ruler is visible to the other player while it is out');
+await a.mouse.click(300, 520);
+assert(await ok(b, () => window.__ct.board.rulers.size === 0), 'a tap puts the ruler away for everyone');
+
+await a.click('#floorDown');
+const draws = (n) => ok(a, (n) => [...window.__ct.board.layers.values()].reduce((c, l) => c + l.mesh.count, 0) === n, n);
+assert(await draws(1) && (await drawn(b)) === 2, 'cutaway hides the upper floor, for that player only');
+await a.click('#floorUp');
+assert(await draws(2), 'and shows it again');
+
+await a.keyboard.press('1');
+await a.click('#secret');
+await a.click('#dice [data-d="6"]');
+await fling(a);
+assert(await ok(b, () => /Ada rolled in secret/.test(document.querySelector('#msgs').textContent) && window.__ct.board.dice.playing.some((p) => p.blank))
+  && await ok(a, () => /rolled 1d6: \d/.test(document.querySelector('#msgs').textContent)), 'a secret GM roll shows players blank dice and no result');
+
+await a.click('#menuBtn');
+await a.click('[data-act="gm"]');
+assert(await ok(b, () => !document.body.classList.contains('player')), 'when the GM steps down the table is free play again');
 
 // A big edit, then a late joiner must receive everything from relay snapshots.
 await a.click('#menuBtn');
@@ -168,7 +237,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
-    const boxes = ['#top', '#tools', '#palette', '#minipanel'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
+    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
       .map((e) => ({ id: e.id, r: e.getBoundingClientRect() }));
     const bad = [];
     for (const a of boxes) {
@@ -189,6 +258,21 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   bad = await layout();
   assert(!bad.length, `palette layout clean ${bad.join('; ')}`);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-build.png` });
+
+  // Measure with one finger; press and hold to ping.
+  await p.tap('[data-tool="ruler"]');
+  await touch('touchStart', [[cx - 90, cy - 70]]);
+  for (let i = 1; i <= 6; i++) await touch('touchMove', [[cx - 90 + i * 20, cy - 70 + i * 4]]);
+  await touch('touchEnd', []);
+  bad = await layout();
+  assert(await p.evaluate(() => window.__ct.board.rulers.has('me')) && (await cells()).length === 1 && !bad.length, `one-finger drag measures (and edits nothing) ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-ruler.png` });
+  await p.tap('[data-tool="move"]');
+  await touch('touchStart', [[cx + 60, cy - 110]]);
+  await p.waitForTimeout(750);
+  await touch('touchEnd', []);
+  const pg = await p.evaluate(() => ({ pings: window.__ct.board.pings.length, rulers: window.__ct.board.rulers.size, sel: window.__ct.board.selected, tool: window.__ct.board.tool }));
+  assert(pg.pings === 1 && !pg.rulers, `press and hold pings; leaving the ruler tool puts the ruler away ${JSON.stringify(pg)}`);
 
   await p.tap('#logToggle');
   bad = await layout();

@@ -16,11 +16,28 @@ others. Everyone with the same code sits at the same table.
 
 | | |
 |---|---|
-| ✋ Move | drag minis; click one to rename, recolour, turn, resize, remove |
-| 🧱 Build | click a surface to place the selected block or prop |
-| ⛏️ Erase | click a block or prop to remove it |
-| ♟️ Minis | click to place the selected mini |
-| 📣 Ping | click to show everyone a spot |
+| ✋ Move | drag minis; tap one for its panel; press and hold the table to ping |
+| 🧱 Build | tap or drag to place the selected block or prop; ⛏️ in the palette erases |
+| ♟️ Minis | tap to place the selected mini |
+| 📏 Measure | drag for distance, radius or cone; everyone sees it; tap to put it away |
+| 🌫️ Fog (GM) | drag to hide areas from players, or to reveal them |
+| ▲▼ Cutaway | hide upper floors to look inside buildings; *Auto* lifts the roof over the selected mini |
+
+**Running a game.** ☰ → *Become the GM*. From then on only the GM builds,
+places minis, and moves everything; players move the minis the GM hands them
+(🎮 in a mini's panel). The GM can also:
+
+- hide a mini (🙈) — players don't see it, the GM sees it ghosted;
+- paint fog over unexplored areas, and switch on line of sight so players only
+  see creatures their own minis can see;
+- track hit points (❤️) and initiative (⚔️): minis with an initiative number
+  form the turn order shown at the top, and players move on their own turn;
+- make a mini fly (🕊️), roll in secret (🙈 in the dice sheet: players see blank
+  dice), and set the sky (day, dusk, night).
+
+With no GM the table is free play: everyone can do everything. These rules
+decide what each player's app shows — everyone at the table holds the same key,
+so they keep honest players from spoilers rather than stop a determined cheat.
 
 **Phone / tablet (the primary target):** one finger looks around; with 🧱 or ⛏️
 selected, tap to edit and drag to paint a flat layer. Two fingers pan, pinch to
@@ -34,7 +51,7 @@ tools, `R` rotate, `Ctrl+Z` undo, `Del` remove mini, `Enter` chat.
 then touch the table — they hover and tumble under your finger — and let go to
 throw. A flick flings them; they bounce off the terrain, everyone watches the
 same tumble, and the faces that end up on top are the result. `/r 2d6+1d20+3`
-in chat puts those dice in your hand.
+in chat puts those dice in your hand; `/w name hello` whispers.
 
 The ☰ menu has a starter meadow, export/import, and clear.
 

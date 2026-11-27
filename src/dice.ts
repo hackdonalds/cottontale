@@ -245,19 +245,27 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
 
   const q: number[][] = kinds.map(() => []);
   const last = kinds.map(() => [0, 0, 0, 0, 0, 0, 0]);
-  let n = 0, slice = performance.now();
+  let n = 0, quiet = 0, slice = performance.now();
   for (let step = 0; n < MAX_FRAMES; step++) {
     if (step % 2 === 0) {
+      let still = true;
       bodies.forEach((b, i) => {
         const now = [
           Math.round((b.position.x - o[0]) * 100), Math.round((b.position.y - o[1]) * 100), Math.round((b.position.z - o[2]) * 100),
           Math.round(b.quaternion.x * 1000), Math.round(b.quaternion.y * 1000), Math.round(b.quaternion.z * 1000), Math.round(b.quaternion.w * 1000),
         ];
-        for (let c = 0; c < 7; c++) q[i].push(now[c] - last[i][c]);
+        for (let c = 0; c < 7; c++) {
+          const d = now[c] - last[i][c];
+          if (Math.abs(d) > (c < 3 ? 1 : 6)) still = false;
+          q[i].push(d);
+        }
         last[i] = now;
       });
       n++;
-      if (n > 20 && bodies.every((b) => b.sleepState === C.Body.SLEEPING)) break;
+      // Done when the engine puts every die to sleep, or when nothing has visibly
+      // moved for half a second (dice leaning on each other can jitter forever).
+      quiet = still ? quiet + 1 : 0;
+      if (n > 20 && (quiet >= 15 || bodies.every((b) => b.sleepState === C.Body.SLEEPING))) break;
     }
     world.step(1 / (FPS * 2));
     if (performance.now() - slice > 10) { // stay responsive on slow phones
@@ -309,8 +317,9 @@ function geometry(kind: Kind): THREE.BufferGeometry {
 }
 
 const materials = new Map<string, THREE.MeshStandardMaterial>();
-function material(kind: Kind, color: string): THREE.MeshStandardMaterial {
-  const key = `${kind}|${color}`;
+/** `blank` dice have no numbers: what players see when the GM rolls in secret. */
+function material(kind: Kind, color: string, blank = false): THREE.MeshStandardMaterial {
+  const key = `${kind}|${color}|${blank}`;
   let m = materials.get(key);
   if (m) return m;
   const sh = shape(kind), { cols, rows } = grid(kind);
@@ -329,7 +338,7 @@ function material(kind: Kind, color: string): THREE.MeshStandardMaterial {
     g.fillText(s, 0, 0);
     if (sh.faces.length > 8 && (s === '6' || s === '9')) g.fillRect(-px * 0.26, px * 0.48, px * 0.52, px * 0.09); // tell 6 from 9
   };
-  sh.faces.forEach((idx, f) => {
+  if (!blank) sh.faces.forEach((idx, f) => {
     const x = ((f % cols) + 0.5) * CELL, y = (Math.floor(f / cols) + 0.5) * CELL;
     if (kind === 'd4') {
       // Each corner carries its vertex's number; the corner pointing up is the result.
@@ -385,7 +394,7 @@ function numberSprite(text: string): THREE.Sprite {
 
 interface Playing {
   owner: string; t: number; n: number; kinds: Kind[]; done: () => void; settled: boolean;
-  meshes: THREE.Object3D[]; pos: THREE.Vector3[][]; rot: THREE.Quaternion[][];
+  meshes: THREE.Object3D[]; pos: THREE.Vector3[][]; rot: THREE.Quaternion[][]; blank: boolean;
 }
 interface Held { meshes: THREE.Mesh[]; axes: THREE.Vector3[]; offs: THREE.Vector3[]; at: THREE.Vector3; to: THREE.Vector3 }
 const LINGER = 12; // seconds the dice stay on the table after settling
@@ -422,20 +431,20 @@ export class DiceView {
   }
 
   /** Play a throw; resolves when the dice have come to rest. Each player has one set of dice on the table. */
-  play(t: Throw, color: string, owner: string): Promise<void> {
+  play(t: Throw, color: string, owner: string, blank = false): Promise<void> {
     const d = decode(t);
     if (!d) return Promise.resolve();
     for (const p of this.playing) if (p.owner === owner) p.t = Math.max(p.t, p.n / FPS + LINGER);
     return new Promise((done) => {
       const meshes = t.k.map((kind, i) => {
-        const m = new THREE.Mesh(geometry(kind), material(kind, color));
+        const m = new THREE.Mesh(geometry(kind), material(kind, color, blank));
         m.castShadow = true;
         m.position.copy(d.pos[i][0]);
         m.quaternion.copy(d.rot[i][0]);
         this.scene.add(m);
         return m;
       });
-      this.playing.push({ owner, t: 0, n: t.n, kinds: t.k, meshes, ...d, done, settled: false });
+      this.playing.push({ owner, t: 0, n: t.n, kinds: t.k, meshes, ...d, done, settled: false, blank });
     });
   }
 
@@ -468,7 +477,7 @@ export class DiceView {
         p.settled = true;
         // Float each die's number above it, so the roll reads at a glance from any angle.
         const labels = p.kinds.map((k, j) => reading(k, p.rot[j][p.n - 1]));
-        faceTexts(p.kinds, labels).forEach((text, j) => {
+        if (!p.blank) faceTexts(p.kinds, labels).forEach((text, j) => {
           const s = numberSprite(text);
           s.position.copy(p.pos[j][p.n - 1]).y += 0.85;
           this.scene.add(s);

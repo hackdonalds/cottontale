@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, seal, unseal } from './net';
+import { canControl, eyesOf, fullPowers, measure, miniShown, nextTurn, sees, turnOrder, type MiniVal } from './rules';
 import { Store, type Row } from './store';
 
 describe('Store', () => {
@@ -111,5 +112,66 @@ describe('dice', () => {
       expect(end[1] + 1).toBeLessThan(1.6);
     });
     expect(results({ ...t, n: t.n + 1 })).toBeNull(); // malformed recordings are rejected
+  });
+});
+
+describe('table rules', () => {
+  const mini = (x: number, z: number, extra: Partial<MiniVal> = {}): MiniVal => ({ x, y: 0, z, k: 'knight', c: '#fff', n: '', r: 0, s: 1, ...extra });
+
+  it('is free play until someone is GM, then only the GM and owners have power', () => {
+    const s = new Store('gm');
+    expect(fullPowers(s, 'kid')).toBe(true);
+    s.set('gm:gm', true);
+    expect(fullPowers(s, 'gm')).toBe(true);
+    expect(fullPowers(s, 'kid')).toBe(false);
+    expect(canControl(s, 'kid', mini(0, 0))).toBe(false);
+    expect(canControl(s, 'kid', mini(0, 0, { o: 'kid' }))).toBe(true);
+    expect(canControl(s, 'kid', mini(0, 0, { o: '*' }))).toBe(true);
+    s.set('gm:gm', null);
+    expect(fullPowers(s, 'kid')).toBe(true);
+  });
+
+  it('blocks line of sight with walls but not with water or over low cover', () => {
+    const s = new Store('gm');
+    const a = mini(0, 0), b = mini(4, 0);
+    expect(sees(s, a, b)).toBe(true);
+    s.set('b:2,0,0', { i: 'water' });
+    expect(sees(s, a, b)).toBe(true);
+    s.set('b:2,0,0', { i: 'stone' });
+    expect(sees(s, a, b)).toBe(false); // a one-block wall hides head and feet
+    expect(sees(s, mini(0, 0, { e: 3 }), b)).toBe(true); // ...unless you fly above it
+  });
+
+  it('shows players only what they should see', () => {
+    const s = new Store('gm');
+    s.set('gm:gm', true);
+    const hero = mini(0, 0, { o: 'kid' }), goblin = mini(4, 0), lurker = mini(1, 1, { h: true });
+    s.set('m:hero', hero);
+    s.set('m:goblin', goblin);
+    expect(miniShown(s, 'gm', lurker, null)).toBe('ghost');
+    expect(miniShown(s, 'kid', lurker, null)).toBe('no');
+    expect(miniShown(s, 'kid', goblin, eyesOf(s, 'kid'))).toBe('yes'); // line of sight is off by default
+    s.set('set:los', true);
+    s.set('b:2,0,0', { i: 'stone' });
+    s.set('b:2,1,0', { i: 'stone' });
+    expect(miniShown(s, 'kid', goblin, eyesOf(s, 'kid'))).toBe('no');
+    expect(miniShown(s, 'kid', hero, eyesOf(s, 'kid'))).toBe('yes');
+    expect(miniShown(s, 'other', goblin, eyesOf(s, 'other'))).toBe('yes'); // spectators without a mini see the open table
+    s.set('set:los', false);
+    s.set('f:4,0', true);
+    expect(miniShown(s, 'kid', goblin, eyesOf(s, 'kid'))).toBe('no'); // under fog
+    expect(miniShown(s, 'gm', goblin, null)).toBe('yes');
+  });
+
+  it('runs the turn order by initiative and counts rounds', () => {
+    const s = new Store('gm');
+    s.set('m:a', mini(0, 0, { ini: 12 }));
+    s.set('m:b', mini(1, 0, { ini: 18 }));
+    s.set('m:c', mini(2, 0));
+    expect(turnOrder(s).map((o) => o.id)).toEqual(['b', 'a']);
+    const seq: string[] = [];
+    for (let i = 0; i < 4; i++) { const t = nextTurn(s)!; s.set('turn', t); seq.push(`${t.id}${t.round}`); }
+    expect(seq).toEqual(['b1', 'a1', 'b2', 'a2']);
+    expect(measure([0.5, 0, 0.5], [3.5, 0, 4.5])).toEqual({ cells: 5, feet: 25 });
   });
 });

@@ -1,8 +1,9 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { Board, type MiniVal, type Tool, type Vec } from './board';
+import { Board, type MiniVal, type RulerMode, type Sky, type Tool, type Vec } from './board';
 import { BLOCKS, MINIS, PLAYER_COLORS, PROPS } from './catalog';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, unhex, type Msg } from './net';
+import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn } from './rules';
 import { Store, type Row } from './store';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -86,12 +87,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   if (!skHex) ls.set('sk', (skHex = hex(generateSecretKey())));
   const sk = unhex(skHex);
   const me = getPublicKey(sk);
-  const store = new Store(me.slice(0, 10));
+  const meId = pid(me);
+  const store = new Store(meId);
+  const full = () => fullPowers(store, meId);
   const { tag } = await deriveRoom(code);
 
   const customRelays = relays.join() !== DEFAULT_RELAYS.join();
   const invite = `${location.origin}${location.pathname}#room=${encodeURIComponent(code)}${customRelays ? `&relays=${relays.join(',')}` : ''}`;
   history.replaceState(null, '', invite);
+
+  // The store starts changing (restored from disk, then the relays) before the UI below is wired up.
+  const ui = { ready: false, syncing: false };
 
   // Minis placed with the mini tool use these.
   let miniKind = 'knight';
@@ -102,6 +108,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     onLiveMove: (id, p) => void net.send({ y: 'mv', id, p }),
     onPing: (p) => { board.ping(p, myColor); void net.send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
+    canMove: (id) => {
+      const v = store.get<MiniVal>(`m:${id}`);
+      if (!v || !canControl(store, meId, v)) return false;
+      // In a fight, players move on their own turn (the GM always can).
+      const turn = store.get<Turn>('turn');
+      return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
+    },
+    onRuler: (r) => void net.send({ y: 'ruler', r }),
     onGrab: () => { if (phoneSheet()) closeSheet(); },
     onThrow: (starts, vel) => void throwHand(starts, vel),
   });
@@ -109,6 +123,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
+    later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
   };
 
@@ -135,15 +150,30 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('hud').hidden = false;
   stayAwake();
   $('help').innerHTML = coarse
-    ? 'One finger: look around — or, with 🧱 ⛏️, tap to edit and drag to paint.<br />Two fingers: pan, pinch to zoom, twist to turn.<br />🎲 Pick dice up, then drag on the table and let go to throw.'
-    : 'Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z undo · Del remove<br />Dice: pick them up, drag on the table, let go to throw';
+    ? 'One finger: look around — or use the selected tool (🧱 tap or drag to paint, 📏 drag to measure).<br />Two fingers: pan, pinch to zoom, twist to turn.<br />Press and hold the table to ping. ▲▼ on the right hides upper floors.<br />🎲 Pick dice up, then drag on the table and let go to throw.'
+    : 'Left-drag orbit · right-drag pan · wheel zoom<br />1–5 tools · R rotate · Ctrl+Z / Ctrl+Y · Del remove<br />Hold the mouse on the table to ping<br />Dice: pick them up, drag on the table, let go to throw';
   say(`<span class="sys">Welcome, ${esc(name)}! Share the invite link to bring others to the table.</span>`);
 
   function handle(msg: Msg, from: string): void {
     const who = `<b style="color:${net.colorOf(from)}">${esc(net.nameOf(from))}</b>`;
     switch (msg.y) {
-      case 'chat': say(`${who}: ${esc(String(msg.m).slice(0, 300))}`); break;
+      case 'chat':
+        if (msg.to && msg.to !== meId) break; // a whisper for someone else
+        say(`${who}${msg.to ? ' <span class="sys">whispers</span>' : ''}: ${esc(String(msg.m).slice(0, 300))}`);
+        break;
+      case 'ruler': {
+        const r = msg.r;
+        const ok = r && Array.isArray(r.a) && Array.isArray(r.b) && r.a.length === 3 && r.b.length === 3 && ['line', 'circle', 'cone'].includes(r.m);
+        board.showRuler(from, ok ? r : null, net.colorOf(from));
+        break;
+      }
       case 'roll': {
+        if (msg.s && !full()) {
+          // The GM rolled in secret: players see blank dice tumble, and no result.
+          if (msg.t) void board.dice.play(msg.t, net.colorOf(from), from, true);
+          say(`🎲 ${who} rolled in secret`);
+          break;
+        }
         // With a recorded throw, watch the dice land first; what they show is the result.
         const labels = msg.t ? results(msg.t) : null;
         if (!msg.t || !labels) { showRoll(who, msg, false); break; }
@@ -159,8 +189,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // ---- players, chat, dice ----
 
   function renderPlayers(): void {
-    const all = [{ name, color: myColor }, ...net.peers.values()];
-    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${esc(p.name)}</span>`).join('');
+    const g = gms(store);
+    const all = [{ id: meId, name, color: myColor }, ...[...net.peers].map(([pk, p]) => ({ id: pid(pk), ...p }))];
+    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? '🎩 ' : ''}${esc(p.name)}</span>`).join('');
   }
   renderPlayers();
 
@@ -232,7 +263,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const t = await simulate(kinds, starts, vel, target, store, tray);
     board.dice.endHold();
     const r = rollValues(kinds, results(t)!);
-    void net.send({ y: 'roll', d, r, mod, t });
+    void net.send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
     navigator.vibrate?.(12);
     await board.dice.play(t, myColor, me);
     showRoll(meTag, { d, r, mod }, true);
@@ -242,6 +273,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('logToggle').classList.remove('on');
   }
 
+  let secret = false;
+  $('secret').onclick = () => {
+    secret = !secret;
+    $('secret').classList.toggle('on', secret);
+    say(`<span class="sys">${secret ? 'Your rolls are now secret: players see blank dice.' : 'Your rolls are public again.'}</span>`);
+  };
   for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => { pickUp(+b.dataset.d!); renderHand(); };
   $('diceClear').onclick = emptyHand;
 
@@ -280,6 +317,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (!text) return;
     const r = /^\/r(?:oll)?\s+(.+)$/i.exec(text);
     if (r && rollCommand(r[1])) return;
+    const w = /^\/w\s+(\S+)\s+(.+)$/i.exec(text);
+    if (w) {
+      const to = [...net.peers].find(([, p]) => p.name.toLowerCase().startsWith(w[1].toLowerCase()));
+      if (!to) return say(`<span class="sys">Nobody here is called “${esc(w[1])}”.</span>`);
+      say(`${meTag} <span class="sys">to ${esc(to[1].name)}</span>: ${esc(w[2])}`, true);
+      return void net.send({ y: 'chat', m: w[2], to: pid(to[0]) });
+    }
     say(`${meTag}: ${esc(text)}`);
     void net.send({ y: 'chat', m: text });
   };
@@ -303,7 +347,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderPalette(): void {
     const el = $('palette');
     el.innerHTML = '';
-    el.hidden = board.tool !== 'build' && board.tool !== 'mini';
+    el.hidden = board.tool === 'move';
     const add = (title: string, inner: string, on: boolean, click: () => void) => {
       const b = document.createElement('button');
       b.title = title;
@@ -315,6 +359,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     };
     const sep = () => el.insertAdjacentHTML('beforeend', '<span class="sep"></span>');
     if (board.tool === 'build') {
+      add('Eraser', '⛏️', board.brush === 'erase', () => { board.brush = 'erase'; });
+      sep();
       for (const [id, d] of Object.entries(BLOCKS)) add(d.name, `<i style="background:${d.color}"></i>`, board.brush === id, () => { board.brush = id; });
       sep();
       for (const [id, d] of Object.entries(PROPS)) add(d.name, d.icon, board.brush === id, () => { board.brush = id; });
@@ -326,26 +372,165 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       add('Base colour', `<i style="background:${miniColor};border-radius:50%"></i>`, false, () => {
         miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length];
       });
+    } else if (board.tool === 'ruler') {
+      const modes: [RulerMode, string, string][] = [['line', '📏', 'Distance'], ['circle', '⭕', 'Radius'], ['cone', '🔺', 'Cone']];
+      for (const [m, icon, title] of modes) add(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
+      sep();
+      add('Put the ruler away', '✕', false, () => { board.showRuler('me', null, ''); void net.send({ y: 'ruler', r: null }); });
+    } else if (board.tool === 'fog') {
+      add('Hide: drag to cover an area', '🌫️', board.fogHide, () => { board.fogHide = true; });
+      add('Reveal: drag to uncover', '👁️', !board.fogHide, () => { board.fogHide = false; });
+      sep();
+      add('Reveal everything', '☀️', false, () => { for (const k of [...store.keys('f:')]) store.set(k, null); });
     }
   }
+
+  // ---- role, settings, turn order: all derived from the store ----
+
+  function later(): void {
+    if (ui.syncing || !ui.ready) return;
+    ui.syncing = true;
+    setTimeout(() => { ui.syncing = false; sync(); });
+  }
+  let role = '', los = false;
+  function sync(): void {
+    const amGM = gms(store).includes(meId), f = full();
+    const now = `${amGM}|${f}`;
+    if (now !== role) {
+      role = now;
+      document.body.classList.toggle('player', !f);
+      document.body.classList.toggle('gm', amGM);
+      board.setRole(meId, f);
+      if (!f && board.tool !== 'move' && board.tool !== 'ruler') setTool('move');
+      if (!f) { secret = false; $('secret').classList.remove('on'); }
+    }
+    const l = setting(store, 'los', false);
+    if (l !== los) { los = l; board.refresh(); }
+    const sky = setting<Sky>(store, 'sky', 'day');
+    board.setSky(sky);
+    const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
+    act('gm').textContent = amGM ? '🎩 Stop being the GM' : '🎩 Become the GM';
+    act('los').textContent = `👁️ Line of sight: ${l ? 'on' : 'off'}`;
+    act('sky').textContent = `🌗 Sky: ${sky}`;
+    renderPlayers();
+    renderInit();
+    if (board.selected) showMiniPanel(board.selected);
+    if (cutAuto) autoCut();
+  }
+
+  function renderInit(): void {
+    const f = full();
+    const order = turnOrder(store).filter((o) => f || !o.v.h);
+    const turn = store.get<Turn>('turn');
+    const current = order.find((o) => o.id === turn?.id);
+    $('init').hidden = !order.length;
+    board.setTurn(current?.id ?? null);
+    $('round').textContent = current ? `Round ${turn!.round}` : 'Ready';
+    $('order').innerHTML = '';
+    for (const o of order) {
+      const b = document.createElement('button');
+      b.textContent = `${o.v.ini} · ${o.v.n || MINIS[o.v.k]?.name || '?'}`;
+      b.style.setProperty('--c', o.v.c);
+      b.classList.toggle('on', o === current);
+      b.onclick = () => { board.focusMini(o.id); if (board.tool === 'move') board.select(o.id); };
+      $('order').append(b);
+      if (o === current) setTimeout(() => b.scrollIntoView({ inline: 'center', block: 'nearest' }));
+    }
+    // The GM advances turns; the player whose mini is up may end their own.
+    const mine = !!current && canControl(store, meId, current.v);
+    $('nextTurn').hidden = !(f || mine);
+    $('nextTurn').textContent = current ? '⏭️' : '▶️';
+  }
+  $('nextTurn').onclick = () => { const t = nextTurn(store); if (t) store.set('turn', t); };
+  $('endFight').onclick = () => {
+    for (const o of turnOrder(store)) { const { ini: _, ...rest } = o.v; store.set(`m:${o.id}`, rest); }
+    store.set('turn', null);
+  };
+
+  // ---- cutaway ----
+
+  let cutAuto = true;
+  function setCut(level: number): void {
+    if (level !== board.cut) board.setCut(level);
+    $('floorAuto').textContent = `${cutAuto ? 'Auto\n' : ''}${level === Infinity ? 'All' : `≤ ${level}`}`;
+    $('floorAuto').classList.toggle('on', cutAuto);
+  }
+  /** Auto: lift the roof off whatever the selected mini is standing under. */
+  function autoCut(): void {
+    const v = board.selected ? store.get<MiniVal>(`m:${board.selected}`) : null;
+    let level = Infinity;
+    if (v) for (let y = v.y + 2, top = board.maxHeight(); y < top; y++) {
+      const c = store.get<{ i: string }>(`b:${v.x},${y},${v.z}`);
+      if (c && BLOCKS[c.i]) { level = y; break; }
+    }
+    setCut(level);
+  }
+  $('floorAuto').onclick = () => { cutAuto = !cutAuto; if (cutAuto) autoCut(); else setCut(board.cut); };
+  $('floorDown').onclick = () => { cutAuto = false; setCut(Math.max(1, (board.cut === Infinity ? board.maxHeight() : board.cut) - 1)); };
+  $('floorUp').onclick = () => { cutAuto = false; setCut(board.cut + 1 >= board.maxHeight() ? Infinity : board.cut + 1); };
+  setCut(Infinity);
 
   // ---- selected mini ----
 
   const sel = () => (board.selected ? store.get<MiniVal>(`m:${board.selected}`) : null);
-  const patch = (p: Partial<MiniVal>) => { const v = sel(); if (v) store.set(`m:${board.selected}`, { ...v, ...p }); };
+  const patch = (p: Partial<MiniVal>) => { const v = sel(); if (v && canControl(store, meId, v)) store.set(`m:${board.selected}`, { ...v, ...p }); };
   const repaintMiniColors = swatches($('miniColors'), () => sel()?.c ?? '', (c) => patch({ c }));
+  const field = (id: string) => $<HTMLInputElement>(id);
+  const FLY = [0, 1, 2, 3, 5, 8];
 
   function showMiniPanel(id: string | null): void {
     $('minipanel').hidden = !id;
     const v = sel();
+    if (cutAuto) autoCut();
     if (!v) return;
-    $<HTMLInputElement>('miniName').value = v.n;
+    const mine = canControl(store, meId, v);
+    $('minipanel').classList.toggle('readonly', !mine);
+    // Never overwrite what someone is in the middle of typing.
+    const put = (id: string, val: string) => { const f = field(id); if (document.activeElement !== f) f.value = val; f.disabled = !mine; };
+    put('miniName', v.n);
+    put('hp', v.hp === undefined ? '' : String(v.hp));
+    put('mhp', v.mhp === undefined ? '' : String(v.mhp));
+    put('ini', v.ini === undefined ? '' : String(v.ini));
+    $('miniFly').textContent = `🕊️ ${v.e || 0}`;
+    $('miniHide').textContent = v.h ? '🙈 Hidden' : '👁️ Visible';
+    $('miniHide').classList.toggle('on', !!v.h);
+    const owner = $<HTMLSelectElement>('miniOwner');
+    if (document.activeElement !== owner) {
+      const opts: [string, string][] = [['', '🎮 GM only'], ['*', '🎮 Everyone'], ...[...net.peers].map(([pk, p]) => [pid(pk), `🎮 ${p.name}`] as [string, string]), [meId, `🎮 ${name} (me)`]];
+      if (v.o && !opts.some(([k]) => k === v.o)) opts.push([v.o, '🎮 (someone away)']);
+      owner.innerHTML = opts.map(([k, label]) => `<option value="${esc(k)}">${esc(label)}</option>`).join('');
+      owner.value = v.o ?? '';
+    }
     repaintMiniColors();
   }
-  $<HTMLInputElement>('miniName').onchange = (e) => patch({ n: (e.target as HTMLInputElement).value.trim().slice(0, 20) });
+  const num = (id: string, lo: number, hi: number): number | undefined => {
+    const t = field(id).value.trim(), n = Math.round(+t);
+    return t === '' || !Number.isFinite(n) ? undefined : Math.min(hi, Math.max(lo, n));
+  };
+  /** Write a field that may be cleared: `undefined` removes it from the mini. */
+  function setOpt(key: 'hp' | 'mhp' | 'ini' | 'o', value: number | string | undefined): void {
+    const v = sel();
+    if (!v || !canControl(store, meId, v)) return;
+    const { [key]: _, ...rest } = v;
+    store.set(`m:${board.selected}`, value === undefined || value === '' ? rest : { ...rest, [key]: value });
+  }
+  field('miniName').onchange = () => patch({ n: field('miniName').value.trim().slice(0, 20) });
+  field('hp').onchange = () => setOpt('hp', num('hp', -999, 9999));
+  field('mhp').onchange = () => {
+    const m = num('mhp', 1, 9999);
+    setOpt('mhp', m);
+    if (m !== undefined && sel()?.hp === undefined) patch({ hp: m }); // new bars start full
+  };
+  field('ini').onchange = () => setOpt('ini', num('ini', -99, 999));
+  const bump = (d: number) => { const v = sel(); if (v) patch({ hp: Math.max(0, Math.min(v.mhp ?? 9999, (v.hp ?? v.mhp ?? 0) + d)) }); };
+  $('hpDown').onclick = () => bump(-1);
+  $('hpUp').onclick = () => bump(1);
   $('miniRot').onclick = () => patch({ r: ((sel()?.r ?? 0) + 1) % 8 });
   $('miniSize').onclick = () => patch({ s: ({ 1: 1.5, 1.5: 2, 2: 0.7 } as Record<number, number>)[sel()?.s ?? 1] ?? 1 });
-  $('miniDel').onclick = () => { if (board.selected) store.set(`m:${board.selected}`, null); };
+  $('miniFly').onclick = () => patch({ e: FLY[(FLY.indexOf(sel()?.e ?? 0) + 1) % FLY.length] });
+  $('miniHide').onclick = () => patch({ h: !sel()?.h });
+  $<HTMLSelectElement>('miniOwner').onchange = (e) => setOpt('o', (e.target as HTMLSelectElement).value);
+  $('miniDel').onclick = () => { if (board.selected && full()) store.set(`m:${board.selected}`, null); };
 
   // ---- menu ----
 
@@ -363,6 +548,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const act = (e.target as HTMLElement).dataset.act;
     if (!act) return;
     $('menu').hidden = true;
+    if (act === 'gm') {
+      const g = gms(store), here = [meId, ...[...net.peers.keys()].map(pid)];
+      if (g.includes(meId)) store.set(`gm:${meId}`, null);
+      else if (g.some((id) => here.includes(id))) alert('This table already has a GM. They can step down from this menu.');
+      else {
+        // Take over from GMs who are away, so a table can never get stuck without one.
+        for (const id of g) store.set(`gm:${id}`, null);
+        store.set(`gm:${meId}`, true);
+        say('<span class="sys">You are the GM: only you can build, hide things and move every mini. Give players a mini with 🎮 in its panel.</span>');
+      }
+    }
+    if (act === 'los' && full()) store.set('set:los', !setting(store, 'los', false));
+    if (act === 'sky' && full()) store.set('set:sky', ({ day: 'dusk', dusk: 'night', night: 'day' } as Record<Sky, Sky>)[setting<Sky>(store, 'sky', 'day')]);
+    if (act === 'redo') board.redo();
     if (act === 'meadow') meadow();
     if (act === 'export') {
       const rows = store.dump().filter((r) => r[1] !== null).map(([k, v]) => [k, v]);
@@ -374,7 +573,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'import') $('file').click();
     if (act === 'clear' && confirm('Remove everything from the table, for everyone?')) {
-      for (const k of [...store.keys('b:'), ...store.keys('m:')]) store.set(k, null);
+      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:')]) store.set(k, null);
+      store.set('turn', null);
     }
     if (act === 'leave') void net.stop().then(() => { location.hash = ''; location.reload(); });
   };
@@ -382,7 +582,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const input = e.target as HTMLInputElement;
     try {
       const data = JSON.parse(await input.files![0].text());
-      for (const [k, v] of data.rows as [string, unknown][]) if (/^[bm]:/.test(k)) store.set(k, v);
+      for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmf]:/.test(k)) store.set(k, v);
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
@@ -407,13 +607,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).matches('input, textarea')) return;
-    const tools: Tool[] = ['move', 'build', 'erase', 'mini', 'ping'];
-    if (e.key >= '1' && e.key <= '5') setTool(tools[+e.key - 1]);
+    const tools: Tool[] = ['move', 'build', 'mini', 'ruler', 'fog'];
+    const allowed = (t: Tool) => t === 'move' || t === 'ruler' || (full() && (t !== 'fog' || gms(store).includes(meId)));
+    if (e.key >= '1' && e.key <= '5') { if (allowed(tools[+e.key - 1])) setTool(tools[+e.key - 1]); }
+    else if ((e.key === 'z' && e.shiftKey || e.key === 'y') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); board.redo(); }
     else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); board.undo(); }
     else if (e.key === 'r' || e.key === 'R') {
       if (board.selected) patch({ r: ((sel()?.r ?? 0) + 1) % 8 });
       else { board.rot = (board.rot + 1) % 4; renderPalette(); }
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && board.selected) store.set(`m:${board.selected}`, null);
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && board.selected && full()) store.set(`m:${board.selected}`, null);
     else if (e.key === 'Escape') setTool('move');
     else if (e.key === 'Enter') $('chatIn').focus();
   });
@@ -439,4 +641,6 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   setTool('move');
   renderHand();
+  ui.ready = true;
+  sync();
 }

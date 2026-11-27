@@ -21,6 +21,13 @@ first, then enhance for larger screens.
 - **Verify on a phone viewport:** `npm run e2e` runs phone portrait/landscape
   checks (touch gestures, overlap, target sizes). Extend them with new UI.
 
+## Layout of the code
+
+- `src/store.ts` shared last-writer-wins state · `src/net.ts` Nostr transport
+- `src/rules.ts` pure table rules (GM, visibility, line of sight, turns) — unit-test here
+- `src/board.ts` 3D view and pointer input · `src/dice.ts` physics dice
+- `src/main.ts` UI wiring · `src/catalog.ts` blocks, props, minis
+
 ## Commands
 
 - `npm run dev` · `npm test` · `npm run build && npm run e2e`

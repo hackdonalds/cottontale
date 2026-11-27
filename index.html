@@ -42,13 +42,32 @@
       <button id="invite" title="Copy invite link">🔗 Invite</button>
       <button id="menuBtn" title="Menu">☰</button>
       <div id="menu" class="panel" hidden>
-        <button data-act="meadow">🌱 Add a starter meadow</button>
+        <button data-act="gm"></button>
+        <button data-act="los" data-gm></button>
+        <button data-act="sky" data-gm></button>
+        <button data-act="redo" data-gm>↪️ Redo</button>
+        <button data-act="meadow" data-gm>🌱 Add a starter meadow</button>
         <button data-act="export">💾 Export table</button>
-        <button data-act="import">📂 Import table</button>
-        <button data-act="clear">🧹 Clear table</button>
+        <button data-act="import" data-gm>📂 Import table</button>
+        <button data-act="clear" data-gm>🧹 Clear table</button>
         <button data-act="leave">🚪 Leave</button>
         <p class="hint" id="help"></p>
       </div>
+    </div>
+
+    <!-- Turn order: who acts now, who is next. Shown to everyone while a fight is on. -->
+    <div id="init" class="panel" hidden>
+      <span id="round"></span>
+      <span id="order"></span>
+      <button id="nextTurn" title="End turn" aria-label="End turn">⏭️</button>
+      <button id="endFight" title="End the fight" aria-label="End the fight" data-gm>✕</button>
+    </div>
+
+    <!-- Cutaway: hide everything above a floor to look inside buildings. -->
+    <div id="floors" class="panel">
+      <button id="floorUp" title="Show more floors" aria-label="Show more floors">▲</button>
+      <button id="floorAuto" title="Follow the selected mini" aria-label="Cutaway height"></button>
+      <button id="floorDown" title="Hide upper floors" aria-label="Hide upper floors">▼</button>
     </div>
 
     <!-- Bottom dock: everything a thumb needs. Stacks so panels can never overlap. -->
@@ -60,32 +79,47 @@
           <input id="miniName" maxlength="20" placeholder="Name" enterkeyhint="done" />
           <button id="miniRot" title="Turn" aria-label="Turn">↻</button>
           <button id="miniSize" title="Size" aria-label="Size">⇲</button>
-          <button id="miniDel" title="Remove" aria-label="Remove">🗑️</button>
+          <button id="miniDel" title="Remove" aria-label="Remove" data-gm>🗑️</button>
+        </span>
+        <span class="row stats">
+          <span>❤️</span>
+          <button id="hpDown" aria-label="Lose a hit point">−</button>
+          <input id="hp" type="number" inputmode="numeric" placeholder="HP" aria-label="Hit points" />
+          <span>/</span>
+          <input id="mhp" type="number" inputmode="numeric" placeholder="max" aria-label="Maximum hit points" />
+          <button id="hpUp" aria-label="Gain a hit point">+</button>
+          <span>⚔️</span>
+          <input id="ini" type="number" inputmode="numeric" placeholder="init" aria-label="Initiative" title="Initiative: give a number to join the turn order" />
+        </span>
+        <span class="row">
+          <button id="miniFly" title="Flying height" aria-label="Flying height"></button>
+          <button id="miniHide" title="Hide from players" aria-label="Hide from players" data-gm></button>
+          <select id="miniOwner" title="Who may move it" aria-label="Who may move it" data-gm></select>
         </span>
         <span id="miniColors" class="swatches"></span>
       </div>
 
       <div id="tools" class="panel">
-        <button data-tool="move" title="Move minis" aria-label="Move minis">✋</button>
-        <button data-tool="build" title="Build" aria-label="Build">🧱</button>
-        <button data-tool="erase" title="Erase" aria-label="Erase">⛏️</button>
-        <button data-tool="mini" title="Add minis" aria-label="Add minis">♟️</button>
-        <button data-tool="ping" title="Ping" aria-label="Ping">📣</button>
+        <button data-tool="move" title="Move minis · hold to ping" aria-label="Move minis">✋</button>
+        <button data-tool="build" title="Build and erase" aria-label="Build and erase" data-gm>🧱</button>
+        <button data-tool="mini" title="Add minis" aria-label="Add minis" data-gm>♟️</button>
+        <button data-tool="ruler" title="Measure" aria-label="Measure">📏</button>
+        <button data-tool="fog" title="Fog: hide areas from players" aria-label="Fog" data-gm data-gmonly>🌫️</button>
         <span class="sep"></span>
-        <button id="undo" title="Undo" aria-label="Undo">↩️</button>
+        <button id="undo" title="Undo" aria-label="Undo" data-gm>↩️</button>
         <button id="logToggle" title="Dice &amp; chat" aria-label="Dice and chat">🎲</button>
       </div>
     </div>
 
     <div id="log" class="panel closed">
       <div id="msgs"></div>
-      <p id="hand" class="hint"></p>
+      <span class="row"><p id="hand" class="hint grow"></p><button id="secret" title="Roll in secret" aria-label="Roll in secret" data-gm data-gmonly>🙈</button></span>
       <div id="dice">
         <button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button><button data-d="10">d10</button>
         <button data-d="12">d12</button><button data-d="20">d20</button><button data-d="100">d100</button>
         <button id="diceClear" title="Put the dice back" aria-label="Put the dice back">✕</button>
       </div>
-      <form id="chat"><input id="chatIn" maxlength="300" placeholder="Say something… or /r 2d6+3" autocomplete="off" enterkeyhint="send" /></form>
+      <form id="chat"><input id="chatIn" maxlength="300" placeholder="Say something… /r 2d6+3 · /w name hi" autocomplete="off" enterkeyhint="send" /></form>
     </div>
     <div id="toast"></div>
   </div>
