@@ -111,6 +111,14 @@ assert(await ok(b, (id) => document.body.classList.contains('player') && getComp
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
 assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 4), 'selecting a piece shows a ring of actions on it, not a panel');
+{ // Pan the piece out of view: its ring goes too, and comes back with it.
+  const pan = (dx) => a.evaluate((dx) => { const { board } = window.__ct; board.controls.target.x += dx; board.camera.position.x += dx; board.controls.update(); board.hooks.onView(); }, dx);
+  const ringShown = () => a.evaluate(() => getComputedStyle(document.querySelector('#ring')).visibility !== 'hidden');
+  await pan(200);
+  assert(!(await ringShown()), 'panning a selected piece out of view hides its ring');
+  await pan(-200);
+  assert(await ringShown(), 'and panning back shows it again');
+}
 await a.click('#ring [title="More"]');
 await a.selectOption('#miniOwner', { label: '🎮 Bo' });
 assert(await ok(b, (id) => window.__ct.board.hooks.canMove(id), id), 'GM hands a mini to a player, who can then move it');

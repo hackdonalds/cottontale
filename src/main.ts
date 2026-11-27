@@ -863,8 +863,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const el = $('ring');
     if (el.hidden || !board.selected) return;
     const spot = board.spotOf(board.selected);
-    el.style.visibility = spot ? '' : 'hidden';
-    if (!spot) return;
+    // Panned out of view: the actions go with the piece instead of clinging to the edge.
+    const seen = !!spot && spot.x >= 0 && spot.x <= innerWidth && spot.y >= 0 && spot.y <= innerHeight;
+    el.style.visibility = seen ? '' : 'hidden';
+    if (!spot || !seen) return;
     const pop = el.querySelector<HTMLElement>('.pop'), r = Math.max(60, Math.min(104, spot.size * 0.7 + 40));
     // Never let it slide under the top bar or off an edge: the ring shifts, the piece stays put.
     const roof = $('top').getBoundingClientRect().bottom + 12, half = pop ? pop.offsetWidth / 2 + 8 : r + 26;
