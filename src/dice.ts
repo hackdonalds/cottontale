@@ -122,7 +122,8 @@ export function reading(kind: Kind, q: THREE.Quaternion): number {
 
 // ---- recording ------------------------------------------------------------------
 
-function decode(t: Throw): { pos: THREE.Vector3[][]; rot: THREE.Quaternion[][] } | null {
+/** The path of every die of a recorded throw, frame by frame, or null if the recording is malformed. */
+export function decode(t: Throw): { pos: THREE.Vector3[][]; rot: THREE.Quaternion[][] } | null {
   if (!t || !Array.isArray(t.k) || !Array.isArray(t.q) || !Array.isArray(t.o)) return null;
   const n = t.n;
   if (!Number.isInteger(n) || n < 1 || n > MAX_FRAMES || !t.k.length || t.k.length > MAX_DICE || t.q.length !== t.k.length) return null;
@@ -167,6 +168,12 @@ export function kindsFor(n: number, sides: number): Kind[] | null {
   return Array.from({ length: n }, () => k).flat();
 }
 
+/**
+ * Something standing on the table that dice bounce off: a box (`h` = half extents) or, with
+ * `round`, an upright cylinder (`h[0]` radius, `h[1]` half height). `p` is its centre.
+ */
+export interface Solid { p: V3; h: V3; round?: boolean }
+
 /** Where a held die is when it leaves the hand. */
 export interface Start { p: V3; q: [number, number, number, number] }
 
@@ -181,7 +188,7 @@ const spread = (r: number) => (rnd() * 2 - 1) * r;
  * dice are kept on. The physics engine is loaded on first use, keeping it out
  * of the initial download.
  */
-export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: V3, store: Store, tray = 6): Promise<Throw> {
+export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: V3, store: Store, tray = 6, solids: Solid[] = []): Promise<Throw> {
   const C = await import('cannon-es');
   const world = new C.World({ gravity: new C.Vec3(0, -32, 0), allowSleep: true });
   world.defaultContactMaterial.friction = 0.32;
@@ -242,6 +249,14 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
     world.addBody(body);
     return body;
   });
+
+  // Pieces on the table. One a die starts inside of is left out: it would be shot out of it.
+  const reach = 0.5;
+  for (const s of solids) {
+    const [hx, hy, hz] = s.round ? [s.h[0], s.h[1], s.h[0]] : s.h;
+    if (bodies.some((b) => Math.abs(b.position.x - s.p[0]) < hx + reach && Math.abs(b.position.y - s.p[1]) < hy + reach && Math.abs(b.position.z - s.p[2]) < hz + reach)) continue;
+    fixed(s.round ? new C.Cylinder(s.h[0], s.h[0], s.h[1] * 2, 8) : new C.Box(new C.Vec3(hx, hy, hz)), ...s.p);
+  }
 
   const q: number[][] = kinds.map(() => []);
   const last = kinds.map(() => [0, 0, 0, 0, 0, 0, 0]);
@@ -405,6 +420,9 @@ export class DiceView {
   private held: Held | null = null;
   /** Called when a die bounces, with how hard (for sound). */
   onHit: (strength: number) => void = () => {};
+  /** Called when a die is knocked sideways: where it was, and how its velocity changed (so what it hit can react). */
+  onBump: (at: THREE.Vector3, dv: THREE.Vector3) => void = () => {};
+  private dv = new THREE.Vector3();
   constructor(private scene: THREE.Scene) {}
 
   /** Pick the dice up: they hover and tumble at `at` until thrown. */
@@ -475,6 +493,14 @@ export class DiceView {
           for (const P of p.pos) {
             const down = P[a].y - P[a - 1].y, up = P[a + 1].y - P[a].y;
             if (down < -0.03 && up > down * 0.3) this.onHit(Math.min(1, -down * 4));
+          }
+        }
+        // A die whose sideways speed has changed sharply has run into something. Worked out from the
+        // recording, so every player sees the same pieces get knocked.
+        for (let i = Math.max(1, prev + 1); i <= a && i + 1 < p.n; i++) {
+          for (const P of p.pos) {
+            const dv = this.dv.copy(P[i + 1]).addScaledVector(P[i], -2).add(P[i - 1]).multiplyScalar(FPS);
+            if (Math.hypot(dv.x, dv.z) > 1.2) this.onBump(P[i], dv);
           }
         }
         p.kinds.forEach((_, k) => {

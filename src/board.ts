@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
-import { DiceView, type Kind, type Start } from './dice';
+import { DiceView, type Solid, type Kind, type Start } from './dice';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
@@ -196,6 +196,58 @@ interface Gesture {
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
 const LONG_PRESS = 550;
 
+/** A piece rocking after a knock: how far it leans (radians, toward +x and +z) and how fast that is changing. */
+interface Wobble { x: number; z: number; vx: number; vz: number; base?: THREE.Quaternion; obj?: THREE.Object3D }
+const DIE = 0.45; // about the radius of a die
+const BAND = 0.5;
+
+/**
+ * Rough solid shape of a prop for dice to bounce off: one box per half-cell of height, each as
+ * wide as the model is there (so a tree is a trunk under a canopy, not one big block).
+ */
+function propSolids(g: THREE.Group): Solid[] {
+  g.updateMatrixWorld(true);
+  const y0 = g.position.y, bands: number[][] = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), p = new THREE.Vector3();
+  const put = (v: THREE.Vector3, i: number) => {
+    if (i < 0 || i > 7) return;
+    const m = (bands[i] ??= [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]);
+    m[0] = Math.min(m[0], v.x); m[1] = Math.max(m[1], v.x);
+    m[2] = Math.min(m[2], v.y); m[3] = Math.max(m[3], v.y);
+    m[4] = Math.min(m[4], v.z); m[5] = Math.max(m[5], v.z);
+  };
+  // An edge reaches into every band it passes through, at the points where it crosses between them.
+  const edge = (u: THREE.Vector3, v: THREE.Vector3) => {
+    const lo = Math.floor((Math.min(u.y, v.y) - y0) / BAND), hi = Math.floor((Math.max(u.y, v.y) - y0) / BAND);
+    put(u, Math.floor((u.y - y0) / BAND));
+    for (let i = lo + 1; i <= hi; i++) {
+      p.lerpVectors(u, v, (y0 + i * BAND - u.y) / (v.y - u.y));
+      put(p, i - 1);
+      put(p, i);
+    }
+  };
+  g.traverse((o) => {
+    const mesh = o as THREE.Mesh, pos = mesh.geometry?.getAttribute('position'), mat = mesh.material as THREE.Material | undefined;
+    if (!mesh.isMesh || !pos || (o as THREE.InstancedMesh).isInstancedMesh || mat?.transparent) return;
+    const idx = mesh.geometry.index, n = idx ? idx.count : pos.count;
+    const at = (v: THREE.Vector3, i: number) => v.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(mesh.matrixWorld);
+    for (let i = 0; i + 2 < n; i += 3) {
+      at(a, i); at(b, i + 1); at(c, i + 2);
+      edge(a, b); edge(b, c); edge(c, a);
+    }
+  });
+  const out: Solid[] = [];
+  bands.forEach((m, i) => {
+    const under = bands[i - 1];
+    if (m[3] - m[2] < 0.12) { // a sliver: part of what it sits on, or (rugs, petals) nothing to bounce off
+      if (under && out.length) { const b = out[out.length - 1]; b.p[1] += (m[3] - m[2]) / 2; b.h[1] += (m[3] - m[2]) / 2; }
+      return;
+    }
+    out.push({ p: [(m[0] + m[1]) / 2, (m[2] + m[3]) / 2, (m[4] + m[5]) / 2], h: [(m[1] - m[0]) / 2, (m[3] - m[2]) / 2, (m[5] - m[4]) / 2] });
+  });
+  return out;
+}
+
 interface Mini { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string }
 
 // Shared by every mini: one base shape, one material per base colour, one invisible hit area.
@@ -331,6 +383,8 @@ export class Board {
   private turnRing: THREE.Mesh;
   private pings: { mesh: THREE.Mesh; t: number }[] = [];
   private anims: { id: string; kind: string; t: number; bubble: THREE.Sprite }[] = [];
+  /** Pieces rocking after a knock, by mini id or prop cell. Not shared: every device works them out alike. */
+  private wobbles = new Map<string, Wobble>();
   private marquee: THREE.Mesh;
   private pointers = new Map<number, { x: number; y: number }>();
   private gesture: Gesture | null = null;
@@ -482,6 +536,7 @@ export class Board {
     };
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
     this.dice = new DiceView(this.scene);
+    this.dice.onBump = (at, dv) => this.bump(at, dv);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
     onKitPack(() => {
       for (const [key, g] of this.props) {
@@ -648,6 +703,7 @@ export class Board {
     this.minis.clear();
     this.rulers.clear();
     this.pings.length = this.anims.length = 0;
+    this.wobbles.clear();
     this.undoStack.length = this.redoStack.length = 0;
     this.fogDirty = this.visDirty = true;
     this.touched();
@@ -1023,6 +1079,9 @@ export class Board {
       if (this.turnId === id) this.setTurn(id);
       this.visDirty = true;
     }
+    // Set down somewhere new, a figure rocks on its base the way it was going.
+    const dx = v.x - m.val.x, dz = v.z - m.val.z, far = Math.hypot(dx, dz);
+    if (far && !v.d) this.kick(id, (dx / far) * 2.4, (dz / far) * 2.4);
     m.val = v;
     if (this.gesture?.mini !== id) m.target.copy(pos);
     this.pose(m);
@@ -1072,6 +1131,83 @@ export class Board {
       (a.bubble.material as THREE.SpriteMaterial).opacity = Math.min(1, (1 - u) * 3);
     }
     return this.anims.length > 0;
+  }
+
+  // ---- knocks ----------------------------------------------------------------
+  // Dice bounce off the pieces on the table, and a piece that is hit rocks and settles. The
+  // rocking is for show: it is worked out on each device from what everyone already shares
+  // (the recorded throw, the moves), so nothing extra is sent and nothing on the table changes.
+
+  /** What thrown dice can run into around a spot: the minis, props and walls this player can see. */
+  solidsNear(c: Vec, reach: number): Solid[] {
+    const out: Solid[] = [], near = (x: number, z: number) => Math.abs(x - c[0]) <= reach && Math.abs(z - c[2]) <= reach;
+    for (const m of this.minis.values()) {
+      const v = m.val, s = v.s || 1, h = MINIS[v.k].height * s, y = v.y + Math.max(0, Math.min(12, v.e || 0));
+      if (!m.group.visible || v.h || !near(v.x + 0.5, v.z + 0.5)) continue; // a hidden mini must not give itself away
+      out.push(v.d ? { p: [v.x + 0.5, y + 0.2 * s, v.z + 0.5], h: [0.5 * s, 0.2 * s, 0], round: true } : { p: [v.x + 0.5, y + h / 2, v.z + 0.5], h: [0.36 * s, h / 2, 0], round: true });
+    }
+    for (const [key, g] of this.props) {
+      const [x, , z] = parse(key);
+      if (!g.visible || g.userData.pending || !near(x + 0.5, z + 0.5) || this.wobbles.has(key)) continue;
+      out.push(...((g.userData.solids as Solid[] | undefined) ?? (g.userData.solids = propSolids(g))));
+    }
+    for (const [key, piece] of this.edges) {
+      const [x, y, z, side] = parseEdge(key);
+      if (piece === 'walldoor' || !near(x + 0.5, z + 0.5) || this.cellHidden(x, y, z)) continue; // doorways stand open
+      out.push(side === 'n' ? { p: [x + 0.5, y + 0.5, z], h: [0.5, 0.5, 0.1] } : { p: [x, y + 0.5, z + 0.5], h: [0.1, 0.5, 0.5] });
+    }
+    return out;
+  }
+
+  /** A die was knocked sideways here: whatever it ran into is pushed the other way. */
+  private bump(at: THREE.Vector3, dv: THREE.Vector3): void {
+    const push = Math.min(4, Math.hypot(dv.x, dv.z) * 0.8) / Math.hypot(dv.x, dv.z);
+    for (const [id, m] of this.minis) {
+      const v = m.val, s = v.s || 1, y = v.y + (v.e || 0);
+      if (!m.group.visible || v.d || at.y < y - DIE || at.y > y + MINIS[v.k].height * s + DIE) continue;
+      if (Math.hypot(at.x - v.x - 0.5, at.z - v.z - 0.5) < 0.36 * s + DIE + 0.12) this.kick(id, -dv.x * push, -dv.z * push);
+    }
+    for (const [key, g] of this.props) {
+      if (!g.visible || Math.abs(at.x - g.position.x) > 1.5 || Math.abs(at.z - g.position.z) > 1.5) continue;
+      const hit = ((g.userData.solids as Solid[] | undefined) ?? (this.wobbles.has(key) ? [] : (g.userData.solids = propSolids(g))))
+        .some((b) => Math.abs(at.x - b.p[0]) < b.h[0] + DIE + 0.12 && Math.abs(at.y - b.p[1]) < b.h[1] + DIE + 0.12 && Math.abs(at.z - b.p[2]) < b.h[2] + DIE + 0.12);
+      if (hit) this.kick(key, -dv.x * push * 0.35, -dv.z * push * 0.35); // furniture is heavier than a figure
+    }
+  }
+
+  /** Set a mini (by id) or a prop (by cell) rocking: `vx`, `vz` is how fast it starts to lean, and which way. */
+  private kick(key: string, vx: number, vz: number): void {
+    const w = this.wobbles.get(key) ?? { x: 0, z: 0, vx: 0, vz: 0 };
+    w.vx += vx;
+    w.vz += vz;
+    this.wobbles.set(key, w);
+    this.invalidate();
+  }
+
+  private tilt = new THREE.Quaternion();
+  private axis = new THREE.Vector3();
+  /** Rock the knocked pieces: each is a damped spring pulling it back upright. */
+  private wobble(dt: number): boolean {
+    for (const [key, w] of this.wobbles) {
+      const mini = this.minis.get(key), obj = mini ? mini.group.children[0] : this.props.get(key);
+      if (!obj || (w.obj && w.obj !== obj && !mini)) { this.wobbles.delete(key); continue; }
+      if (!w.base && !mini) w.base = obj.quaternion.clone();
+      w.obj = obj;
+      for (let t = dt; t > 0; t -= 1 / 120) { // small steps: the spring is stiff
+        const h = Math.min(t, 1 / 120);
+        w.vx += (-190 * w.x - 6.5 * w.vx) * h;
+        w.vz += (-190 * w.z - 6.5 * w.vz) * h;
+        w.x += w.vx * h;
+        w.z += w.vz * h;
+      }
+      const lean = Math.hypot(w.x, w.z), done = lean < 0.004 && Math.hypot(w.vx, w.vz) < 0.05;
+      if (mini && !this.anims.some((a) => a.id === key)) this.pose(mini);
+      else if (w.base) obj.quaternion.copy(w.base);
+      if (done) { this.wobbles.delete(key); continue; }
+      const angle = Math.min(lean, 0.45);
+      obj.quaternion.premultiply(this.tilt.setFromAxisAngle(this.axis.set(w.z, 0, -w.x).normalize(), angle));
+    }
+    return this.wobbles.size > 0;
   }
 
   /** Another player is dragging a mini: show it moving before they drop it. */
@@ -1975,6 +2111,7 @@ export class Board {
     let changed = this.shadowDirty;
     if (this.dice.update(dt)) changed = true;
     if (this.animate(dt)) changed = true;
+    if (this.wobble(dt)) changed = true;
     if (this.fogDirty) { this.rebuildFog(); changed = true; }
     if (this.visDirty) { this.refreshMinis(); changed = true; }
     if (this.terrainDirty) { this.rebuildTerrain(); changed = true; }

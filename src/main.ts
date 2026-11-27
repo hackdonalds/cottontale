@@ -296,7 +296,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     emptyHand();
     const { target, tray } = board.throwSpot();
     // Simulate the throw, share the recording, and let everyone watch it land.
-    const t = await simulate(kinds, starts, vel, target, store, tray);
+    const t = await simulate(kinds, starts, vel, target, store, tray, board.solidsNear(target, tray + 1));
     board.dice.endHold();
     const r = rollValues(kinds, results(t)!);
     void send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
