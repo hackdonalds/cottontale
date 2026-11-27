@@ -136,6 +136,12 @@
       <button id="floorDown" title="Hide upper floors" aria-label="Hide upper floors"><svg><use href="#i-down"/></svg></button>
     </div>
 
+    <!-- Build mode: erase and undo, always in reach on the right edge. -->
+    <div id="edits" class="panel" hidden data-gm>
+      <button id="erase" title="Erase" aria-label="Erase"><svg><use href="#i-erase"/></svg></button>
+      <button id="undo" title="Undo" aria-label="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
     <!-- The actions for the selected piece sit around the piece itself, not in a panel over the table. -->
     <div id="ring" hidden></div>
 
@@ -185,7 +191,6 @@
         <button data-cat="things" data-in="build" title="Furniture, nature and dungeon dressing"><svg><use href="#i-chair"/></svg>Things</button>
         <button data-cat="figures" data-in="build" title="Add minis"><svg><use href="#i-pawn"/></svg>Figures</button>
         <button data-cat="scenes" data-in="build" title="Generate, copy and paste"><svg><use href="#i-spark"/></svg>Scenes</button>
-        <button id="undo" data-in="build" title="Undo" data-gm><svg><use href="#i-undo"/></svg>Undo</button>
       </div>
     </div>
 

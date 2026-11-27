@@ -349,7 +349,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
-    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
+    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
       .map((e) => ({ id: e.id, r: e.getBoundingClientRect() }));
     const bad = [];
     for (const a of boxes) {

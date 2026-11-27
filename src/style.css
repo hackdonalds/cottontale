@@ -147,6 +147,13 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
 #floors button { padding: 0; font-size: 14px; }
 #floorAuto { font-size: 12px; font-weight: 700; white-space: pre-line; line-height: 1.15; min-width: 48px; }
 
+/* Build mode: erase and undo on the right edge, above the cutaway stepper; turn strips make room. */
+#edits { position: absolute; right: calc(8px + var(--sr)); top: calc(78px + var(--st)); display: flex; flex-direction: column; gap: 6px; padding: 4px; }
+#edits[hidden] { display: none; }
+body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
+#edits button { padding: 0; }
+#edits button.on { background: var(--acc); color: #201a05; }
+
 /* Sheets (dice & chat, boards, atmosphere): slide-over panels above the dock. */
 .sheet { position: absolute; z-index: 5; left: calc(8px + var(--sl)); right: calc(8px + var(--sr)); bottom: calc(74px + var(--sb)); max-height: min(60%, 440px); display: flex; flex-direction: column; gap: 8px; padding: 8px; background: rgba(20, 24, 34, .97); }
 .sheet.closed { display: none; }
@@ -224,6 +231,8 @@ select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 
   #strips { left: 50%; right: auto; transform: translateX(-50%); width: max-content; max-width: 60%; top: 78px; }
   .sheet { left: auto; right: 10px; top: 64px; bottom: auto; width: 320px; max-height: 50%; }
   #floors { top: 78px; }
+  #edits { top: 204px; right: 10px; }
+  body.building:not(.player) #strips { right: auto; }
   #miniColors { flex-wrap: wrap; }
   #log, #log.closed { display: flex; left: auto; right: 10px; top: auto; bottom: 10px; width: 300px; max-height: min(42%, 420px); }
 }
