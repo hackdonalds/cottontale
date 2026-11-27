@@ -17,6 +17,9 @@ import { Store, type Row } from './store';
 import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type GameTheme, type Known } from './theme';
 import { FAVS, Hotbar, RECENT, type Shelf } from './ui/hotbar';
 import { initPrep, registerPrepPage } from './ui/prep';
+import * as packs from './packs';
+import { registerImportPage } from './ui/importPage';
+import { registerPacksPage } from './ui/packsPage';
 import { registerBuiltinPrepPages } from './ui/prepPages';
 import { initThemeEditor } from './ui/themeEditor';
 import { initSheets, popSheetPage, pushSheetPage, setSheetHeight, sheetHeight } from './ui/sheets';
@@ -168,6 +171,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
     rules?.onStore(k, v, prev);
+    packs.packChanged(k); // the GM's own pieces (packs.ts)
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
     if ((k === 'at:theme' || k === 'set:theme') && ui.ready) renderPalette(); // its pieces come to the front of the library
     if (ui.ready && v && /^[bwm]:/.test(k)) placed(k, v, prev);
@@ -215,6 +219,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // The table's own sounds (src/sounds.ts): recordings come out of the file store, and only on devices with sound on.
   const tableSounds = new TableSounds({ store, sound, blobs, full, send: (m) => void net.send(m) });
   Object.assign((window as unknown as { __ct: object }).__ct, { sounds: tableSounds });
+  packs.initPacks({ store, blobs, me: meId, full });
+  Object.assign((window as unknown as { __ct: object }).__ct, { packs });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
@@ -533,7 +539,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   /** Where a piece's picture is on the sheet of thumbnails (see assets/blender/thumbs.py). */
   const thumb = (family: string): string | null => {
     const i = (THUMBS.at as Record<string, number>)[family];
-    if (i === undefined) return null;
+    if (i === undefined) return packs.packThumb(family.slice(2)); // a piece of the table's own packs shows its picture
     const x = i % THUMBS.cols, y = Math.floor(i / THUMBS.cols);
     return `background-image:url(./ui/thumbs.webp);background-size:${THUMBS.cols * 100}% ${THUMBS.rows * 100}%;background-position:${(x / (THUMBS.cols - 1)) * 100}% ${(y / (THUMBS.rows - 1)) * 100}%`;
   };
@@ -855,10 +861,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   registerBuiltinPrepPages();
   // Rules in Prep is the same picker the menu's Rules sheet shows (ui/sheet.ts).
   registerPrepPage({ id: 'rules', title: 'Rules', icon: 'list', order: 40, hint: 'The game system and its character sheets', render: renderSystemPicker, update: renderSystemPicker });
-  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme });
+  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name });
   registerSoundPage(tableSounds, { store, full, emotes: Object.keys(EMOTES), soundOn: () => { if (!sound.enabled) $('soundOn').click(); } });
   // Make your own theme (ui/themeEditor.ts): the Theme page's gallery with Customise, and the editor over the live table.
   const themeEd = initThemeEditor({ scapes: () => tableSounds.scapeNames(), store, board, known, me: meId, color: () => myColor, full, ls, themes: themesOffered, pickTheme, thumb, lookAround: () => setTool('move'), open: (page) => prep.open(page) });
+  registerImportPage(); registerPacksPage(); // the GM's own pieces: these take the place of the placeholders
+  packs.onPacks(() => { if (ui.ready && building()) renderPalette(); }); // a piece's picture arrived
   /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
@@ -1212,6 +1220,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const data = JSON.parse(await input.files![0].text());
       for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmfw]:/.test(k)) store.set(k, v);
         else if (/^(@[\w-]+\/[bmfw]:|bd:)/.test(k)) store.setRaw(k, v);
+        else if (k.startsWith(packs.PACK_KEY) && full() && packs.parsePack(v, k.slice(3))) store.set(k, v); // the table's own packs (their files stay in the blob cache and on the servers)
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
