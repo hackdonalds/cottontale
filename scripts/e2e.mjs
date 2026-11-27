@@ -333,6 +333,19 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const m1 = await mini();
   assert(m1.x !== m0.x || m1.z !== m0.z, 'mini dragged with a finger');
 
+  // A pinch whose first finger lands on a mini still zooms the camera, and leaves the mini put.
+  const camDist = () => p.evaluate(() => { const { board } = window.__ct; return board.camera.position.distanceTo(board.controls.target); });
+  const d0 = await camDist();
+  await touch('touchStart', [[m1.sx, m1.sy]]);
+  await touch('touchStart', [[m1.sx, m1.sy], [m1.sx + 160, m1.sy]]);
+  for (let i = 1; i <= 8; i++) { await touch('touchMove', [[m1.sx + i * 8, m1.sy], [m1.sx + 160 - i * 8, m1.sy]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', [[m1.sx + 96, m1.sy]]);
+  await touch('touchEnd', []);
+  await settle();
+  const m2 = await mini();
+  assert(m2.x === m1.x && m2.z === m1.z, 'a pinch starting on a mini does not move it');
+  assert(await camDist() > d0 + 0.3, 'a pinch starting on a mini zooms the camera');
+
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
