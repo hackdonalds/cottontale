@@ -11,6 +11,7 @@
 import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
 import type { Ruler } from './board';
 import type { Throw } from './dice';
+import type { Pour } from './loose';
 import type { Row, Store } from './store';
 
 export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
@@ -27,6 +28,7 @@ type Body =
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
   | { y: 'ping'; p: [number, number, number] }
+  | { y: 'pour'; t: Pour }
   | { y: 'mv'; id: string; p: [number, number, number] };
 
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */

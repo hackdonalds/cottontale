@@ -35,7 +35,8 @@ first, then enhance for larger screens.
 - `src/sound.ts` synthesised soundscapes and effects (no audio files)
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
-- Board-specific keys (`b:` `m:` `f:` `w:` `turn`) are scoped per board by the store;
+- Loose pieces lie where they fell, at any angle: `l:<id>` → `{ i, p: [cm], q: [‰] }` (`src/loose.ts`; poured by `src/pour.ts`, drawn by `src/looseview.ts`).
+- Board-specific keys (`b:` `m:` `f:` `w:` `l:` `turn`) are scoped per board by the store;
   everything else is table-wide. Live messages carry the board id (`bd`).
 
 ## Commands
