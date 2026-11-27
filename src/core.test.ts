@@ -954,3 +954,12 @@ describe('library lists and search (ui/library.ts)', () => {
     expect(searchPieces(items, 'zzz')).toEqual([]);
   });
 });
+
+describe('the stylesheet', () => {
+  it('closes every block it opens (a lost brace once made whole pages desktop-only)', async () => {
+    const css = (await readFile('src/style.css', 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
+    let depth = 0, low = 0;
+    for (const ch of css) { if (ch === '{') depth++; else if (ch === '}') low = Math.min(low, --depth); }
+    expect([depth, low]).toEqual([0, 0]);
+  });
+});

@@ -1,0 +1,10 @@
+/* Prep → Import → a 3D model (ui/modelPage.ts). Comes with that module; the rest is Import's own (.imp* in style.css). */
+.mdView { background: radial-gradient(circle at 50% 38%, #3a312a, #14100d 78%); touch-action: pan-y; }
+.mdStats { margin: 0; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mdNotes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; opacity: .85; }
+.mdNotes:empty { display: none; }
+.mdSteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.mdSteps li.done { opacity: .6; }
+.mdSteps li.done::before { content: '✓ '; }
+.impFlow #mdSize { font-size: 14px; }
+.impFlow #mdName { font-size: 16px; }
