@@ -21,7 +21,12 @@ const procs = [
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
 const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
 process.on('uncaughtException', (e) => { console.error(e); done(1); });
-await new Promise((r) => setTimeout(r, 2500));
+// Wait for the site to answer rather than a fixed time: a busy machine starts it slowly.
+for (let i = 0; i < 120; i++) {
+  if (await fetch(`http://localhost:${PORT}/`).then((r) => r.ok, () => false)) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+await new Promise((r) => setTimeout(r, 1000));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const url = (room) => `http://localhost:${PORT}/#room=${room}&relays=ws://localhost:${RELAY}`;
