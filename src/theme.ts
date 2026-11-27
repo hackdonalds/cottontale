@@ -1,13 +1,13 @@
 // Themes: what kind of game this table is playing. A theme is plain data, never code:
-// a mood (sky, season, firelight, soundscape), the pieces that belong to it (shown
-// first in the library), and the scene generator that suits it. The GM picks one and
-// the whole table follows.
+// a mood (sky, season, firelight, soundscape, and if it likes its own light, haze and
+// grade), its dice, the pieces that belong to it (shown first in the library), and the
+// scene generator that suits it. The GM picks one for a board and everyone on it follows.
 //
 // No theme is written into the app. The ones it offers are files (public/themes/*.json,
 // listed in index.json), and picking one copies the whole theme into the table
 // (`at:theme`, see `atmo` below), so it travels with the table and needs no file on anyone else's device.
 // Either way it is somebody else's data and untrusted: `parseTheme` keeps what it understands, clamps the numbers and
-// drops ids this build does not know. That is also what lets a newer app share a
+// drops ids this build does not know (except a pack's `namespace:name` pieces, which may yet arrive). That is also what lets a newer app share a
 // theme with an older one.
 import { parsePreset, type Preset } from './gen';
 import { parseSounds, type SoundBank } from './sound';
