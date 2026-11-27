@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "relay": "node scripts/relay.mjs",
+    "blossom": "node scripts/blossom.mjs",
     "test": "vitest run",
     "e2e": "node scripts/e2e.mjs",
     "kit": "node scripts/kit.mjs",

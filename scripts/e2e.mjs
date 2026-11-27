@@ -10,9 +10,13 @@ let pw, channel;
 try { pw = require('playwright'); } catch { pw = require('playwright-core'); channel = 'chrome'; }
 const { chromium, devices } = pw;
 
+// E2E_PORT moves the three local servers (site, relay = +1, blossom = +2) so several runs can share a machine.
+const PORT = Number(process.env.E2E_PORT ?? 4188), RELAY = process.env.E2E_PORT ? PORT + 1 : 7788, BLOSSOM = PORT + 2;
 const procs = [
-  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: '7788' }, stdio: 'ignore' }),
-  spawn('npx', ['vite', 'preview', '--port', '4188', '--strictPort'], { stdio: 'ignore' }),
+  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: String(RELAY) }, stdio: 'ignore' }),
+  spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' }),
+  // A picky file server: takes small blobs, refuses anything over 200 kB.
+  spawn('node', ['scripts/blossom.mjs'], { env: { ...process.env, PORT: String(BLOSSOM), MAX_SIZE: '200000' }, stdio: 'ignore' }),
 ];
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
 const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
@@ -20,7 +24,7 @@ process.on('uncaughtException', (e) => { console.error(e); done(1); });
 await new Promise((r) => setTimeout(r, 2500));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const url = (room) => `http://localhost:4188/#room=${room}&relays=ws://localhost:7788`;
+const url = (room) => `http://localhost:${PORT}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
   page.on('pageerror', (e) => { console.log('pageerror', name, e.message); done(1); });
@@ -522,6 +526,89 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(onScreen && (await cells()).length === 1, 'flung dice come to rest in view, and the throw edits nothing');
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
   await p.context().close();
+}
+
+// ---- files without a server (src/blob.ts): Blossom server, player to player, and a server that says no ----
+{
+  const a = await join('Fay', 'files-1234'), b = await join('Gus', 'files-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  const server = `http://localhost:${BLOSSOM}`;
+  /** Put pseudo-random bytes on a page; returns the reference, a checksum of the plain bytes and how the servers answered. */
+  const put = (page, size, seed) => page.evaluate(async ([size, seed]) => {
+    const bytes = new Uint8Array(size);
+    for (let i = 0, x = seed; i < size; i++) bytes[i] = (x = (x * 1103515245 + 12345) >>> 0) >>> 16;
+    const { blobs } = window.__ct;
+    const ref = await blobs.put(bytes, 'image/png');
+    const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].join();
+    return { ref, sum, outcomes: blobs.outcomes(ref.h) };
+  }, [size, seed]);
+  const get = (page, ref) => page.evaluate(async (ref) => {
+    const { blobs } = window.__ct;
+    const seen = [];
+    const off = blobs.onProgress((h, loaded, total) => seen.push([h, loaded, total]));
+    try {
+      const [bytes, again] = await Promise.all([blobs.get(ref), blobs.get(ref)]); // asked twice, fetched once
+      const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].join();
+      return { sum, n: bytes.length, same: again.length === bytes.length, via: blobs.source(ref.h), progress: seen.filter(([h]) => h === ref.h).length, last: seen.at(-1) };
+    } catch (e) { return { error: String(e) }; } finally { off(); }
+  }, ref);
+  const servers = async (list) => {
+    await a.evaluate((list) => window.__ct.store.set('set:blossom', list), list);
+    await b.waitForFunction((n) => window.__ct.blobs.servers().length === n, list.length);
+  };
+
+  // (a) A server is configured and takes the blob: the other player gets it from there.
+  await servers([server]);
+  const one = await put(a, 50_000, 1);
+  assert(one.outcomes.length === 1 && one.outcomes[0].ok && one.ref.s?.[0] === server && one.ref.n === 50_028 && /^[0-9a-f]{64}$/.test(one.ref.h),
+    `a blob put with a Blossom server configured is accepted there (${JSON.stringify(one.outcomes)})`);
+  const stored = await fetch(`${server}/${one.ref.h}`).then((r) => r.arrayBuffer());
+  assert(stored.byteLength === one.ref.n, 'the server holds the ciphertext under its hash');
+  const gotOne = await get(b, one.ref);
+  assert(gotOne.sum === one.sum && gotOne.via === 'server' && gotOne.same && gotOne.progress > 0, `the other player gets identical bytes from the server (${JSON.stringify({ ...gotOne, sum: undefined })})`);
+  assert((await get(b, one.ref)).via === 'cache', 'and finds it in the local cache the next time');
+  const bad = await get(b, { ...one.ref, m: 'image/jpeg' });
+  assert(/Error/.test(bad.error ?? ''), 'a reference that lies about the type is refused');
+
+  // (b) No server at all: the blob travels from player to player (too big for the relay path, so WebRTC it is).
+  await servers([]);
+  const two = await put(a, 300_000, 2);
+  assert(two.outcomes.length === 0 && !two.ref.s, 'with no server configured a blob is kept on the device only');
+  const gotTwo = await get(b, two.ref);
+  assert(gotTwo.sum === two.sum && gotTwo.via === 'peer' && gotTwo.progress > 10 && gotTwo.last?.[1] === two.ref.n,
+    `with no server the other player gets it peer-to-peer over WebRTC (${JSON.stringify({ ...gotTwo, sum: undefined })})`);
+
+  // (c) The server refuses the upload (too large for it): that is reported, not thrown, and the players pass it on themselves.
+  await servers([server]);
+  const three = await put(a, 250_000, 3);
+  assert(three.outcomes.length === 1 && three.outcomes[0].ok === false && three.outcomes[0].status === 413 && /too large/i.test(three.outcomes[0].reason) && !three.ref.s,
+    `a server that refuses the upload is reported, not thrown (${JSON.stringify(three.outcomes)})`);
+  const gotThree = await get(b, three.ref);
+  assert(gotThree.sum === three.sum && gotThree.via === 'peer', `and the blob still arrives, peer-to-peer (${gotThree.via ?? gotThree.error})`);
+
+  // WebRTC unavailable (as behind strict NATs): a small blob goes through the relay in pieces, a big one fails cleanly.
+  await servers([]);
+  await b.evaluate(() => { window.__rtc = window.RTCPeerConnection; delete window.RTCPeerConnection; });
+  const four = await put(a, 40_000, 4);
+  const gotFour = await get(b, four.ref);
+  assert(gotFour.sum === four.sum && gotFour.via === 'relay', `without WebRTC a small blob comes through the relay in pieces (${gotFour.via ?? gotFour.error})`);
+  const five = await put(a, 100_000, 5);
+  const gotFive = await get(b, five.ref);
+  assert(/not available/.test(gotFive.error ?? ''), 'and a big one is reported as unavailable rather than hanging');
+  await b.evaluate(() => { window.RTCPeerConnection = window.__rtc; });
+  assert((await get(b, five.ref)).sum === five.sum, 'which works again once WebRTC is back');
+  const url = await b.evaluate(async (ref) => {
+    const { blobs } = window.__ct;
+    const u = await blobs.objectUrl(ref);
+    const n = (await (await fetch(u)).arrayBuffer()).byteLength;
+    blobs.release(ref);
+    await new Promise((r) => setTimeout(r, 50));
+    return { n, revoked: await fetch(u).then(() => false, () => true) };
+  }, one.ref);
+  assert(url.n === 50_000 && url.revoked, 'objectUrl hands out the decrypted file and revokes it on release');
+  await a.context().close();
+  await b.context().close();
 }
 
 // Every piece in the library, laid out for a look (and to prove each one renders).
