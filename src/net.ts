@@ -33,7 +33,10 @@ type Body =
   | { y: 'mv'; id: string; p: [number, number, number] }
   /** A piece (`i`) at a cell or edge key was broken on purpose: burst it when its removal arrives. */
   | { y: 'broke'; k: string; i: string }
-  | { y: 'pour'; t: Pour };
+  | { y: 'pour'; t: Pour }
+  /** A mini fell `n` cells (for the log), and a blast went off at cell `c` with radius `r` (so props rock). */
+  | { y: 'fall'; id: string; n: number }
+  | { y: 'blast'; c: [number, number, number]; r: number };
 
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */
 export type Msg = Body & { bd?: string };

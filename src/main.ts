@@ -16,6 +16,9 @@ import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Tu
 import { Store, type Row } from './store';
 import { LOOSE, MAX_LOOSE, POUR_COUNTS } from './loose';
 import { pour } from './pour';
+import { MAX_BLAST, blast, fellLine, shove, type Fall } from './forces';
+import { eyesOf, miniShown } from './rules';
+import type { Ruler } from './board';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -130,6 +133,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // Minis placed with the mini tool use these.
   let miniKind = 'knight';
   let miniColor = myColor;
+  /** The ruler this player has out, if any: a circle is also where the GM's blast goes off. */
+  let myRuler: Ruler | null = null;
+  const ringOut = () => !!myRuler && myRuler.m === 'circle';
 
   const board = new Board($<HTMLCanvasElement>('c'), store, {
     onSelect: showMiniPanel,
@@ -143,7 +149,25 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const turn = store.get<Turn>('turn');
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
     },
-    onRuler: (r) => void send({ y: 'ruler', r }),
+    onRuler: (r) => {
+      const had = ringOut();
+      myRuler = r;
+      if (had !== ringOut() && ui.ready) renderPalette(); // the Blast chip follows the circle
+      void send({ y: 'ruler', r });
+    },
+    onFall: (id, cells) => fell([{ id, cells }]),
+    onShove: (id, sx, sz) => {
+      ringMode = 'main';
+      const out = sx || sz ? shove(store, id, sx, sz, full()) : null;
+      if (out) {
+        for (const [k, v] of out.edits) store.set(k, v);
+        fell(out.falls);
+      } else if (sx || sz) { // something is in the way: it leans and stays
+        board.nudge(id, sx * 2, sz * 2);
+        navigator.vibrate?.(20);
+      }
+      renderRing();
+    },
     onView: () => placeRing(),
     onLight: (name) => say(`<span class="sys">Light: ${name}.</span>`),
     onSlab: (slab) => {
@@ -254,6 +278,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       // Only someone who may build can pour; the recording itself is checked by the view.
       case 'pour': if (!elsewhere && fullPowers(store, pid(from))) void board.loose.play(msg.t); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'fall': {
+        // Only what this player can see is worth a line: a fall must not give a mini away.
+        const v = elsewhere ? null : store.get<MiniVal>(`m:${String(msg.id)}`), n = Math.round(Number(msg.n));
+        if (v && n > 0 && n <= 40 && miniShown(store, meId, v, eyesOf(store, meId)) !== 'no') say(`<span class="sys">${esc(fellLine(v, n))}.</span>`);
+        break;
+      }
+      case 'blast': if (!elsewhere && Array.isArray(msg.c) && msg.c.every(Number.isFinite)) board.rock(msg.c, Math.max(1, Math.min(MAX_BLAST, Number(msg.r) || 1))); break;
     }
   }
 
@@ -265,6 +296,29 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}${esc(p.name)}</span>`).join('');
   }
   renderPlayers();
+
+  /** Log the falls and tell the table. A hidden mini's fall stays with the GM: nothing is sent. */
+  function fell(falls: Fall[]): void {
+    for (const { id, cells } of falls) {
+      const v = store.get<MiniVal>(`m:${id}`);
+      if (!v) continue;
+      say(`<span class="sys">${esc(fellLine(v, cells))}.</span>`);
+      if (!v.h) void send({ y: 'fall', id, n: cells });
+    }
+  }
+  /** The GM's blast, set off where the circle template lies: minis are thrown outward, props rock. One step of undo. */
+  function setOff(): void {
+    const r = myRuler;
+    if (!r || r.m !== 'circle' || !full()) return;
+    const c: Vec = [Math.floor(r.a[0]), Math.round(r.a[1]), Math.floor(r.a[2])];
+    const radius = Math.max(1, Math.min(MAX_BLAST, Math.round(Math.hypot(r.b[0] - r.a[0], r.b[2] - r.a[2]))));
+    const out = blast(store, c, radius, true);
+    board.editAll(out.edits);
+    board.rock(c, radius);
+    navigator.vibrate?.(30);
+    void send({ y: 'blast', c, r: radius });
+    fell(out.falls);
+  }
 
   function say(html: string, mine = false): void {
     const d = document.createElement('div');
@@ -637,11 +691,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         b.classList.toggle('on', on);
         b.onclick = () => { click(); renderPalette(); };
         row.append(b);
+        return b;
       };
       if (board.tool === 'ruler') {
         const modes: [RulerMode, string, string][] = [['line', 'line', 'Distance'], ['circle', 'circle', 'Radius'], ['cone', 'cone', 'Cone']];
         for (const [m, icon, title] of modes) chip(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
-        chip('Put away', 'x', false, () => { board.showRuler('me', null, ''); void send({ y: 'ruler', r: null }); }, 'Put the ruler away');
+        if (full() && board.rulerMode === 'circle') chip('Blast', 'spark', false, setOff, `Blast: throw back every mini in the circle (up to ${MAX_BLAST} cells wide)`).disabled = !ringOut();
+        if (full() && board.rulerMode === 'circle') chip('Undo', 'undo', false, () => board.undo(), 'Undo the last edit'); // the build dock's undo is out of reach in Play
+        chip('Put away', 'x', false, () => { board.showRuler('me', null, ''); myRuler = null; void send({ y: 'ruler', r: null }); }, 'Put the ruler away');
       } else {
         chip('Hide', 'fog', board.fogHide, () => { board.fogHide = true; }, 'Hide: drag to cover an area');
         chip('Reveal', 'eye', !board.fogHide, () => { board.fogHide = false; }, 'Reveal: drag to uncover');
@@ -911,7 +968,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const FLY = [0, 1, 2, 3, 5, 8];
 
   // What you do to a piece in play sits in a ring around it; the full editor only opens on request.
-  let ringMode: 'main' | 'emote' | 'hp' | 'shot' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
+  let ringMode: 'main' | 'emote' | 'hp' | 'shot' | 'shove' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
   function renderRing(): void {
     const el = $('ring'), v = sel();
     el.innerHTML = '';
@@ -919,6 +976,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const mine = !!v && canControl(store, meId, v);
     if (!v || el.hidden || !mine) board.aimed = null; // nothing selected to shoot with any more
     if (!v || el.hidden) return;
+    if (ringMode === 'shove' && board.shoving !== board.selected) ringMode = 'main';
     const button = (title: string, inner: string, click: () => void, on = false) => {
       const b = document.createElement('button');
       b.title = title;
@@ -937,9 +995,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         button('Hit points', `<span style="color:#ff6b7a;display:grid">${ico('heart')}</span>`, to('hp')),
         more,
         button('Shoot', '🏹', to('shot')),
+        button('Shove', '💨', () => { if (board.aimShove(board.selected)) to('shove')(); }),
       ] : [more];
-      // Two to each side of the piece and one below: its name and hit points float above it and must stay readable.
-      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25, 90];
+      // Two to each side of the piece and two below: its name and hit points float above it and must stay readable.
+      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25, 122, 58];
       items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
     } else {
       const pop = document.createElement('div');
@@ -961,13 +1020,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         pop.style.gridTemplateColumns = 'repeat(5, 46px)';
         for (const [kind, icon] of Object.entries(EMOTES)) pop.append(button(kind, icon, () => emote(kind)));
         pop.append(button(v.d ? 'Stand up' : 'Knock down', '💀', () => patch({ d: !v.d }), !!v.d));
+      } else if (ringMode === 'shove') {
+        // The board is waiting for a tap: on the table for which way, or on the mini doing the shoving.
+        pop.style.gridTemplateColumns = 'auto 46px';
+        const hint = document.createElement('b');
+        hint.textContent = 'Tap which way';
+        hint.style.padding = '0 8px';
+        pop.append(hint);
       } else {
         pop.style.gridTemplateColumns = '46px auto 46px 46px';
         const count = document.createElement('b');
         count.innerHTML = `<span style="color:#ff6b7a">${v.hp ?? v.mhp ?? '–'}</span>${v.mhp === undefined ? '' : `<span style="opacity:.6">/${v.mhp}</span>`}`;
         pop.append(button('Lose a hit point', '−', () => bump(-1)), count, button('Gain a hit point', '+', () => bump(1)));
       }
-      pop.append(button('Back', ico('x'), to('main')));
+      pop.append(button('Back', ico('x'), () => { board.aimShove(null); to('main')(); }));
       el.append(pop);
     }
     placeRing();
@@ -1002,7 +1068,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     // A piece is never left behind the panel it is being edited in: the view slides to keep it clear.
     if (id && (id !== shownFor || wasOpen !== moreOpen)) {
       const roof = $('top').getBoundingClientRect().bottom + 110;
-      const floor = (moreOpen && !$('minipanel').hidden ? $('minipanel') : $('tools')).getBoundingClientRect().top - 70;
+      const floor = (moreOpen && !$('minipanel').hidden ? $('minipanel') : $('tools')).getBoundingClientRect().top - 130; // room for the ring's lowest button
       // On wide screens the panel sits beside the table, not under it: only the bars at top and bottom matter.
       board.keepInView(id, roof, Math.max(roof + 40, innerWidth >= 700 ? innerHeight - 150 : floor));
     }
