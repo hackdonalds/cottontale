@@ -1,7 +1,7 @@
 // The 3D table: renders the shared Store and turns pointer input into edits.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
+import { BLOCKS, MINIS, PROPS, STANDIN_HEIGHT, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, setWind, withDetail, type Season } from './kit';
 import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, safeArea, type Ambience } from './glide';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
@@ -17,6 +17,9 @@ import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown
 import type { Store } from './store';
 import { heading, land } from './forces';
 import { Look } from './look';
+import { onRegistry } from './registry';
+import { standees } from './standee';
+import type { DiceLook, Fog, Grade, Light } from './theme';
 import { LooseView } from './looseview';
 import { decodeLoose } from './loose';
 import { TABLE_SPAN, tableTexture } from './table';
@@ -159,6 +162,11 @@ class Layer {
     this.tint = family ? 0 : 0.07;
     this.turns = !family ? 1 : id === 'wood' ? 2 : 4;
     this.swarms = (family ?? [new THREE.BoxGeometry(1, h, 1).translate(0, h / 2, 0)]).map((g) => new Swarm(g, mat, scene, !mat.transparent));
+  }
+  /** Its kind of block has left the library (see registry.ts): take its meshes off the table. */
+  dispose(scene: THREE.Scene): void {
+    for (const w of this.swarms) { scene.remove(w.mesh); w.mesh.dispose(); }
+    (this.swarms[0]?.mesh.material as THREE.Material | undefined)?.dispose();
   }
   rebuild(): void {
     this.dirty = false;
@@ -322,10 +330,25 @@ function textSprite(draw: (g: CanvasRenderingContext2D) => void, w: number, h: n
   return s;
 }
 
-/** Name plate with an optional hit-point bar, floating over a mini. */
-function plate(v: MiniVal): THREE.Sprite {
-  const bar = typeof v.mhp === 'number' && v.mhp > 0;
+/** What is drawn over a mini besides its name: its bar, and marks for the conditions it is under. */
+export interface Face { hp?: number; mhp?: number; marks?: string }
+
+/** Name plate with an optional hit-point bar, floating over a mini. Marks sit in a row above it, on the same plate. */
+function plate(v: MiniVal, f: Face = v): THREE.Sprite {
+  const bar = typeof f.mhp === 'number' && f.mhp > 0;
+  const marks = f.marks ?? '', up = marks ? 40 : 0;
   const s = textSprite((g) => {
+    if (marks) {
+      g.font = '28px system-ui, sans-serif';
+      const w = Math.min(244, g.measureText(marks).width + 20);
+      g.fillStyle = 'rgba(15,17,23,.72)';
+      g.beginPath();
+      g.roundRect(128 - w / 2, 2, w, 36, 12);
+      g.fill();
+      g.fillStyle = '#fff';
+      g.fillText(marks, 128, 21, 232);
+      g.translate(0, up);
+    }
     if (v.n) {
       g.font = '600 30px system-ui, sans-serif';
       const w = Math.min(244, g.measureText(v.n).width + 24);
@@ -337,30 +360,37 @@ function plate(v: MiniVal): THREE.Sprite {
       g.fillText(v.n, 128, 27, 232);
     }
     if (bar) {
-      const f = Math.max(0, Math.min(1, (v.hp ?? 0) / v.mhp!));
+      const hp = f.hp ?? 0, mhp = f.mhp!;
+      const full = Math.max(0, Math.min(1, hp / mhp));
       g.fillStyle = 'rgba(15,17,23,.85)';
       g.beginPath();
       g.roundRect(38, 56, 180, 30, 10);
       g.fill();
-      g.fillStyle = f > 0.5 ? '#46a758' : f > 0.25 ? '#f2a33a' : '#e5484d';
+      g.fillStyle = full > 0.5 ? '#46a758' : full > 0.25 ? '#f2a33a' : '#e5484d';
       g.beginPath();
-      g.roundRect(42, 60, Math.max(8, 172 * f), 22, 7);
+      g.roundRect(42, 60, Math.max(8, 172 * full), 22, 7);
       g.fill();
       g.fillStyle = '#fff';
       g.font = '700 20px system-ui, sans-serif';
-      g.fillText(`${v.hp ?? 0}/${v.mhp}`, 128, 72);
+      g.fillText(`${hp}/${mhp}`, 128, 72);
     }
-  }, 256, 96, 1.6);
-  s.visible = !!v.n || bar;
+  }, 256, 96 + up, 1.6);
+  s.center.set(0.5, 48 / (96 + up)); // the extra row grows upwards: name and bar stay where they were
+  s.visible = !!v.n || bar || !!marks;
   return s;
 }
 
-/** `spill`: how far fire and magic glow into the picture; `sheen`: how much of the room shows in polished things. */
-const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number; spill: number; sheen: number }> = {
+/**
+ * `spill`: how far fire and magic glow into the picture; `sheen`: how much of the room shows in polished things.
+ * These three are what a sky looks like unless the board's theme brings a light of its own (see theme.ts).
+ */
+export const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number; spill: number; sheen: number }> = {
   day: { bg: '#100e0d', sun: '#ffdcae', sunI: 3.9, hemi: '#a9bdea', hemiI: 0.85, spill: 0.14, sheen: 0.32 },
   dusk: { bg: '#120b0f', sun: '#ff9a58', sunI: 2.3, hemi: '#b79fc9', hemiI: 0.55, spill: 0.3, sheen: 0.2 },
   night: { bg: '#05060b', sun: '#8fb0ff', sunI: 0.75, hemi: '#6f84c6', hemiI: 0.32, spill: 0.44, sheen: 0.08 }, // dark enough for torches to matter
 };
+/** Where the haze starts and ends unless a theme says otherwise: far out, only to lose the table's edge in the dark. */
+export const HAZE = { near: 60, far: 170 };
 
 export class Board {
   tool: Tool = 'move';
@@ -378,6 +408,8 @@ export class Board {
   aimed: ((target: string | Vec) => void) | null = null;
   /** Dice picked up and waiting to be thrown: while set, a drag on the table throws them. */
   hand: Kind[] = [];
+  /** How a piece's bar and marks follow from what it carries. A game system (src/system.ts) sets this; by default they are the piece's own. */
+  face: (v: MiniVal) => Face = (v) => v;
   diceColor = '#ffffff';
   readonly boulder: BoulderView;
   /** The GM has a boulder ready: while set, a drag on the table lets it go (as with dice in hand). */
@@ -397,6 +429,10 @@ export class Board {
   private lookLevel = 2;
   private lamps: THREE.PointLight[] = [];
   private spill = 0.2;
+  /** What the sky was last set to, so setting it again costs nothing. */
+  private skySig = '';
+  /** What a panel covers of the screen (see setInset). */
+  private inset = { bottom: 0, right: 0 };
   /** How strongly fires, torches and crystals light the table: the GM's dial, 0 (out) to 2. */
   private glow = 1;
   private litAt = new THREE.Vector3(1e9, 0, 0);
@@ -404,6 +440,7 @@ export class Board {
   private hemi: THREE.HemisphereLight;
   private ground: THREE.Mesh;
   private layers = new Map<string, Layer>();
+  private layerFor!: (id: string) => Layer;
   private props = new Map<string, THREE.Group>();
   /** Thin walls on cell edges (see rules.ts): what stands on each, drawn as one swarm per shape. */
   private edges = new Map<string, string>();
@@ -491,7 +528,7 @@ export class Board {
     // Shadows only change when the table does, not when the camera moves: redraw them on demand.
     this.renderer.shadowMap.autoUpdate = false;
     this.scene.background = new THREE.Color();
-    this.scene.fog = new THREE.Fog('#000', 60, 170);
+    this.scene.fog = new THREE.Fog('#000', HAZE.near, HAZE.far);
     // The finished look costs a few screenfuls of work a frame: phones start on the light
     // version, the weakest draw plain, and adapt() steps down if frames run long.
     this.lookLevel = lowEnd ? 2 : this.coarse ? 1 : 0;
@@ -590,6 +627,11 @@ export class Board {
       return this.cellHidden(x, y, z) || (!!top && !!GROUND[top.id] && y <= top.y);
     };
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
+    this.layerFor = (id) => { // a block that registered after the table was laid
+      let l = this.layers.get(id);
+      if (!l) this.layers.set(id, (l = new Layer(id, this.scene, hidden)));
+      return l;
+    };
     this.dice = new DiceView(this.scene);
     this.loose = new LooseView((geo, mat) => new Swarm(geo, mat, this.scene, true), hidden);
     this.dice.onBump = (at, dv) => this.bump(at, dv);
@@ -609,6 +651,23 @@ export class Board {
       }
       this.coverDirty = this.edgesDirty = true;
       this.loose.kitChanged();
+      this.touched();
+    });
+    // A pack of pieces has registered, changed or left: draw what this board has of it afresh,
+    // as the real thing or as stand-ins.
+    onRegistry((ns) => {
+      const mine = (id: unknown) => typeof id === 'string' && id.startsWith(`${ns}:`);
+      for (const [id, l] of this.layers) {
+        if (mine(id)) { l.dispose(this.scene); this.layers.delete(id); }
+      }
+      for (const key of [...this.store.keys('b:')]) {
+        const v = this.store.get<CellVal>(key);
+        if (v && mine(v.i)) this.applyCell(key, v, null);
+      }
+      for (const [id, m] of this.minis) {
+        if (mine(m.val.k)) { m.sig = ''; this.applyMini(id, m.val); }
+      }
+      this.visDirty = true;
       this.touched();
     });
 
@@ -686,10 +745,16 @@ export class Board {
     this.touched();
   }
 
-  setSky(name: Sky): void {
-    const s = SKIES[name] ?? SKIES.day;
+  /** The sky, and with it the light: a named one, with whatever the board's theme changes about it (and its haze). */
+  setSky(name: Sky, light?: Light, haze?: Fog): void {
+    const sig = JSON.stringify([name, light, haze]);
+    if (sig === this.skySig) return;
+    this.skySig = sig;
+    const s = { ...(SKIES[name] ?? SKIES.day), ...light }, fog = this.scene.fog as THREE.Fog;
     (this.scene.background as THREE.Color).set(s.bg);
-    this.scene.fog!.color.set(s.bg);
+    fog.color.set(haze?.color ?? s.bg);
+    fog.near = haze?.near ?? HAZE.near;
+    fog.far = haze?.far ?? HAZE.far;
     this.sun.color.set(s.sun);
     this.sun.intensity = s.sunI;
     this.hemi.color.set(s.hemi);
@@ -698,6 +763,22 @@ export class Board {
     this.scene.environmentIntensity = s.sheen;
     this.look?.setGlow(this.spill * (0.5 + 0.5 * Math.min(this.glow, 2)));
     this.invalidate();
+  }
+
+  /** The finished picture's grade, where a theme has one of its own (nothing to do on a device that draws plain). */
+  setGrade(grade?: Grade): void {
+    if (this.look?.setGrade(grade)) this.invalidate();
+  }
+  /** The table's dice (see theme.ts): the next ones picked up or thrown wear it. */
+  setDice(look?: DiceLook): void { this.dice.setLook(look); }
+  /**
+   * Leave part of the screen to a panel (CSS pixels it covers at the bottom and on the right; less
+   * than nothing leans the other way): the picture, and where dice land, centre on what is left.
+   */
+  setInset(bottom = 0, right = 0): void {
+    if (bottom === this.inset.bottom && right === this.inset.right) return;
+    this.inset = { bottom, right };
+    this.resize();
   }
 
   setTurn(id: string | null): void {
@@ -1074,10 +1155,10 @@ export class Board {
 
   private applyCell(key: string, v: CellVal | null, prev: CellVal | null): void {
     this.coverDirty = this.terrainDirty = true; // whatever changed, the ground and growth around it may want to change too
-    if (prev && BLOCKS[prev.i]) {
-      const l = this.layers.get(prev.i)!;
-      l.cells.delete(key);
-      l.dirty = true;
+    const was = prev && typeof prev.i === 'string' ? this.layers.get(prev.i) : undefined;
+    if (was) {
+      was.cells.delete(key);
+      was.dirty = true;
     }
     const old = this.props.get(key);
     if (old) {
@@ -1087,18 +1168,18 @@ export class Board {
     if (!v || typeof v.i !== 'string') return;
     const [x, y, z] = parse(key);
     if (![x, y, z].every(Number.isInteger)) return;
-    if (BLOCKS[v.i]) {
-      const l = this.layers.get(v.i)!;
+    if (Object.hasOwn(BLOCKS, v.i)) {
+      const l = this.layerFor(v.i);
       l.cells.add(key);
       l.dirty = true;
-    } else if (PROPS[v.i]) {
-      this.placeProp(key, v);
+    } else {
+      this.placeProp(key, v); // a prop, or the stand-in for a piece this device does not have (yet)
     }
   }
 
   private applyMini(id: string, v: MiniVal | null): void {
     let m = this.minis.get(id);
-    if (!v || !MINIS[v.k]) {
+    if (!v || typeof v.k !== 'string') {
       if (m) {
         this.scene.remove(m.group);
         this.minis.delete(id);
@@ -1109,11 +1190,13 @@ export class Board {
     const was = m?.val ?? v; // before a rebuild forgets it
     const ghost = this.full && !!v.h;
     const fly = Math.max(0, Math.min(12, v.e || 0));
-    const sig = [v.k, v.c, v.n, v.s, v.hp, v.mhp, fly, ghost, !!v.d].join('|');
+    const face = this.face(v);
+    const sig = [v.k, v.c, v.n, v.s, face.hp, face.mhp, face.marks, fly, ghost, !!v.d].join('|');
     const pos = new THREE.Vector3(v.x + 0.5, v.y, v.z + 0.5);
     if (!m || m.sig !== sig) {
       const group = new THREE.Group();
-      const def = MINIS[v.k], s = v.s || 1;
+      // A kind this device does not have (yet) stands as a plain marker until its pack registers.
+      const def = Object.hasOwn(MINIS, v.k) ? MINIS[v.k] : { height: STANDIN_HEIGHT }, s = v.s || 1;
       const base = new THREE.Mesh(BASE, baseMaterial(v.c));
       base.position.y = 0.04;
       base.castShadow = base.receiveShadow = true;
@@ -1124,7 +1207,7 @@ export class Board {
       body.add(base, hit, ...makeMini(v.k));
       body.scale.setScalar(s);
       body.position.y = fly;
-      const label = plate(v);
+      const label = plate(v, face);
       label.position.y = fly + def.height * s + 0.5;
       group.add(body, label);
       if (fly) { // a stalk down to the spot it hovers over
@@ -1195,7 +1278,7 @@ export class Board {
         continue;
       }
       this.pose(m);
-      const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + MINIS[m.val.k].height * s;
+      const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? STANDIN_HEIGHT) * s;
       const w = Math.sin(Math.min(1, u * 2) * Math.PI); // one swell over the first half
       if (!m.val.d) switch (a.kind) {
         case 'attack': this.lunge(a.id, m, w * 0.45, w * 0.35) || (body.translateZ(w * 0.45), body.rotateX(w * 0.35)); break;
@@ -1945,7 +2028,8 @@ export class Board {
 
   /** Where thrown dice should land (the middle of the view) and where the thrower stands. */
   throwSpot(): { target: Vec; cam: Vec; tray: number } {
-    this.ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    // The middle of what a panel leaves of the screen (see setInset); without one, the middle of the screen.
+    this.ray.setFromCamera(new THREE.Vector2(-this.inset.right / this.canvas.clientWidth || 0, this.inset.bottom / this.canvas.clientHeight || 0), this.camera);
     const p = this.pickSurface()?.point ?? this.controls.target;
     // Size the invisible dice tray to what this screen shows there (narrow on a portrait phone).
     const half = Math.tan((this.camera.fov * Math.PI) / 360) * this.camera.position.distanceTo(p);
@@ -1958,7 +2042,7 @@ export class Board {
   spotOf(id: string): { x: number; y: number; size: number } | null {
     const m = this.minis.get(id);
     if (!m || !m.group.visible) return null;
-    const h = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? 0.9) * (m.val.s || 1);
+    const h = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? STANDIN_HEIGHT) * (m.val.s || 1);
     const mid = m.group.position.clone().setY(m.group.position.y + h * 0.5).project(this.camera);
     const top = m.group.position.clone().setY(m.group.position.y + h).project(this.camera);
     if (mid.z > 1) return null; // behind the camera
@@ -2610,6 +2694,8 @@ export class Board {
     this.look?.setSize(w, h, this.renderer.getPixelRatio());
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.inset.bottom || this.inset.right) this.camera.setViewOffset(w, h, this.inset.right / 2, this.inset.bottom / 2, w, h);
+    else if (this.camera.view) this.camera.clearViewOffset();
     this.invalidate();
   }
 
@@ -2674,6 +2760,13 @@ export class Board {
     if (this.coverDirty) { this.rebuildCover(); changed = true; }
     if ((changed || this.controls.target.distanceToSquared(this.litAt) > 4) && this.relight()) changed = true;
     if (this.travel(dt)) changed = true;
+    // Standees (standee.ts) are drawn a page of pictures at a time: tell the pages where their cards stand now.
+    if (changed && standees.any) {
+      standees.begin();
+      for (const g of this.props.values()) standees.add(g);
+      for (const m of this.minis.values()) standees.add(m.group, this.full && m.val.h ? 0.5 : 1);
+      standees.end(this.scene);
+    }
     let busy = moving || changed || this.dirty;
     if (this.shots.update(dt)) busy = true; // in the air, they cast no shadow: the table itself is unchanged
     for (let i = this.pings.length - 1; i >= 0; i--) {

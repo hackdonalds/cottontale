@@ -1,0 +1,167 @@
+{
+ "v": 1,
+ "id": "vampire",
+ "name": "Vampires",
+ "icon": "🦇",
+ "mood": {
+  "sky": "night",
+  "season": "winter",
+  "glow": 1.75,
+  "amb": "crypt",
+  "light": {
+   "bg": "#070a12",
+   "sun": "#a9c4ff",
+   "sunI": 1.1,
+   "hemi": "#5f76b8",
+   "hemiI": 0.36,
+   "spill": 0.5,
+   "sheen": 0.1
+  },
+  "fog": {
+   "color": "#0b1020",
+   "near": 18,
+   "far": 90
+  },
+  "grade": {
+   "sat": 0.62,
+   "warmth": -0.4,
+   "contrast": 0.45,
+   "vignette": 0.8
+  }
+ },
+ "gen": "dungeon",
+ "dice": {
+  "body": "#5c0f1a",
+  "ink": "#e8dcc0",
+  "rough": 0.25,
+  "metal": 0.2
+ },
+ "pieces": {
+  "blocks": [
+   "cobble",
+   "slate",
+   "darkwood",
+   "marble",
+   "carpet",
+   "obsidian",
+   "glass",
+   "snow"
+  ],
+  "props": [
+   "coffin",
+   "tombstone",
+   "candles",
+   "deadtree",
+   "altar",
+   "statue",
+   "gate",
+   "fence",
+   "cage",
+   "bones",
+   "throne",
+   "bookshelf",
+   "bed",
+   "potion",
+   "torch"
+  ],
+  "minis": [
+   "bat",
+   "ghost",
+   "skeleton",
+   "zombie",
+   "wolf",
+   "rat",
+   "spider",
+   "witch",
+   "villager",
+   "guard",
+   "cleric",
+   "child"
+  ]
+ },
+ "sounds": {
+  "scapes": {
+   "crypt": {
+    "name": "⚰️ Crypt",
+    "layers": [
+     {
+      "filters": [
+       {
+        "type": "bandpass",
+        "freq": 140,
+        "q": 3
+       }
+      ],
+      "gain": 0.1,
+      "mod": {
+       "every": 5000,
+       "gain": [
+        0.04,
+        0.14
+       ]
+      }
+     }
+    ],
+    "drones": [
+     {
+      "wave": "sine",
+      "freq": 49,
+      "gain": 0.12
+     },
+     {
+      "wave": "sine",
+      "freq": 51.5,
+      "gain": 0.06
+     }
+    ],
+    "patterns": [
+     {
+      "every": 1100,
+      "voices": [
+       {
+        "kind": "note",
+        "wave": "sine",
+        "freq": [
+         1200,
+         2200
+        ],
+        "gain": 0.1,
+        "dur": 0.12,
+        "attack": 0.004,
+        "glide": 0.55,
+        "p": 0.3,
+        "echo": true
+       }
+      ]
+     },
+     {
+      "every": 4700,
+      "voices": [
+       {
+        "kind": "note",
+        "wave": "triangle",
+        "freq": 196,
+        "gain": 0.06,
+        "dur": 5,
+        "attack": 0.02,
+        "scale": [
+         0,
+         3,
+         7
+        ],
+        "p": 0.35,
+        "lp": 900,
+        "echo": true
+       }
+      ]
+     }
+    ],
+    "echo": {
+     "time": 0.46,
+     "feedback": 0.55,
+     "mix": 0.6
+    }
+   }
+  }
+ }
+}

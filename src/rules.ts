@@ -37,6 +37,12 @@ export interface MiniVal {
   d?: boolean;
   /** Up to four free-form stat lines, e.g. "AC 15". */
   st?: string[];
+  /** With a game system on the table (`src/system.ts`): what was entered on its sheet, by field id. */
+  sv?: Record<string, number | string | boolean>;
+  /** The conditions it is under (ids from the system). */
+  cn?: string[];
+  /** The last few events whose effects were applied to it, so none is applied twice. */
+  fx?: string[];
 }
 export interface Turn { id: string; round: number }
 

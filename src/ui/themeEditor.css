@@ -1,0 +1,119 @@
+/* Make your own theme (ui/themeEditor.ts). Mobile first: the base rules are the portrait phone —
+   one panel over the lower half of the screen, the table above it — and landscape and large
+   screens put the panel beside the table (bottom of this file). Selectors carry an id, so these
+   rules hold wherever this sheet lands among the others. */
+
+/* ---- a Prep page that leaves the table showing (PrepPage.see): only its bar and what it draws take touches ---- */
+#prepPages[data-see] { background: none; pointer-events: none; }
+#prepPages[data-see] > #prepBar { pointer-events: auto; }
+#prepPages[data-see] > #prepBody { overflow: hidden; padding: 0; gap: 0; justify-content: flex-end; pointer-events: none; }
+
+/* ---- the editor: undo and redo float over the table's corner, the panel sits under them ---- */
+#prepBody > #tedDo { align-self: flex-end; width: auto; margin: 0; display: flex; gap: 6px; padding: 0 8px 6px; }
+#tedDo button { pointer-events: auto; display: grid; place-items: center; padding: 0; background: #2b211b; border-color: #120d0a; box-shadow: inset 0 1px 0 rgba(255, 226, 190, .16), 0 4px 10px rgba(0, 0, 0, .45); }
+#tedDo button:disabled { opacity: .45; }
+#prepBody > #ted { pointer-events: auto; align-self: stretch; width: auto; max-width: none; height: clamp(250px, 46%, 430px); margin: 0 8px 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: #2b211b; }
+#tedTabs { flex: none; display: flex; gap: 2px; padding: 5px; overflow-x: auto; scrollbar-width: none; overscroll-behavior: contain; border-bottom: 1px solid var(--line); }
+#tedTabs::-webkit-scrollbar { display: none; }
+#tedTabs button { flex: 1 0 auto; min-height: var(--tap); padding: 0 11px; font-size: 13.5px; font-weight: 600; white-space: nowrap; background: none; box-shadow: none; opacity: .8; }
+#tedTabs button.on { background: var(--acc); border-color: var(--acc); color: #201a05; opacity: 1; }
+#tedBody { flex: 1; min-height: 0; overflow: hidden auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 12px; }
+#tedBody > * { flex: none; }
+#tedBody button { font-size: 14px; }
+#tedBody .hint { line-height: 1.35; }
+
+/* A group's title, with what resets or adds to it at the other end. */
+.tedHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; font-size: 14px; }
+#tedBody .tedHead { min-height: var(--tap); padding-top: 6px; border-top: 1px solid var(--line); }
+#tedBody .tedHead:first-child { border-top: 0; padding-top: 0; }
+.tedHead small { font-weight: 400; opacity: .65; }
+h3.tedHead { margin: 8px 2px -2px; font-weight: 600; opacity: .7; }
+
+/* One of a few, side by side. */
+.tedSeg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
+.tedSeg button { padding: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#ted .choices button { white-space: normal; line-height: 1.2; min-height: 48px; }
+
+/* Dials: a name, the slider, its number. */
+#ted .slider span { flex: 0 0 4.4em; }
+#ted .slider output { flex: 0 0 2.3em; text-align: right; font-size: 13px; opacity: .8; font-variant-numeric: tabular-nums; }
+
+/* Colours: a dot to tap; the one tapped unfolds swatches and three sliders. */
+.tedColours { display: flex; flex-direction: column; gap: 6px; }
+#ted .tedDot { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 4px 6px; }
+.tedDot i { flex: none; width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .6); box-shadow: 0 1px 3px rgba(0, 0, 0, .5); }
+.tedDot span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tedCol { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 12px; background: rgba(0, 0, 0, .28); --h: 0; --s: 50%; --l: 50%; }
+.tedPal { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; overscroll-behavior: contain; }
+.tedPal::-webkit-scrollbar { display: none; }
+#ted .tedPal > * { flex: none; width: var(--tap); height: var(--tap); min-height: var(--tap); padding: 0; }
+#ted .tedPal button { background: none; box-shadow: none; display: grid; place-items: center; font-size: 20px; }
+.tedSw::before { content: ''; width: 30px; height: 30px; border-radius: 50%; background: var(--c); border: 2px solid rgba(255, 255, 255, .25); }
+.tedSw.on::before { border-color: #fff; box-shadow: 0 0 0 2px var(--acc); }
+#ted .tedNative { padding: 5px; border-radius: 50%; overflow: hidden; background: conic-gradient(#f55, #fd5, #5d5, #5df, #55f, #f5f, #f55); border: 0; }
+#ted .tedNative::-webkit-color-swatch-wrapper { padding: 0; }
+#ted .tedNative::-webkit-color-swatch { border: 2px solid #2b211b; border-radius: 50%; }
+#ted .tedNative::-moz-color-swatch { border: 2px solid #2b211b; border-radius: 50%; }
+/* The three colour sliders show what they change: a rainbow, grey to vivid, dark to light. */
+#ted .tedCol .slider input { -webkit-appearance: none; appearance: none; padding: 0; border: 0; background: none; }
+#ted .tedCol .slider input::-webkit-slider-runnable-track { height: 14px; border-radius: 7px; background: var(--track); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .4); }
+#ted .tedCol .slider input::-moz-range-track { height: 14px; border-radius: 7px; background: var(--track); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .4); }
+#ted .tedCol .slider input::-webkit-slider-thumb { -webkit-appearance: none; width: 28px; height: 28px; margin-top: -7px; border-radius: 50%; background: #fff; border: 2px solid #120d0a; box-shadow: 0 1px 4px rgba(0, 0, 0, .6); }
+#ted .tedCol .slider input::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #fff; border: 2px solid #120d0a; box-shadow: 0 1px 4px rgba(0, 0, 0, .6); }
+.tedCol .hue { --track: linear-gradient(to right, hsl(0 85% 55%), hsl(60 85% 55%), hsl(120 85% 55%), hsl(180 85% 55%), hsl(240 85% 55%), hsl(300 85% 55%), hsl(360 85% 55%)); }
+.tedCol .sat { --track: linear-gradient(to right, hsl(var(--h) 0% 50%), hsl(var(--h) 100% 50%)); }
+.tedCol .lig { --track: linear-gradient(to right, #000, hsl(var(--h) var(--s) 50%), #fff); }
+
+/* Pieces: each shelf is one row of pictures that scrolls under a thumb. */
+.tedStrip { display: flex; gap: 2px; min-height: 86px; align-items: flex-start; overflow-x: auto; scrollbar-width: none; overscroll-behavior: contain; }
+.tedStrip::-webkit-scrollbar { display: none; }
+.tedStrip .hint { align-self: center; }
+#hud .tile.lacking { opacity: .55; }
+#ted .tile, #tedGrid .tile { box-shadow: none; }
+.tedMove button { padding: 4px; white-space: nowrap; }
+#ted button:disabled { opacity: .4; }
+
+/* Dice: a flat die in the theme's colours beside the button that throws a real one. */
+.tedSample { align-items: center; }
+.tedDie { flex: none; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 12px; font-weight: 800; font-size: 20px; box-shadow: inset 0 2px 0 rgba(255, 255, 255, .28), inset 0 -4px 0 rgba(0, 0, 0, .25), 0 2px 5px rgba(0, 0, 0, .5); transform: rotate(-8deg); }
+
+/* About */
+#ted .tedName input:first-child { flex: 0 0 3.4em; padding: 4px; text-align: center; font-size: 22px; }
+/* One row of suggestions that scrolls sideways, so what can be done with the theme stays in reach below it. */
+.tedEmoji { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; overscroll-behavior: contain; }
+.tedEmoji::-webkit-scrollbar { display: none; }
+#ted .tedEmoji button { flex: none; width: var(--tap); padding: 0; font-size: 22px; background: none; box-shadow: none; }
+#ted .tedEmoji button.on { background: rgba(255, 209, 102, .18); }
+.tedActs2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tedActs2 button { padding: 4px 6px; line-height: 1.2; min-height: 48px; }
+.tedBox { display: flex; flex-direction: column; gap: 6px; }
+#hud .tedBox textarea { font: 16px/1.3 ui-monospace, monospace; word-break: break-all; resize: none; }
+#hud .tedNote { color: var(--acc); opacity: 1; }
+#hud .hint.warn { color: #f2a33a; opacity: 1; }
+#hud button.danger { background: #b3353a; color: #fff; }
+
+/* ---- the gallery: under each card, what can be done with it ---- */
+.cardBox { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cardBox .card { flex: 1; }
+.cardBox .row { align-items: center; }
+.cardBox .row.wrap { flex-wrap: wrap; }
+.cardBox .row.wrap > input, .cardBox .row.wrap > p { flex: 1 1 100%; }
+.cardBox .row.wrap > button { flex: 1; }
+.cardBox .row button { font-size: 14px; }
+#hud .cardBox .row button svg { vertical-align: middle; }
+.tedActs { flex-wrap: wrap; }
+.tedActs button { flex: 1 1 150px; min-height: 48px; }
+
+/* ---- adding pieces: search on top, the library below it ---- */
+#prepBody[data-page="themepick"] { overflow: hidden; }
+.tedPickTop { display: flex; flex-direction: column; gap: 6px; }
+#prepBody > #tedGrid { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 8px 2px; grid-auto-rows: max-content; justify-items: center; align-content: start; }
+#tedGrid h3 { grid-column: 1 / -1; justify-self: start; margin: 2px 2px 0; font-size: 12px; font-weight: 600; opacity: .65; }
+#tedGrid .tile.on i::after { content: '✓'; position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--acc); color: #201a05; font-size: 12px; font-weight: 800; line-height: 1; }
+
+/* ---- a phone on its side, and large screens: the panel stands beside the table ---- */
+@media (orientation: landscape) and (max-height: 700px), (min-width: 900px) and (min-height: 521px) {
+  #prepPages[data-see] > #prepBody { flex-direction: row; align-items: flex-end; }
+  #prepBody > #tedDo { flex-direction: column; padding: 0 6px 8px 0; }
+  #prepBody > #ted { width: min(380px, 48%); height: auto; margin: 8px 8px 8px 0; }
+}

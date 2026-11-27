@@ -1,0 +1,7 @@
+{
+ "name": "🌧️ Rain",
+ "layers": [
+  {"filters": [{"type": "highpass", "freq": 600}, {"type": "lowpass", "freq": 7000}], "gain": 0.22},
+  {"filters": [{"type": "lowpass", "freq": 260}], "gain": 0.3}
+ ]
+}

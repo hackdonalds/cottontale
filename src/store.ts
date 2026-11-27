@@ -5,8 +5,8 @@
 export type Row = [key: string, value: unknown, time: number, by: string];
 export interface Entry { v: unknown; t: number; b: string }
 
-/** Keys that belong to one board; everything else (GM, settings, the board list) is table-wide. */
-const BOARD_KEY = /^(?:[bmfwl]:|turn$|gen$)/;
+/** Keys that belong to one board (its pieces, fog, walls, turn, scene and atmosphere `at:`); everything else (GM, settings, the board list) is table-wide. */
+const BOARD_KEY = /^(?:[bmfwl]:|at:|turn$|gen$)/;
 
 export class Store {
   entries = new Map<string, Entry>();
@@ -37,6 +37,12 @@ export class Store {
   }
 
   set(key: string, value: unknown): void { this.setRaw(this.phys(key), value); }
+
+  /** When a key was last written, and by whom. */
+  stamp(key: string): { t: number; b: string } | null {
+    const e = this.entries.get(this.phys(key));
+    return e ? { t: e.t, b: e.b } : null;
+  }
 
   /** Write a stored key directly, whatever board it belongs to (copying or deleting whole boards). */
   setRaw(key: string, value: unknown): void {

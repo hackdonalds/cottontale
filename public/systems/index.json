@@ -1,0 +1,6 @@
+[
+  { "file": "lantern-d20.json", "name": "Lantern d20", "about": "Fantasy adventure with a twenty-sided die: six abilities, armour, hit points." },
+  { "file": "six-sides.json", "name": "Six Sides", "about": "Roll a handful of six-sided dice and count the fives and sixes. Sixes roll again." },
+  { "file": "three-hearts.json", "name": "Three Hearts", "about": "For the youngest players: three hearts, one thing you are good at, one die." },
+  { "file": "hard-knocks.json", "name": "Hard Knocks", "about": "Gritty skirmishes: wounds bleed until you staunch them, and a natural 20 rolls on the critical table. Brings scripts." }
+]

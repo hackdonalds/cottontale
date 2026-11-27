@@ -1,0 +1,28 @@
+{
+ "id": "tavern",
+ "name": "Tavern",
+ "icon": "mug",
+ "algo": "building",
+ "sliders": ["Size", "Tables", "Clutter"],
+ "palette": {
+  "ground": [["grass", 256]],
+  "path": "stone",
+  "dress": {
+   "grass": "grow"
+  },
+  "floor": "wood",
+  "walls": [
+   {"solid": "wallwood", "window": "woodwin", "door": "walldoor"},
+   {"solid": "wall", "window": "wallwin", "door": "walldoor"}
+  ],
+  "light": "torch",
+  "table": "table",
+  "seat": "chair",
+  "seat2": "bench"
+ },
+ "rooms": [
+  {"kind": "hall", "name": "Hall", "walls": ["barrel", "barrel", "bookshelf", "candles", "cauldron", "crate"], "floor": ["rug"]},
+  {"kind": "store", "name": "Store", "walls": ["barrel", "crate", "sacks", "crate", "barrel"], "floor": ["sacks"], "extra": 1},
+  {"kind": "bedroom", "name": "Bedroom", "corner": "bed", "walls": ["chest", "bookshelf", "candles"], "floor": ["rug"]}
+ ]
+}

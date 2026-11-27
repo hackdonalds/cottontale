@@ -10,21 +10,31 @@ let pw, channel;
 try { pw = require('playwright'); } catch { pw = require('playwright-core'); channel = 'chrome'; }
 const { chromium, devices } = pw;
 
-// Ports can be moved (E2E_WEB, E2E_RELAY) so several checkouts can run their checks at once.
-const WEB = process.env.E2E_WEB ?? '4188', RELAY = process.env.E2E_RELAY ?? '7788';
+// E2E_PORT moves the three local servers (site, relay = +1, blossom = +2) so several runs can share a machine.
+const PORT = Number(process.env.E2E_PORT ?? 4188), RELAY = process.env.E2E_PORT ? PORT + 1 : 7788, BLOSSOM = PORT + 2;
+// E2E_SLOW=4 gives every wait four times as long: for a machine that is busy with other runs.
+const SLOW = +(process.env.E2E_SLOW ?? 1);
 const procs = [
-  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: RELAY }, stdio: 'ignore' }),
-  spawn('npx', ['vite', 'preview', '--port', WEB, '--strictPort'], { stdio: 'ignore' }),
+  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: String(RELAY) }, stdio: 'ignore' }),
+  spawn('node', ['node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' }), // not npx: killing npx leaves vite running
+  // A picky file server: takes small blobs, refuses anything over 200 kB.
+  spawn('node', ['scripts/blossom.mjs'], { env: { ...process.env, PORT: String(BLOSSOM), MAX_SIZE: '200000' }, stdio: 'ignore' }),
 ];
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
 const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
 process.on('uncaughtException', (e) => { console.error(e); done(1); });
-await new Promise((r) => setTimeout(r, 2500));
+// Wait for the site to answer rather than a fixed time: a busy machine starts it slowly.
+for (let i = 0; i < 120; i++) {
+  if (await fetch(`http://localhost:${PORT}/`).then((r) => r.ok, () => false)) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+await new Promise((r) => setTimeout(r, 1000));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const url = (room) => `http://localhost:${WEB}/#room=${room}&relays=ws://localhost:${RELAY}`;
+const url = (room) => `http://localhost:${PORT}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
+  page.setDefaultTimeout(30000 * SLOW);
   page.on('pageerror', (e) => { console.log('pageerror', name, e.stack ?? e.message); done(1); });
   await page.goto(url(room));
   await page.fill('#name', name);
@@ -33,6 +43,34 @@ async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { wi
   return page;
 }
 const count = (page, prefix) => page.evaluate((p) => [...window.__ct.store.keys(p)].length, prefix);
+
+/** A short WAV file (16-bit mono), made here: a tone that fades out. */
+function wavFile(seconds, rate = 8000, hz = 330) {
+  const n = Math.round(seconds * rate), b = Buffer.alloc(44 + n * 2);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + n * 2, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 9000 * (1 - i / n)), 44 + i * 2);
+  return b;
+}
+/** Choose a file as a finger would: tap the button, and answer the phone's file picker. */
+async function chooseFile(page, button, file, tap = false) {
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap ? page.tap(button) : page.click(button)]);
+  await chooser.setFiles(file);
+}
+// A picture to import: a PNG made here (white paper, a red disc with a blue eye), so nothing is fetched or shipped.
+function png(w, h, at) {
+  const { deflateSync } = require('node:zlib');
+  const row = w * 4 + 1, raw = Buffer.alloc(row * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) raw.set(at(x, y), y * row + 1 + x * 4);
+  const crc = (buf) => { let c = ~0; for (const v of buf) { c ^= v; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+  const chunk = (type, data) => { const out = Buffer.alloc(12 + data.length); out.writeUInt32BE(data.length); out.write(type, 4, 'latin1'); data.copy(out, 8); out.writeUInt32BE(crc(out.subarray(4, 8 + data.length)), 8 + data.length); return out; };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(w); head.writeUInt32BE(h, 4); head.set([8, 6, 0, 0, 0], 8);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', head), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const TOKEN = { name: 'IMG_0042.png', mimeType: 'image/png', buffer: png(320, 320, (x, y) => (Math.hypot(x - 160, y - 160) < 110 ? (Math.hypot(x - 190, y - 130) < 18 ? [30, 60, 200, 255] : [200, 40, 40, 255]) : [255, 255, 255, 255])) };
+/** The alpha of the picture being cut out, at its corner and in its middle. */
+const cutAlpha = (page) => page.evaluate(() => { const c = document.querySelector('.impCut'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; return { corner: d[3 + (2 * c.width + 2) * 4], mid: d[3 + ((c.height >> 1) * c.width + (c.width >> 1)) * 4], w: c.width }; });
 
 const a = await join('Ada');
 const b = await join('Bo');
@@ -155,7 +193,7 @@ assert(feel.fell && feel.flat && feel.rose && feel.up && feel.back && feel.calm,
 
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
 // (Frames are slow in a browser without a GPU, and animations run on frames: be patient.)
-const ok = (page, fn, arg, timeout = 20000) => page.waitForFunction(fn, arg, { timeout }).then(() => true, () => false);
+const ok = (page, fn, arg, timeout = 20000) => page.waitForFunction(fn, arg, { timeout: timeout * SLOW }).then(() => true, () => false);
 const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
 await a.keyboard.press('1');
 await a.click('#menuBtn');
@@ -204,7 +242,7 @@ const SHOWN = () => {
   return n;
 };
 const drawn = (page) => page.evaluate(SHOWN);
-const shows = (page, n) => page.waitForFunction(`(${SHOWN})() === ${n}`, null, { timeout: 8000 }).then(() => true, () => false);
+const shows = (page, n) => page.waitForFunction(`(${SHOWN})() === ${n}`, null, { timeout: 8000 * SLOW }).then(() => true, () => false);
 await a.keyboard.press('5');
 await a.mouse.move(top[0] - 40, top[1]);
 await a.mouse.down();
@@ -288,6 +326,71 @@ assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return 
 await a.click('#ring [title="Emote"]');
 await a.click('#ring [title="Stand up"]');
 
+// ---- game systems: rules as data, with the GM's app as the referee ----
+{
+  const mini = (page) => page.evaluate((id) => window.__ct.store.get(`m:${id}`), id);
+  const chat = (page, re) => page.evaluate((src) => [...document.querySelectorAll('#msgs > div')].filter((d) => new RegExp(src).test(d.textContent)).length, re.source);
+  await a.click('#ring [title="Back"]');
+  assert(await a.evaluate(() => document.querySelectorAll('#ring button').length === 4 && getComputedStyle(document.querySelector('#sheetBtn')).display === 'none'), 'with no system on the table there is no sheet anywhere');
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("Lantern d20")');
+  assert(await ok(b, () => window.__ct.rules.system()?.id === 'lantern-d20' && document.body.classList.contains('sys')), 'the GM picks a system and it reaches the player');
+  await a.click('#rules [data-close]');
+
+  // The player opens the sheet of the piece they were handed, changes a stat, and rolls it.
+  await b.evaluate((id) => window.__ct.board.select(id), id);
+  await b.click('#ring [title="Character sheet"]');
+  await b.fill('#sheet [data-stat="str"]', '16');
+  await b.press('#sheet [data-stat="str"]', 'Tab');
+  assert(await ok(a, (id) => window.__ct.store.get(`m:${id}`).sv?.str === 16, id) && await b.evaluate(() => /d20\+3/.test(document.querySelector('#sheet [data-roll="str"]').textContent)), 'a stat entered on the sheet is stored raw; its modifier is derived');
+  await b.click('#sheet [data-roll="str"]');
+  assert(await b.evaluate(() => window.__ct.board.hand.join() === 'd20'), 'tapping a rollable stat puts its dice in the hand');
+  await fling(b);
+  const read = (page) => page.waitForFunction(() => /Strength 1d20\+3: (\d+) \[(\d+)\] \+ 3/.exec(document.querySelector('#msgs').textContent)?.slice(1, 3).join()).then((h) => h.jsonValue());
+  const [sa, sb] = await Promise.all([read(a), read(b)]);
+  const [tot, die] = sa.split(',').map(Number);
+  assert(sa === sb && tot === die + 3 && die >= 1 && die <= 20, `a sheet roll lands on the same face for both, and the total is the face plus the modifier (${die} + 3 = ${tot})`);
+
+  // The sheet got out of the way of the throw. With nothing selected, the dock opens the player's own character.
+  await b.evaluate(() => window.__ct.board.select(null));
+  await b.click('#sheetBtn');
+  assert(await b.evaluate(() => !document.querySelector('#sheet').classList.contains('closed') && document.querySelector('#sheet [data-stat="str"]')?.value === '16'), 'the dock opens the sheet of the piece the player was handed');
+  // A condition the GM puts on the piece shows for the player: on the piece, and in how they roll.
+  await a.click('#ring [title="Character sheet"]');
+  await a.click('#sheet [data-cond="poisoned"]');
+  assert(await ok(b, (id) => window.__ct.store.get(`m:${id}`).cn?.includes('poisoned') && window.__ct.board.minis.get(id).sig.includes('🤢')
+    && /2d20kl1\+3/.test(document.querySelector('#sheet [data-roll="str"]').textContent) && document.querySelector('#sheet [data-cond="poisoned"]').classList.contains('on'), id), 'a condition applied by the GM marks the piece for the player and changes their rolls');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/sheet-desktop.png` });
+
+  // A named roll that feeds the turn order, thrown with the dice the condition imposes.
+  await b.click('#sheet [data-roll="initiative"]');
+  assert(await b.evaluate(() => window.__ct.board.hand.join() === 'd20,d20'), 'poisoned: two dice are thrown, the lower is kept');
+  await fling(b);
+  assert(await ok(a, (id) => { const m = /Initiative 2d20kl1: (\d+) /.exec(document.querySelector('#msgs').textContent); return !!m && window.__ct.store.get(`m:${id}`).ini === +m[1]; }, id), 'the initiative roll puts the piece in the turn order with its total');
+
+  // A trigger: burning hurts at the start of the turn. Only the GM's app applies it, once.
+  await a.click('#sheet [data-cond="burning"]');
+  const hp0 = (await mini(a)).hp;
+  await a.click('#nextTurn');
+  assert(await ok(b, () => /Burning: \d/.test(document.querySelector('#msgs').textContent)), 'a trigger fires at the start of the turn and its line reaches the player');
+  await a.waitForTimeout(700);
+  const burn = +(await a.evaluate(() => /Burning: (\d)/.exec(document.querySelector('#msgs').textContent)[1]));
+  const [ma, mb] = [await mini(a), await mini(b)];
+  assert(burn >= 1 && burn <= 4 && ma.hp === hp0 - burn && mb.hp === ma.hp && (await chat(a, /Burning: \d/)) === 1 && (await chat(b, /Burning: \d/)) === 1
+    && ma.fx?.length === 1, `the trigger fired exactly once, on both tables (${hp0} − ${burn} = ${ma.hp})`);
+  // Dropping to nothing is a happening of its own: the rules mark the piece and say so.
+  await a.evaluate((id) => { const { store } = window.__ct; store.set(`m:${id}`, { ...store.get(`m:${id}`), hp: 0 }); }, id);
+  assert(await ok(b, (id) => window.__ct.store.get(`m:${id}`).cn?.includes('down') && /is down!/.test(document.querySelector('#msgs').textContent), id), 'hit points running out puts the piece down for everyone');
+  await a.evaluate((id) => { const { store } = window.__ct; const { cn: _, ...v } = store.get(`m:${id}`); store.set(`m:${id}`, { ...v, hp: 19 }); }, id);
+  await a.click('#endFight');
+  await a.click('#sheet [data-close]');
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("No rules")');
+  assert(await ok(b, () => !document.body.classList.contains('sys') && !window.__ct.rules.system()), 'clearing the rules puts the table back as it was');
+  await a.click('#rules [data-close]');
+}
 // Breaking: the GM smashes a statue. It is one edit (rubble is left, undo restores it), and the
 // debris and the rocking are worked out on each device; under fog a player gets none of it.
 const smash = (page, key) => page.evaluate((key) => { const { board } = window.__ct; board.offer(key); board.breakOffered(); }, key);
@@ -357,6 +460,98 @@ assert(await ok(b, () => { const v = window.__ct.store.get('m:tower'), l = windo
 await a.evaluate(() => { const { store } = window.__ct; for (const k of ['m:tower', 'm:lurker']) store.set(k, null); for (let y = 0; y < 3; y++) for (const x of [30, 40]) store.set(`b:${x},${y},30`, null); });
 await b.waitForFunction(() => !window.__ct.store.get('b:40,2,30'));
 
+// ---- scripts a system brings: boxed in (QuickJS in a worker), on the referee's device only, and only once allowed ----
+{
+  const mini = (page) => page.evaluate((id) => window.__ct.store.get(`m:${id}`), id);
+  const chat = (page, re) => page.evaluate((src) => [...document.querySelectorAll('#msgs > div')].filter((d) => new RegExp(src).test(d.textContent)).length, re.source);
+  const fetched = new Map([[a, []], [b, []]]);
+  for (const [page, list] of fetched) page.context().on('request', (r) => { if (/assets\/script|\.wasm/.test(r.url())) list.push(r.url().split('/').pop()); });
+  const box = (page) => fetched.get(page).filter((u) => /worker|wasm/.test(u));
+  const BLED = /Robot bleeds: 1 Vigour lost|Robot staunches the wound/;
+  const name = (await mini(a)).n;
+  await a.evaluate((id) => { const { store } = window.__ct; store.set(`m:${id}`, { ...store.get(`m:${id}`), n: 'Robot', hp: 10, mhp: 10, ini: 12, cn: ['bleeding'] }); }, id);
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("Hard Knocks")');
+  await a.waitForSelector('#rulesList [data-scripts="later"]');
+  assert(await ok(b, () => window.__ct.rules.system()?.id === 'hard-knocks') && box(a).length === 0, 'a system that brings scripts asks the GM first, in the page, and has loaded no engine yet');
+  await b.click('#menuBtn');
+  await b.click('[data-act="rules"]');
+  await b.waitForSelector('#rulesList button:has-text("Hard Knocks").on');
+  assert(await b.evaluate(() => !document.querySelector('[data-scripts]')), 'a player who does not referee is not asked');
+  await b.click('#rules [data-close]');
+
+  // Not now: the system works, its scripts do not run, and nothing was fetched for them.
+  await a.click('#rulesList [data-scripts="later"]');
+  await a.waitForSelector('#rulesList [data-scripts="allow"]');
+  await a.click('#rules [data-close]');
+  await a.click('#nextTurn');
+  await ok(b, (id) => window.__ct.store.get('turn')?.id === id, id);
+  await a.waitForTimeout(1500);
+  let [ma, mb] = [await mini(a), await mini(b)];
+  assert(ma.hp === 10 && mb.hp === 10 && mb.cn.join() === 'bleeding' && !(await chat(a, BLED)) && !(await chat(b, BLED)) && box(a).length === 0 && box(b).length === 0
+    && await a.evaluate(() => !localStorage.getItem('cottontale:scripts') || localStorage.getItem('cottontale:scripts') === '[]'), `with "Not now" the trigger's script does not run and the engine is never downloaded (${box(a).length} requests for it)`);
+
+  // Allow: from now on the referee's device runs them, in the box.
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList [data-scripts="allow"]');
+  await a.waitForSelector('#rulesList [data-scripts="off"]');
+  await a.click('#rules [data-close]');
+  await a.click('#nextTurn');
+  assert(await ok(b, (src) => new RegExp(src).test(document.querySelector('#msgs').textContent), BLED.source), 'once allowed, the script runs on the turn and its line reaches the player');
+  const stopped = (await chat(b, /staunches/)) === 1;
+  const landed = await ok(b, ([id, stopped]) => { const v = window.__ct.store.get(`m:${id}`); return stopped ? v.hp === 10 && !v.cn?.includes('bleeding') : v.hp === 9 && !!v.cn?.includes('bleeding'); }, [id, stopped]);
+  await a.waitForTimeout(1000);
+  [ma, mb] = [await mini(a), await mini(b)];
+  assert(landed && (await chat(a, BLED)) === 1 && (await chat(b, BLED)) === 1 && ma.hp === mb.hp && mb.hp === (stopped ? 10 : 9),
+    `the script ran exactly once and the player sees what it did (${stopped ? 'the bleeding stopped' : 'bled to 9'}; ${ma.hp}/${mb.hp} ${mb.cn ?? ''})`);
+  assert(box(a).some((u) => /script\.worker/.test(u)) && box(a).some((u) => /\.wasm$/.test(u)) && fetched.get(b).length === 0
+    && await a.evaluate(() => JSON.parse(localStorage.getItem('cottontale:scripts')).length === 1) && await b.evaluate(() => !localStorage.getItem('cottontale:scripts')),
+    `only the referee fetched the worker and the engine, each when first needed (GM: ${[...new Set(fetched.get(a))].join(', ')}; player: ${fetched.get(b).length})`);
+
+  // Other scripts are another question: the answer was for that exact set. And what a script can see is nothing of ours.
+  const swap = async (bleed, tag) => {
+    await a.evaluate(([id, bleed]) => {
+      const { store } = window.__ct;
+      store.set('set:system', { ...store.get('set:system'), scripts: { bleed } });
+      store.set(`m:${id}`, { ...store.get(`m:${id}`), hp: 10, cn: ['bleeding'] });
+    }, [id, bleed]);
+    await ok(b, (bleed) => window.__ct.rules.system()?.scripts?.bleed === bleed, bleed);
+    await a.click('#menuBtn');
+    await a.click('[data-act="rules"]');
+    await a.waitForSelector('#rulesList [data-scripts="later"]');
+    assert(true, `changed scripts are asked about again (${tag})`);
+    await a.click('#rulesList [data-scripts="allow"]');
+    await a.waitForSelector('#rulesList [data-scripts="off"]');
+    await a.click('#rules [data-close]');
+    await a.click('#nextTurn');
+  };
+  const tail = (page) => page.evaluate(() => [...document.querySelectorAll('#msgs > div')].slice(-4).map((d) => d.textContent).join(' | '));
+  await swap('while (true) {}', 'an endless loop');
+  const STOPPED = /Script "bleed"(: it ran too long| did not answer and was stopped)/;
+  assert(await ok(a, (src) => new RegExp(src).test(document.querySelector('#msgs').textContent), STOPPED.source), `a script that will not stop is interrupted, and the GM is told (${(await tail(a)).split(' | ').pop()})`);
+  // What the engine cannot interrupt (one long built-in after another) ends with the worker.
+  await swap('var a = new Array(200000).fill("b"); for (;;) a.sort();', 'a hog');
+  assert(await ok(a, () => /Script "bleed" did not answer and was stopped/.test(document.querySelector('#msgs').textContent)), `a script the engine cannot interrupt is ended with its worker (${(await tail(a)).split(' | ').pop()})`);
+  await a.waitForTimeout(600);
+  [ma, mb] = [await mini(a), await mini(b)];
+  assert(ma.hp === 10 && mb.hp === 10 && !(await chat(b, /Script "bleed"/)) && await a.evaluate(() => 1 + 1) === 2, 'neither changed anything, only the GM was told, and the table carries on');
+  // A new worker takes the next script. What that one can see is nothing of ours.
+  await swap('return [{ say: "probe " + [typeof fetch, typeof XMLHttpRequest, typeof WebSocket, typeof importScripts, typeof self, typeof postMessage, typeof document, typeof localStorage, typeof indexedDB, typeof Date].join("") }, { script: "bleed" }];', 'a probe');
+  const probed = await ok(b, () => /probe (undefined){10}$/m.test([...document.querySelectorAll('#msgs > div')].map((d) => d.textContent).join('\n')));
+  assert(probed && (await chat(b, /probe/)) === 1, `in the worker, a script finds no network, no page, no storage and no clock${probed ? '' : ` (GM: ${await tail(a)}; player: ${await tail(b)})`}`);
+
+  // Clearing the rules takes the runner away again.
+  await a.click('#endFight');
+  await a.click('#menuBtn');
+  await a.click('[data-act="rules"]');
+  await a.click('#rulesList button:has-text("No rules")');
+  assert(await ok(b, () => !window.__ct.rules.system()) && await a.evaluate(() => !document.querySelector('[data-scripts]')), 'clearing the rules clears the question too');
+  await a.click('#rules [data-close]');
+  await a.evaluate(([id, n]) => { const { store } = window.__ct; const { cn: _c, ini: _i, n: _n, ...v } = store.get(`m:${id}`); store.set(`m:${id}`, { ...v, ...(n ? { n } : {}), hp: 19 }); }, [id, name]);
+}
+
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
@@ -367,17 +562,31 @@ await a.keyboard.press('2');
 await a.mouse.click(640, 430);
 await a.waitForFunction(() => [...window.__ct.store.keys('b:')].length === 1);
 await b.waitForTimeout(600);
+// Each board has its own atmosphere: night falls on the new one, and only there.
+const skyOf = (page) => page.evaluate(() => JSON.parse(window.__ct.board.skySig)[0]);
+await a.evaluate(() => window.__ct.store.set('at:sky', 'night'));
+assert(await ok(a, () => JSON.parse(window.__ct.board.skySig)[0] === 'night'), 'the GM sets the sky of the board being prepared');
 assert((await count(b, 'b:')) === 2 && await b.evaluate(() => [...window.__ct.store.entries.keys()].some((k) => k.startsWith('@'))), 'players stay on their board while the GM builds another');
 await a.click('#prepGo');
 assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 1 && window.__ct.board.minis.size === 0) && await shows(b, 1), 'the GM brings everyone to the new board');
+assert(await ok(b, () => JSON.parse(window.__ct.board.skySig)[0] === 'night' && window.__ct.store.get('set:sky') === null), 'and its atmosphere comes with it');
 await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
 await a.click('#boardList .row:first-child button[title="Bring everyone here"]');
 assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 2 && window.__ct.board.minis.size === 1), 'and back to the main board, with everything still there');
+assert(await skyOf(b) === 'day' && await skyOf(a) === 'day', 'where the sky is as it was');
 a.once('dialog', (d) => d.accept());
 await a.click('#boardList button[title="Delete this board"]');
 assert(await ok(a, () => document.querySelectorAll('#boardList .row').length === 1 && [...window.__ct.store.keys('bd:')].length === 0)
   && await ok(b, () => [...window.__ct.store.entries.entries()].every(([k, e]) => !k.startsWith('@') || e.v === null)), 'a deleted board leaves the list at once, and takes its contents with it');
+// A copy of a board keeps its atmosphere.
+await a.evaluate(() => window.__ct.store.set('at:sky', 'dusk'));
+await a.click('#boardCopy');
+assert(await ok(a, () => { const { store, board } = window.__ct; return !document.querySelector('#prep').hidden && [...store.entries.keys()].some((k) => /^@.+\/at:sky$/.test(k)) && store.get('at:sky') === 'dusk' && JSON.parse(board.skySig)[0] === 'dusk'; }), 'a copied board keeps its atmosphere');
+a.once('dialog', (d) => d.accept());
+await a.click('#boardList button[title="Delete this board"]');
+await a.evaluate(() => window.__ct.store.set('at:sky', null));
+assert(await ok(a, () => document.querySelectorAll('#boardList .row').length === 1 && document.querySelector('#prep').hidden) && await ok(b, () => JSON.parse(window.__ct.board.skySig)[0] === 'day'), 'and deleting the copy brings the GM back');
 await a.click('#boards [data-close]');
 
 // Copy an area and paste it elsewhere.
@@ -398,25 +607,190 @@ await a.keyboard.press('1');
 // Atmosphere: every soundscape starts without error, and the choice reaches the table.
 await a.click('#menuBtn');
 await a.click('[data-act="atmo"]');
-for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Rain']) {
+// (The soundscapes are recipes in public/sounds, loaded after the table is up: the buttons are whatever arrived.)
+for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Sea', 'Rain']) {
   await a.click(`#scapes button:has-text("${name}")`);
   await a.waitForTimeout(350);
 }
 await a.click('#skies button:has-text("Night")');
 const playing = await a.evaluate(() => window.__ct.sound.playing);
-assert(await ok(b, () => window.__ct.store.get('set:amb') === 'rain' && window.__ct.store.get('set:sky') === 'night') && ['rain', 'off'].includes(playing), `sky and soundscape are shared (this device is playing: ${playing})`);
+assert(await ok(b, () => window.__ct.store.get('at:amb') === 'rain' && window.__ct.store.get('at:sky') === 'night') && ['rain', 'off'].includes(playing), `sky and soundscape are shared (this device is playing: ${playing})`);
 // Firelight: the GM's dial reaches everyone, and at zero the lamps are out.
 await a.evaluate(() => window.__ct.store.set('b:6,0,6', { i: 'stone' }));
 await a.evaluate(() => window.__ct.store.set('b:6,1,6', { i: 'torch' }));
 await a.fill('#glow', '2');
-assert(await ok(b, () => window.__ct.store.get('set:glow') === 2 && window.__ct.board.lamps.some((l) => l.intensity > 15)), 'the firelight slider turns the lamps up for everyone');
+assert(await ok(b, () => window.__ct.store.get('at:glow') === 2 && window.__ct.board.lamps.some((l) => l.intensity > 15)), 'the firelight slider turns the lamps up for everyone');
 await a.fill('#glow', '0');
 assert(await ok(b, () => window.__ct.board.lamps.every((l) => l.intensity === 0)), 'and at zero puts them out');
 await a.fill('#glow', '1');
 await a.evaluate(() => { window.__ct.store.set('b:6,1,6', null); window.__ct.store.set('b:6,0,6', null); });
+// A theme: one tap sets the whole mood for everyone and brings its pieces to the front of the library.
+await a.click('#themes button:has-text("Vampires")');
+assert(await ok(b, () => { const s = window.__ct.store; return s.get('at:theme')?.id === 'vampire' && s.get('at:sky') === 'night' && s.get('at:season') === 'winter' && s.get('at:amb') === 'crypt'; }), 'picking a theme sets sky, season and soundscape for the board');
+// The vampires' soundscape is a recipe the theme carries, not one of the app's: it is offered by its own name and played, on every device.
+await a.waitForTimeout(350);
+const crypt = await a.evaluate(() => ({ button: [...document.querySelectorAll('#scapes button')].some((b) => b.textContent === 'Crypt' && b.classList.contains('on')), playing: window.__ct.sound.playing }));
+assert(crypt.button && crypt.playing === (playing === 'rain' ? 'crypt' : 'off') && await ok(b, () => window.__ct.sound.knows('crypt')),
+  `a theme's own soundscape is listed and plays (this device is playing: ${crypt.playing})`);
+await a.evaluate(() => { for (const fx of ['clack', 'thud', 'ping', 'emote:cheer', 'emote:shrug']) window.__ct.sound[fx.startsWith('emote') ? 'emote' : fx](fx.includes(':') ? fx.split(':')[1] : 0.5); });
+// The theme's own look is data too: its light, haze, grade and dice reach everyone (the grade only where the finished look is drawn).
+const lookOf = (page) => page.evaluate(() => {
+  const { board } = window.__ct, u = board.look?.grade.uniforms;
+  return { near: board.scene.fog.near, fog: board.scene.fog.color.getHexString(), sun: board.sun.intensity, sat: u ? u.uSat.value : null, dice: board.dice.look };
+});
+assert(await ok(b, () => window.__ct.board.scene.fog.near === 18), 'a theme brings its own haze');
+let themed = await lookOf(b);
+assert(themed.fog === '0b1020' && themed.sun === 1.1 && [null, 0.62].includes(themed.sat) && themed.dice.body === '#5c0f1a' && themed.dice.ink === '#e8dcc0', `and its own light, grade and dice ${JSON.stringify(themed)}`);
+await a.click('#skies button:has-text("Dusk")');
+assert(await ok(b, () => window.__ct.board.scene.fog.near === 60), 'under another sky the theme\'s light and haze step aside');
+themed = await lookOf(b);
+assert(themed.sun === 2.3 && [null, 0.62].includes(themed.sat) && themed.dice.body === '#5c0f1a', `while its grade and dice stay ${JSON.stringify(themed)}`);
+await a.click('#skies button:has-text("Night")');
+await a.click('#themes button:has-text("Vampires")');
+assert(await ok(b, () => window.__ct.store.get('at:theme') === '' && window.__ct.store.get('at:sky') === 'night' && window.__ct.board.scene.fog.near === 60), 'tapping it again lets go of the theme and keeps the mood');
+themed = await lookOf(b);
+assert(themed.sun === 0.75 && [null, 0.9].includes(themed.sat) && themed.dice.body === undefined, `and the picture is the plain night again ${JSON.stringify(themed)}`);
+assert(await ok(a, () => ![...document.querySelectorAll('#scapes button')].some((b) => b.textContent === 'Crypt') && !window.__ct.sound.knows('crypt') && window.__ct.sound.playing === 'off'), 'and its soundscape goes with it');
+await a.click('#skies button:has-text("Day")');
+await a.click('#seasons button:has-text("Summer")');
 await a.click('#scapes button:has-text("Silence")');
 await a.click('#skies button:has-text("Day")');
 await a.click('#atmo [data-close]');
+
+// ---- Make your own theme (ui/themeEditor.ts): start from one that ships, tweak it, and everyone watches it change ----
+await a.click('[data-mode="prep"]');
+await a.click('.prepRow[data-page="theme"]');
+await a.click('[data-edit="vampire"]');
+await a.waitForSelector('#ted');
+const ownTheme = await a.evaluate(() => window.__ct.store.get('at:theme'));
+assert(/^[a-z0-9]{10}:vampires$/.test(ownTheme.id) && ownTheme.id.startsWith(await a.evaluate(() => window.__ct.store.me)) && ownTheme.name === 'My Vampires'
+  && await ok(b, (id) => window.__ct.store.get('at:theme')?.id === id && window.__ct.store.get('at:sky') === 'night' && window.__ct.board.sun.intensity === 1.1, ownTheme.id),
+  `Customise puts a copy on the board at once, under an id of the GM's own (${ownTheme.id})`);
+await a.fill('#ted [data-dial="sunI"]', '2.5');
+await a.fill('#ted [data-dial="near"]', '7');
+await a.click('#tedTabs [data-tab="dice"]');
+await a.click('#ted [data-colour="body"]');
+await a.click('#ted [data-swatch="#3dd68c"]');
+await a.fill('#ted [data-dial="metal"]', '0.8');
+assert(await a.evaluate(() => { const { board } = window.__ct; return board.sun.intensity === 2.5 && board.scene.fog.near === 7 && board.dice.look.body === '#3dd68c'; }), 'the editor shows each change on its own device at once');
+assert(await ok(b, () => { const { board } = window.__ct; return board.sun.intensity === 2.5 && board.scene.fog.near === 7 && board.scene.fog.far === 90 && board.dice.look.body === '#3dd68c' && board.dice.look.metal === 0.8 && board.dice.look.ink === '#e8dcc0'; }),
+  'and the other player\'s board follows: sun strength, haze and dice');
+// Pieces: one off the shelf, another found by searching the whole library.
+await a.click('#tedTabs [data-tab="pieces"]');
+await a.click('.tedStrip[data-shelf="props"] [data-piece="coffin"]');
+await a.click('#ted [data-remove="coffin"]');
+await a.click('#ted [data-add="props"]');
+await a.fill('#tedQ', 'barr');
+const found = await a.evaluate(() => [...document.querySelectorAll('#tedGrid .tile')].map((t) => t.dataset.piece));
+await a.click('#tedGrid [data-piece="barrel"]');
+const marked = await a.evaluate(() => document.querySelector('#tedGrid [data-piece="barrel"]').classList.contains('on') && /^15 of 24/.test(document.querySelector('#tedCount').textContent));
+await a.goBack();
+await a.waitForSelector('#ted');
+assert(found.join() === 'barrel' && marked && await ok(b, () => { const p = window.__ct.store.get('at:theme')?.pieces.props ?? []; return !p.includes('coffin') && p.at(-1) === 'barrel'; }),
+  `a piece is taken off the theme's shelf and another, found by search, added (${found})`);
+// Undo and redo walk the session, for everyone.
+await a.click('#tedUndo');
+assert(await ok(b, () => !window.__ct.store.get('at:theme').pieces.props.includes('barrel')), 'undo takes the last change back, for everyone');
+await a.click('#tedRedo');
+assert(await ok(b, () => window.__ct.store.get('at:theme').pieces.props.includes('barrel')), 'and redo brings it again');
+// About: its name, its size, a code to share, and a place among this device's own themes.
+await a.click('#tedTabs [data-tab="about"]');
+await a.fill('#ted [data-field="name"]', 'Blood moon');
+await a.click('#ted [data-act="share"]');
+await a.waitForFunction(() => document.querySelector('#ted [data-field="share"]')?.value.startsWith('cottontale-theme:'));
+const themeCode = await a.inputValue('#ted [data-field="share"]');
+await a.click('#ted [data-act="save"]');
+const about = await a.evaluate(() => ({ bytes: +document.querySelector('#tedSize').dataset.bytes, saved: JSON.parse(localStorage.getItem('cottontale:themes')).map((t) => t.name) }));
+assert(about.bytes > 500 && about.bytes < 16384 && about.saved.join() === 'Blood moon' && await ok(b, () => window.__ct.store.get('at:theme')?.name === 'Blood moon'),
+  `the theme has a name, a size (${about.bytes} bytes), a share code (${themeCode.length} characters) and is saved on this device`);
+await a.evaluate(() => window.__ct.ui.prep.close());
+await a.waitForFunction(() => document.querySelector('#prepPages').hidden);
+// The GM's library: the theme's shelf is the changed one.
+await a.click('[data-mode="build"]');
+await a.click('[data-cat="things"]');
+const shelfNow = await a.evaluate(() => ({ chip: document.querySelector('#palette .chip.on')?.textContent, tiles: [...document.querySelectorAll('#palette .tile')].map((t) => t.title) }));
+assert(shelfNow.chip?.includes('Blood moon') && shelfNow.tiles.at(-1) === 'Barrel' && !shelfNow.tiles.includes('Coffin') && shelfNow.tiles.includes('Tombstone'), `the library's theme shelf shows the changed pieces ${JSON.stringify(shelfNow)}`);
+await a.keyboard.press('1');
+// The code, pasted by another GM into another board: that board gets the theme, this one keeps its own.
+await b.evaluate(() => window.__ct.store.set(`gm:${window.__ct.store.me}`, true));
+await b.waitForFunction(() => !document.body.classList.contains('player'));
+await b.click('#menuBtn');
+await b.click('[data-act="boards"]');
+await b.click('#boardNew');
+await b.waitForFunction(() => !document.querySelector('#prep').hidden && window.__ct.store.get('at:theme') === null);
+await b.click('#boards [data-close]');
+await b.click('[data-mode="prep"]');
+await b.click('.prepRow[data-page="theme"]');
+await b.click('#prepBody [data-act="import"]');
+await b.fill('#prepBody [data-field="code"]', 'nonsense');
+await b.click('#prepBody [data-act="use"]');
+await b.waitForFunction(() => /not a theme code/.test(document.querySelector('#prepBody .tedBox').textContent));
+await b.fill('#prepBody [data-field="code"]', `Here you go: ${themeCode}`);
+await b.click('#prepBody [data-act="use"]');
+const imported = await ok(b, (id) => { const { store, board } = window.__ct, t = store.get('at:theme'); return t?.id === id && t.name === 'Blood moon' && board.sun.intensity === 2.5 && board.dice.look.body === '#3dd68c' && document.querySelector('.card.on')?.dataset.theme === id; }, ownTheme.id);
+const elsewhere = await ok(a, () => [...window.__ct.store.entries].filter(([k, e]) => /^@.+\/at:theme$/.test(k) && e.v?.name === 'Blood moon').length === 1);
+assert(imported && elsewhere && await a.evaluate(() => window.__ct.store.get('at:theme')?.name === 'Blood moon'), `a share code pasted on another device becomes the theme of the board that device is on (there: ${imported}, seen from here: ${elsewhere})`);
+await b.evaluate(() => window.__ct.ui.prep.close());
+await b.click('#menuBtn');
+await b.click('[data-act="boards"]');
+b.once('dialog', (d) => d.accept());
+await b.click('#boardList button[title="Delete this board"]');
+await b.waitForFunction(() => document.querySelectorAll('#boardList .row').length === 1);
+await b.click('#boards [data-close]');
+await b.evaluate(() => window.__ct.store.set(`gm:${window.__ct.store.me}`, null));
+await a.evaluate(() => { const s = window.__ct.store; s.set('at:theme', ''); for (const [k, v] of [['sky', 'day'], ['season', 'summer'], ['glow', 1], ['amb', 'off']]) s.set(`at:${k}`, v); });
+assert(await ok(b, () => document.body.classList.contains('player') && window.__ct.store.get('at:theme') === '' && JSON.parse(window.__ct.board.skySig)[0] === 'day' && window.__ct.board.dice.look.body === undefined), 'and the table is as it was');
+// A scene from a preset that is nothing but data (public/gens/cove.json): it is built, and the other player gets it.
+const beforeCove = await count(a, 'b:');
+await a.click('#menuBtn');
+await a.click('[data-act="gen"]');
+const offered = await a.evaluate(() => [...document.querySelectorAll('#genThemes button')].map((b) => b.textContent));
+await a.click('#genThemes button:has-text("Pirate cove")');
+const labels = await a.evaluate(() => [...document.querySelectorAll('#genSliders .slider span')].map((e) => e.textContent).join());
+await a.click('#genGo');
+const cove = await ok(b, () => {
+  const s = window.__ct.store, ids = [...s.keys('b:')].map((k) => s.get(k).i);
+  return s.get('gen')?.o.theme === 'cove' && ids.length > 200 && ids.includes('palm') && ids.filter((i) => i === 'sand').length > 50 && ids.filter((i) => i === 'water').length > 20;
+});
+assert(cove && labels === 'Size,Growth,Dunes' && ['Wilderness', 'Dungeon', 'Cave', 'Tavern', 'Pirate cove', 'Crypt', "Ship's hold"].join() === offered.join(), `a preset from a file builds a scene that reaches the other player (${offered.join(', ')})`);
+await a.click('#gen [data-close]');
+await a.keyboard.press('Control+z');
+assert(await ok(b, (n) => [...window.__ct.store.keys('b:')].length === n && !window.__ct.store.get('gen'), beforeCove), 'and one undo takes it away again');
+
+// Pieces from a pack (see registry.ts): a board can name ones this device does not have. They
+// stand as plain markers, and become the real thing when the pack registers.
+await a.evaluate(() => {
+  const s = window.__ct.store;
+  s.set('b:9,0,9', { i: 'ada:moonrock' });
+  s.set('b:10,0,9', { i: 'ada:keg', r: 1 });
+  s.set('m:robot', { x: 11, y: 0, z: 9, k: 'ada:robot', c: '#e5484d', n: 'R2', r: 0, s: 1 });
+});
+const standins = () => { const { board } = window.__ct; return ['b:9,0,9', 'b:10,0,9'].every((k) => board.props.get(k)?.userData.pending) && board.minis.has('robot') && !board.layers.has('ada:moonrock'); };
+assert(await ok(a, standins) && await ok(b, standins), 'pieces nobody here has are drawn as stand-ins');
+await a.evaluate(() => {
+  const { registry, catalog } = window.__ct;
+  registry.registerPack('ada', {
+    blocks: { moonrock: { name: 'Moon rock', color: '#9999aa' } },
+    props: { keg: { name: 'Keg', icon: '🛢️', make: () => catalog.PROPS.barrel.make() } },
+    minis: { robot: { name: 'Robot', icon: '🤖', height: 1, make: () => catalog.MINIS.knight.make() } },
+    shelves: { blocks: { Terrain: ['moonrock'] }, props: { Space: ['keg'] }, minis: { Heroes: ['robot'] } },
+  });
+});
+assert(await ok(a, () => { const { board } = window.__ct; return board.layers.get('ada:moonrock')?.cells.size === 1 && !board.props.has('b:9,0,9') && board.props.get('b:10,0,9')?.userData.pending === undefined && !board.minis.get('robot').group.children[0].children[2].material.transparent; }), 'when the pack registers they stand up as themselves');
+await a.click('[data-mode="build"]');
+await a.click('[data-cat="things"]');
+await a.click('#palette .chip:has-text("Space")');
+await a.click('#palette [title="Keg"]');
+assert(await ok(a, () => window.__ct.board.brush === 'ada:keg'), 'and take their place on the shelves');
+await a.click('[data-cat="land"]');
+assert(await ok(a, () => !!document.querySelector('#palette [title="Moon rock"]')), 'blocks too');
+await a.click('[data-cat="things"]');
+await a.click('#palette [title="Keg"]');
+await a.evaluate(() => window.__ct.registry.unregisterPack('ada'));
+assert(await ok(a, standins) && await ok(a, () => !document.querySelector('#palette [title="Keg"]') && !!document.querySelector('#palette .tile')) && await ok(b, standins), 'a pack that leaves takes them off the shelves and leaves stand-ins on the board');
+assert(await a.evaluate(() => !window.__ct.board.brush.includes(':')), 'and out of the hand');
+await a.evaluate(() => { const s = window.__ct.store; for (const k of ['b:9,0,9', 'b:10,0,9', 'm:robot']) s.set(k, null); });
+await a.keyboard.press('1');
 
 await a.click('#menuBtn');
 await a.click('[data-act="gm"]');
@@ -579,7 +953,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
-    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
+    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init', '.sheet:not(.closed)', '#prepPages:not([data-see])', '#prepPages[data-see] #prepBar', '#ted', '#tedDo'].map((q) => document.querySelector(q)).filter((e) => e && !e.hidden && vis(e))
       .map((e) => ({ id: e.id, r: e.getBoundingClientRect() }));
     const bad = [];
     for (const a of boxes) {
@@ -591,6 +965,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
       if (b.offsetParent && (r.width < 43.5 || r.height < 43.5)) bad.push(`small target ${b.id || b.title || b.textContent} ${Math.round(r.width)}x${Math.round(r.height)}`);
     }
     for (const i of document.querySelectorAll('input, textarea')) if (parseFloat(getComputedStyle(i).fontSize) < 16) bad.push(`input ${i.id} under 16px`);
+    if (document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth) bad.push('the page scrolls sideways');
     return bad;
   });
   let bad = await layout();
@@ -636,6 +1011,91 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     assert(!bad.length && await p.evaluate(() => document.querySelector('#palette').classList.contains('tray')), `${cat} tray layout clean ${bad.join('; ')}`);
   }
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-build.png` });
+  // A theme, picked by touch: its shelf leads the things and the figures, with nothing overlapping.
+  await p.tap('#menuBtn');
+  await p.tap('[data-act="atmo"]');
+  bad = await layout();
+  await p.tap('#themes button:has-text("Pirates")');
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme.png` });
+  await p.tap('#atmo [data-close]');
+  await p.tap('[data-mode="build"]');
+  await p.tap('[data-cat="things"]');
+  const mine = await p.evaluate(() => ({ chip: document.querySelector('#palette .chip.on')?.textContent, palm: !!document.querySelector('#palette [title="Palm"]'), first: document.querySelector('#palette .tile')?.title }));
+  await p.tap('[data-cat="figures"]');
+  const crew = await p.evaluate(() => document.querySelector('#palette .tile')?.title);
+  bad.push(...await layout());
+  assert(mine.chip?.includes('Pirates') && mine.palm && crew === 'Pirate' && !bad.length, `a theme picked by touch puts its own shelf first ${JSON.stringify(mine)} ${crew} ${bad.join('; ')}`);
+  await p.evaluate(() => { const s = window.__ct.store; s.set('at:theme', ''); s.set('at:amb', 'off'); });
+
+  // ---- the hotbar and the library: recents, favourites, search and a grid, all by touch ----
+  const saved = (k) => p.evaluate((k) => JSON.parse(localStorage.getItem(`cottontale:${k}`) ?? '{}').things ?? [], k);
+  const sheetAt = (id) => p.evaluate((id) => { const e = document.getElementById(id), r = e.getBoundingClientRect(); return { h: e.dataset.h ?? 'half', tall: Math.round(r.height), closed: e.classList.contains('closed') }; }, id);
+  await p.tap('[data-cat="things"]');
+  await p.tap('#palette [title="Bush"]');
+  await touch('touchStart', [[cx, cy - 60]]);
+  await touch('touchEnd', []);
+  await settle();
+  await p.waitForSelector('#palette [title="Recent pieces"]');
+  assert((await saved('recent'))[0] === 'p_bush', 'a piece put on the table leads the recents, kept on this device');
+  await p.tap('#undo');
+  await settle();
+  await p.tap('#palette [title="Nature"]');
+  await p.tap('#palette [title="Recent pieces"]');
+  const recent = await p.evaluate(() => ({ brush: window.__ct.board.brush, tiles: [...document.querySelectorAll('#palette .tile')].map((t) => t.title) }));
+  bad = await layout();
+  assert(recent.brush === 'bush' && recent.tiles.join() === 'Bush' && !bad.length, `the recents shelf puts the last piece back in hand in one tap ${JSON.stringify(recent)} ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-recents.png` });
+  // Search: the library opens at half height, and finds a piece that is on another shelf.
+  await p.tap('#palette [title="Search the library"]');
+  await settle();
+  bad = await layout();
+  const lib = await p.evaluate(() => ({ h: document.querySelector('#lib').dataset.h ?? 'half', rows: new Set([...document.querySelectorAll('#libGrid .tile')].map((t) => Math.round(t.getBoundingClientRect().top))).size, heads: [...document.querySelectorAll('#libGrid h3')].map((e) => e.textContent) }));
+  assert(lib.h === 'half' && lib.rows > 2 && lib.heads[0] === 'Recent' && lib.heads.includes('Furniture') && !bad.length, `the library opens at half height as a grid, shelf by shelf ${JSON.stringify(lib)} ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-library.png` });
+  await p.fill('#libQ', 'barr');
+  await settle();
+  const found = await p.evaluate(() => [...document.querySelectorAll('#libGrid .tile')].map((t) => t.title));
+  bad = await layout();
+  assert(found.join() === 'Barrel' && !bad.length, `search finds a piece on another shelf by name (${found}) ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-search.png` });
+  // The handle is a button: each tap is another height, and every height is clean.
+  const steps = [await sheetAt('lib')];
+  for (let i = 0; i < 3 && (i === 0 || steps.at(-1).h !== 'half'); i++) {
+    await p.tap('#lib .grab');
+    await settle();
+    steps.push(await sheetAt('lib'));
+    bad.push(...await layout());
+    if (steps.at(-1).h !== 'half') await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-library-${steps.at(-1).h}.png` });
+  }
+  const tall = Object.fromEntries(steps.map((x) => [x.h, x.tall]));
+  assert(steps.at(-1).h === 'half' && tall.peek <= 64 && tall.peek < tall.half && (label === 'landscape' || tall.full > tall.half) && steps.every((x, i) => !i || x.tall !== steps[i - 1].tall) && !bad.length,
+    `tapping the handle steps the sheet through its heights ${JSON.stringify(steps.map((x) => `${x.h} ${x.tall}`))} ${bad.join('; ')}`);
+  // Favourites by tap: the star turns taps into pins. Then a pick arms the piece and folds the sheet away.
+  await p.tap('#libPin');
+  await p.tap('#libGrid [title="Barrel"]');
+  await settle();
+  const pinned = await p.evaluate(() => ({ brush: window.__ct.board.brush, star: !!document.querySelector('#libGrid .tile.fav[title="Barrel"]') }));
+  assert((await saved('favs')).join() === 'p_barrel' && pinned.star && pinned.brush === 'bush', `with the star on, tapping a piece pins it and leaves the piece in hand alone ${JSON.stringify(pinned)}`);
+  await p.tap('#libPin');
+  await p.tap('#libGrid [title="Barrel"]');
+  await settle();
+  bad = await layout();
+  const picked = await p.evaluate(() => ({ brush: window.__ct.board.brush, cur: document.querySelector('#palette .cur')?.textContent, shelf: document.querySelector('#palette .chip.on:not([title="Search the library"])')?.textContent, h: document.querySelector('#lib').dataset.h }));
+  assert(picked.brush === 'barrel' && picked.cur === 'Barrel' && picked.shelf === 'Furniture' && picked.h === 'peek' && !bad.length, `picking in the library arms the piece and folds the sheet to its search row ${JSON.stringify(picked)} ${bad.join('; ')}`);
+  await p.tap('#lib [data-close]');
+  await settle();
+  // The favourites shelf, and the long-press shortcut that lets a favourite go.
+  await p.tap('#palette [title="Favourites"]');
+  await settle();
+  const star = await p.evaluate(() => { const t = document.querySelector('#palette .tile.fav[title="Barrel"]'); t.scrollIntoView({ inline: 'center' }); const r = t.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; });
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-favourites.png` });
+  await touch('touchStart', [star]);
+  await p.waitForTimeout(700);
+  await touch('touchEnd', []);
+  await settle();
+  assert((await saved('favs')).length === 0 && !bad.length && await p.evaluate(() => !document.querySelector('#palette [title="Favourites"]') && document.querySelector('#lib').classList.contains('closed')), `a long press unpins, and an empty favourites shelf goes away ${bad.join('; ')}`);
+  await p.tap('[data-cat="land"]');
   const keys = (prefix) => p.evaluate((q) => [...window.__ct.store.keys(q)], prefix);
   const drag = async (x0, y0, x1, y1) => {
     await touch('touchStart', [[x0, y0]]);
@@ -856,8 +1316,264 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     const fits = await p.evaluate((id) => { const r = document.querySelector(`#${id}`).getBoundingClientRect(); return r.width > 200 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }, sheet);
     assert(fits && !bad.length, `${sheet} sheet opens on screen ${bad.join('; ')}`);
     await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${sheet}.png` });
+    // A finger on the table folds the sheet to one row; its handle brings it back.
+    await touch('touchStart', [[cx - 100, viewport.height * 0.3]]);
+    await touch('touchEnd', []);
+    await settle();
+    bad = await layout();
+    const row = await p.evaluate((id) => { const e = document.querySelector(`#${id}`); return { h: e.dataset.h, tall: e.getBoundingClientRect().height, closed: e.classList.contains('closed') }; }, sheet);
+    assert(row.h === 'peek' && row.tall <= 64 && !row.closed && !bad.length, `touching the table drops the ${sheet} sheet to a single row ${JSON.stringify(row)} ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${sheet}-peek.png` });
+    await p.tap(`#${sheet} .grab`);
+    if (sheet === 'boards') {
+      // Drilling down stays in the sheet: a page with Back takes the place of its content.
+      await p.evaluate(() => window.__ct.ui.pushSheetPage('boards', 'A board', (el) => { el.innerHTML = '<p class="hint">Details</p>'; }));
+      bad = await layout();
+      const page = await p.evaluate(() => ({ sheets: document.querySelectorAll('.sheet:not(.closed)').length, list: document.querySelector('#boardList').offsetParent !== null, title: document.querySelector('#boards .page b')?.textContent }));
+      await p.tap('#boards .page [aria-label="Back"]');
+      const back = await p.evaluate(() => document.querySelector('#boardList').offsetParent !== null && !document.querySelector('#boards .page'));
+      assert(page.sheets === 1 && !page.list && page.title === 'A board' && back && !bad.length, `a drill-down is a page inside the same sheet, and Back returns ${JSON.stringify(page)} ${bad.join('; ')}`);
+    }
     await p.tap(`#${sheet} [data-close]`);
   }
+
+  // ---- Prep: full-screen pages with a title bar and Back; the phone's own back button works too ----
+  await p.tap('[data-mode="prep"]');
+  await settle();
+  bad = await layout();
+  const prep = await p.evaluate(() => ({ title: document.querySelector('#prepTitle').textContent, rows: [...document.querySelectorAll('.prepRow b')].map((b) => b.textContent), dock: document.querySelector('#tools').offsetParent !== null, focus: document.activeElement?.id }));
+  assert(prep.title === 'Prep' && prep.rows.join() === 'Theme,Packs,Import,Rules,Sound' && !prep.dock && prep.focus === 'prepTitle' && !bad.length, `Prep opens as a full-screen list of pages, in place of the dock ${JSON.stringify(prep)} ${bad.join('; ')}`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-prep.png` });
+  await p.tap('.prepRow[data-page="theme"]');
+  await p.waitForSelector('.card[data-theme="pirate"]');
+  await p.tap('.card[data-theme="pirate"]');
+  await p.waitForFunction(() => window.__ct.store.get('at:theme')?.id === 'pirate' && document.querySelector('.card.on')?.dataset.theme === 'pirate');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-prep-theme.png` });
+  await p.tap('.card[data-theme="pirate"]');
+  await p.waitForFunction(() => window.__ct.store.get('at:theme') === '' && !document.querySelector('.card.on'));
+  assert(await p.textContent('#prepTitle') === 'Theme' && await p.evaluate(() => document.querySelectorAll('.card').length >= 4) && !bad.length, `the Theme page is a gallery; a card picks a theme and lets go of it, as the Atmosphere sheet does ${bad.join('; ')}`);
+  await p.evaluate(() => window.__ct.store.set('set:amb', 'off'));
+  await p.tap('#prepPageBack');
+  await p.waitForFunction(() => document.querySelector('#prepTitle').textContent === 'Prep');
+  await p.tap('.prepRow[data-page="packs"]');
+  await p.waitForFunction(() => document.querySelector('#prepTitle').textContent === 'Packs');
+  bad = await layout();
+  await p.goBack();
+  await p.waitForFunction(() => document.querySelector('#prepTitle').textContent === 'Prep');
+  await p.goBack();
+  await p.waitForFunction(() => document.querySelector('#prepPages').hidden);
+  bad.push(...await layout());
+  assert(await p.evaluate(() => !window.__ct.ui.prep.isOpen && document.querySelector('#tools').offsetParent !== null && location.hash.includes('room=')) && !bad.length, `Back walks out of Prep a page at a time, by the button and by the phone's own, and the table is as it was ${bad.join('; ')}`);
+  // Rules: pick a system, then the character sheet the app draws from it.
+  {
+    const fitsOn = (sel) => p.evaluate((q) => { const r = document.querySelector(q).getBoundingClientRect(); return r.width > 200 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }, sel);
+    const piece = () => p.evaluate(() => { const { store } = window.__ct; return store.get([...store.keys('m:')][0]); });
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="rules"]');
+    await p.waitForSelector('#rulesList button:nth-child(4)');
+    bad = await layout();
+    assert(await fitsOn('#rules') && !bad.length, `rules sheet opens on screen ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-rules.png` });
+    await p.tap('#rulesList button:has-text("Lantern d20")');
+    await p.waitForFunction(() => document.body.classList.contains('sys'));
+    await p.tap('#rules [data-close]');
+    await p.evaluate(() => { const { board, store } = window.__ct; board.select([...store.keys('m:')][0].slice(2)); });
+    await p.tap('#sheetBtn');
+    bad = await layout();
+    assert(await fitsOn('#sheet') && !bad.length && await p.evaluate(() => document.querySelectorAll('#sheet .frow').length > 12), `character sheet opens on screen, drawn from the schema ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-charsheet.png` });
+    await p.tap('#sheet [title="More Strength"]');
+    await p.tap('#sheet [title="More Strength"]');
+    await p.tap('#sheet [data-cond="prone"]');
+    await p.fill('#sheet [data-stat="hp.max"]', '12');
+    await p.evaluate(() => document.activeElement.blur());
+    await settle();
+    const v = await piece();
+    assert(v.sv.str === 12 && v.cn.join() === 'prone' && v.mhp === 12 && await p.evaluate(() => /d20\+1/.test(document.querySelector('#sheet [data-roll="str"]').textContent)), `steppers, conditions and inputs edit the piece by touch ${JSON.stringify(v.sv)}`);
+    await p.evaluate(() => document.querySelector('#sheet .rolls').scrollIntoView({ block: 'end' }));
+    bad = await layout();
+    assert(!bad.length, `the rolls of the sheet are full-size targets ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-charsheet-rolls.png` });
+    await p.tap('#sheet [data-mode="adv"]');
+    await p.tap('#sheet [data-roll="attack"]');
+    assert(await p.evaluate(() => window.__ct.board.hand.join() === 'd20,d20' && document.querySelector('#sheet').classList.contains('closed') && document.querySelector('#logToggle').dataset.n === '2'), 'a roll from the sheet puts its dice in the hand and gets out of the way');
+    await touch('touchStart', [[cx - 40, cy - 60]]);
+    await p.waitForFunction(() => window.__ct.board.dice.held);
+    for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 40 + i * 10, cy - 60 - i * 6]]); await p.waitForTimeout(16); }
+    await touch('touchEnd', []);
+    await p.waitForFunction(() => /Attack 2d20kh1\+3: \d+ \[/.test(document.querySelector('#msgs').textContent));
+    assert(true, 'the thrown dice are read by the rules: advantage keeps the higher');
+    // A very different game, same app: three hearts and one die.
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="rules"]');
+    await p.tap('#rulesList button:has-text("Three Hearts")');
+    await p.waitForFunction(() => window.__ct.rules.system()?.id === 'three-hearts');
+    await p.tap('#rules [data-close]');
+    await p.evaluate(() => { const { board, store } = window.__ct; const k = [...store.keys('m:')][0]; store.set(k, { ...store.get(k), hp: 3 }); board.select(k.slice(2)); });
+    await p.tap('#sheetBtn');
+    await p.tap('#sheet [title="Less Hearts"]');
+    await settle();
+    bad = await layout();
+    const hearts = await p.evaluate(() => { const { board, store } = window.__ct; const id = [...store.keys('m:')][0].slice(2); return { hp: store.get(`m:${id}`).hp, sig: board.minis.get(id).sig, dice: [...document.querySelectorAll('#dice [data-d]')].filter((b) => !b.hidden).length }; });
+    assert(await fitsOn('#sheet') && !bad.length && hearts.hp === 2 && hearts.sig.includes('|2|3|') && hearts.dice === 1, `another system redraws the sheet; hearts are the piece's bar ${JSON.stringify(hearts)} ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-hearts.png` });
+    await p.tap('#sheet [data-close]');
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="rules"]');
+    // A system with scripts asks first, with buttons a thumb can hit.
+    await p.tap('#rulesList button:has-text("Hard Knocks")');
+    await p.waitForSelector('#rulesList [data-scripts="later"]');
+    await p.evaluate(() => document.querySelector('#rulesList .scriptask').scrollIntoView({ block: 'end' }));
+    bad = await layout();
+    const asks = await p.evaluate(() => [...document.querySelectorAll('#rulesList [data-scripts]')].map((e) => { const r = e.getBoundingClientRect(); return Math.round(Math.min(r.width, r.height)); }));
+    assert(await fitsOn('#rules') && !bad.length && asks.length === 2 && asks.every((n) => n >= 44), `the question about a system's scripts fits a phone, with full-size targets ${asks} ${bad.join('; ')}`);
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-scripts.png` });
+    await p.tap('#rulesList [data-scripts="later"]');
+    await p.waitForSelector('#rulesList [data-scripts="allow"]');
+    await p.evaluate(() => document.querySelector('#rulesList').firstElementChild.scrollIntoView());
+    await p.tap('#rulesList button:has-text("No rules")');
+    await p.waitForFunction(() => !document.body.classList.contains('sys'));
+    await p.tap('#rules [data-close]');
+    await p.waitForFunction(() => window.__ct.board.dice.playing.length === 0, null, { timeout: 60000 }); // the thrown dice are picked up again
+  }
+
+  // ---- Prep → Sound: the table's own sounds, made and played by touch (src/sounds.ts, ui/soundPage.ts) ----
+  await p.evaluate(() => window.__ct.store.set('set:blossom', [])); // no file servers here: files stay on the device
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="sound"]');
+  await p.waitForSelector('[data-mix="rain"]');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound-empty.png` });
+  // The mixer: two layers, heard on this device, named and saved.
+  await p.tap('[data-mix="rain"]');
+  await p.tap('[data-mix="heart"]');
+  await p.fill('[data-layer="heart"] input[aria-label$="volume"]', '0.8');
+  await p.tap('[data-listen]');
+  await p.waitForFunction(() => window.__ct.sound.playing === 'trial');
+  await p.fill('#sndMixName', 'Storm');
+  bad.push(...await layout());
+  await p.evaluate(() => document.querySelector('[data-save]').scrollIntoView({ block: 'end' }));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound-mixer.png` });
+  await p.tap('[data-save]');
+  await p.waitForFunction(() => window.__ct.sounds.list().length === 1 && document.querySelector('.sndRow b')?.textContent === 'Storm' && window.__ct.sound.playing !== 'trial');
+  const storm = await p.evaluate(() => { const [id, s] = window.__ct.sounds.list()[0]; return { id, mix: s.mix.map((m) => m.id).join(), layers: s.scape.layers.length, patterns: s.scape.patterns.length }; });
+  assert(storm.mix === 'rain,heart' && storm.layers === 2 && storm.patterns === 1 && !bad.length, `a soundscape mixed on the phone is saved to the table as a recipe ${JSON.stringify(storm)} ${bad.join('; ')}`);
+  // An effect from a file: named, tried and added, with the file kept on this device (no server here).
+  await chooseFile(p, '[data-add="effect"]', { name: 'door_slam.wav', mimeType: 'audio/wav', buffer: wavFile(0.4) }, true);
+  await p.waitForSelector('[data-draft="effect"]');
+  bad = await layout();
+  const draft = await p.evaluate(() => ({ name: document.querySelector('#sndDraftName').value, meta: document.querySelector('[data-draft] small').textContent }));
+  await p.evaluate(() => document.querySelector('[data-done]').scrollIntoView({ block: 'end' }));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound-draft.png` });
+  await p.tap('[data-try]');
+  await p.tap('[data-done]');
+  await p.waitForFunction(() => window.__ct.sounds.board().length === 1 && !document.querySelector('[data-draft]'));
+  assert(draft.name === 'door slam' && /WAV · 0\.4 s · 6 KB/.test(draft.meta) && !bad.length && await p.evaluate(() => /no file servers/.test(document.querySelector('.sndPart .sndMsg')?.textContent ?? '')),
+    `an effect is added from a file by touch, and the page says where the file is ${JSON.stringify(draft)} ${bad.join('; ')}`);
+  // The list: a row opens to its options; "use here" plays it on this board; Back ends whatever was being tried.
+  await p.tap(`.sndRow[data-snd="${storm.id}"] .sndName`);
+  await p.waitForSelector('.sndRow.open [data-remove]');
+  bad = await layout();
+  await p.evaluate(() => document.querySelector('#prepBody').scrollTo(0, 0));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound.png` });
+  await p.tap(`.sndRow[data-snd="${storm.id}"] .sndPlay`);
+  await p.waitForFunction(() => window.__ct.sound.playing === 'trial');
+  await p.tap(`[data-use="${storm.id}"]`);
+  await p.waitForFunction((id) => window.__ct.store.get('at:amb') === `t:${id}` && document.querySelector(`[data-use="${id}"]`).classList.contains('on'), storm.id);
+  await p.goBack();
+  await p.goBack();
+  await p.waitForFunction(() => document.querySelector('#prepPages').hidden);
+  assert(await ok(p, (id) => window.__ct.sound.playing === `t:${id}`, storm.id) && !bad.length, `the Sound page lists the table's sounds; one is put on this board, and leaving the page ends the trial ${bad.join('; ')}`);
+  // The soundboard: a row of full-size buttons in the Atmosphere sheet, next to the table's soundscape among the choices.
+  await p.tap('#menuBtn');
+  await p.tap('[data-act="atmo"]');
+  await p.evaluate(() => document.querySelector('#sfx').scrollIntoView({ block: 'end' }));
+  bad = await layout();
+  const sheetSounds = await p.evaluate(() => ({ scape: [...document.querySelectorAll('#scapes button')].some((b) => b.textContent === 'Storm' && b.classList.contains('on')), board: [...document.querySelectorAll('#sfx [data-sfx]')].map((b) => b.textContent), heard: window.__ct.sound.effects }));
+  await p.tap('#sfx [data-sfx]');
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-soundboard.png` });
+  assert(sheetSounds.scape && sheetSounds.board.join() === 'door slam' && await ok(p, (n) => window.__ct.sound.effects > n, sheetSounds.heard) && !bad.length,
+    `the soundboard is a row of buttons in the Atmosphere sheet, and a tap plays the effect ${JSON.stringify(sheetSounds)} ${bad.join('; ')}`);
+  await p.tap('#scapes button:has-text("Silence")');
+  await p.tap('#atmo [data-close]');
+
+  // ---- Make your own theme: one panel with tabs, and the table still in view and in hand ----
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="theme"]');
+  await p.tap('[data-edit="pirate"]');
+  await p.waitForSelector('#ted');
+  await settle();
+  bad = [];
+  const shot = async (name) => { await settle(); bad.push(...(await layout()).map((x) => `${name}: ${x}`)); await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme-${name}.png` }); };
+  for (const tab of ['look', 'sound', 'pieces', 'dice', 'gen', 'about']) {
+    await p.tap(`#tedTabs [data-tab="${tab}"]`);
+    await shot(tab);
+    if (tab === 'look') { await p.tap('#ted [data-colour="sun"]'); await shot('look-colour'); await p.tap('#ted [data-swatch="#ffc46b"]'); await p.tap('#ted [data-haze]'); await shot('look-haze'); }
+    if (tab === 'pieces') { await p.tap('.tedStrip[data-shelf="props"] .tile:nth-child(2)'); await shot('pieces-picked'); await p.tap('#ted [data-move="-1"]'); }
+    if (tab === 'dice') { await p.tap('#ted [data-colour="ink"]'); await shot('dice-colour'); }
+    if (tab === 'about') { await p.tap('#ted [data-act="share"]'); await shot('about-share'); await p.tap('#ted [data-act="import"]'); await shot('about-import'); await p.tap('#ted [data-act="save"]'); await shot('about-saved'); }
+  }
+  const panel = await p.evaluate(() => {
+    const r = document.querySelector('#ted').getBoundingClientRect(), d = document.querySelector('#tedDo').getBoundingClientRect(), t = window.__ct.store.get('at:theme');
+    return { top: Math.min(r.top, d.top) / innerHeight, left: r.left / innerWidth, tabs: document.querySelectorAll('#tedTabs [role="tab"]').length, sun: t.mood.light.sun, fog: t.mood.fog ?? null, first: t.pieces.props[0], saved: JSON.parse(localStorage.getItem('cottontale:themes')).length };
+  });
+  assert(!bad.length, `every tab of the theme editor is laid out cleanly ${bad.join('; ')}`);
+  assert(panel.tabs === 6 && panel.sun === '#ffc46b' && panel.fog?.near === 20 && panel.first === 'rock' && panel.saved === 1 && (label === 'portrait' ? panel.top > 0.4 && panel.left < 0.1 : panel.left > 0.4),
+    `the editor is one panel that leaves the table in view (${label === 'portrait' ? 'under' : 'beside'} it), and its controls work by touch ${JSON.stringify(panel)}`);
+  // The table is still the table: one finger looks around, two zoom, and neither edits anything.
+  // (Somewhere on the visible table that is not a figure: a finger on a figure would move it, as in Play.)
+  const [tx, ty] = await p.evaluate(([w, h, tall]) => {
+    const { board } = window.__ct, spots = [...board.minis.keys()].map((id) => board.spotOf(id)).filter(Boolean);
+    const tries = tall ? [0.2, 0.5, 0.8].flatMap((x) => [0.2, 0.28, 0.36].map((y) => [w * x, h * y])) : [0.1, 0.22, 0.34].flatMap((x) => [0.35, 0.55, 0.75].map((y) => [w * x, h * y]));
+    const far = (q) => Math.min(...spots.map((s) => Math.hypot(s.x - q[0], s.y - q[1])), 1e6);
+    return tries.sort((a, b) => far(b) - far(a))[0];
+  }, [viewport.width, viewport.height, label === 'portrait']);
+  const camAt = () => p.evaluate(() => window.__ct.board.camera.position.toArray().map((v) => Math.round(v * 100) / 100).join());
+  const edits = () => p.evaluate(() => [...window.__ct.store.keys('b:'), ...window.__ct.store.keys('m:')].map((k) => k + JSON.stringify(window.__ct.store.get(k))).join());
+  const [cam0, dist0, edits0] = [await camAt(), await camDist(), await edits()];
+  await touch('touchStart', [[tx, ty]]);
+  for (let i = 1; i <= 8; i++) { await touch('touchMove', [[tx + i * 9, ty + i * 2]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', []);
+  await settle();
+  const cam1 = await camAt();
+  await touch('touchStart', [[tx - 20, ty]]);
+  await touch('touchStart', [[tx - 20, ty], [tx + 20, ty]]);
+  for (let i = 1; i <= 8; i++) { await touch('touchMove', [[tx - 20 - i * 8, ty], [tx + 20 + i * 8, ty]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', [[tx + 84, ty]]);
+  await touch('touchEnd', []);
+  await settle();
+  const dist1 = await camDist();
+  assert(cam1 !== cam0 && dist1 < dist0 - 0.3 && await edits() === edits0 && await p.evaluate(() => !!document.querySelector('#ted')), `with the editor open a one-finger drag on the table turns the camera and a pinch zooms it (${cam0} → ${cam1}, ${dist0.toFixed(1)} → ${dist1.toFixed(1)})`);
+  // Adding pieces is a page of its own, with search; Back returns to the panel.
+  await p.tap('#tedTabs [data-tab="pieces"]');
+  await p.tap('#ted [data-add="minis"]');
+  await p.waitForSelector('#tedGrid');
+  await p.fill('#tedQ', 'drag');
+  await p.tap('#tedGrid [data-piece="dragon"]');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme-pick.png` });
+  await p.goBack();
+  await p.waitForSelector('#ted');
+  await p.waitForFunction(() => window.__ct.store.get('at:theme')?.pieces.minis.at(-1) === 'dragon' && !!document.querySelector('.tedStrip[data-shelf="minis"] [data-piece="dragon"]'));
+  await p.goBack();
+  await p.waitForSelector('.cards[data-group="mine"] .card.on');
+  await p.tap('[data-rename]');
+  await settle();
+  bad.push(...await layout());
+  await p.fill('.cardBox input', 'Salt and rum');
+  await p.tap('.cardBox [data-yes]');
+  await p.waitForFunction(() => document.querySelector('.cards[data-group="mine"] .card b')?.textContent === 'Salt and rum' && window.__ct.store.get('at:theme')?.name === 'Salt and rum');
+  await p.tap('[data-remove]');
+  await settle();
+  bad.push(...await layout());
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-theme-mine.png` });
+  const asked = await p.evaluate(() => !!document.querySelector('.cardBox [data-yes]') && JSON.parse(localStorage.getItem('cottontale:themes')).length === 1);
+  await p.tap('.cardBox button:has-text("Keep")');
+  assert(asked && !bad.length && await p.evaluate(() => JSON.parse(localStorage.getItem('cottontale:themes'))[0].pieces.minis.at(-1) === 'dragon'), `pieces are added from a page of the library; a theme of one's own is renamed in the gallery, and removing it asks in the page ${bad.join('; ')}`);
+  await p.evaluate(() => { window.__ct.ui.prep.close(); const s = window.__ct.store; s.set('at:theme', ''); for (const [k, v] of [['sky', 'day'], ['season', 'summer'], ['glow', 1], ['amb', 'off']]) s.set(`at:${k}`, v); });
+  await p.waitForFunction(() => document.querySelector('#prepPages').hidden && !window.__ct.board.camera.view?.enabled);
+  await p.tap('[data-mode="play"]');
 
   await p.tap('#logToggle');
   bad = await layout();
@@ -871,7 +1587,8 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await touch('touchStart', [[cx, cy - 80], [cx + 80, cy - 80]]);
   await touch('touchEnd', []);
   await settle();
-  assert(await p.evaluate(() => !window.__ct.board.dice.held && window.__ct.board.dice.playing.length === 0 && window.__ct.board.hand.length === 3), 'a second finger cancels the hold without throwing');
+  const let2 = await p.evaluate(() => { const { board } = window.__ct; return { held: !!board.dice.held, playing: board.dice.playing.length, hand: board.hand.length }; });
+  assert(!let2.held && let2.playing === 0 && let2.hand === 3, `a second finger cancels the hold without throwing ${JSON.stringify(let2)}`);
   // Hold with one finger (the sheet gets out of the way), flick, release.
   await touch('touchStart', [[cx - 40, cy - 60]]);
   await p.waitForFunction(() => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'));
@@ -1040,7 +1757,443 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForTimeout(400);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-boulder.png` });
   assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === builtBefore, `a flick sends the boulder rolling, and edits no terrain ${JSON.stringify(await p.evaluate(() => { const b = window.__ct.board, r = b.boulder.rolling[0]; return r && { n: r.n, from: r.pos[0].toArray().map((v) => +v.toFixed(1)), to: r.pos[r.n - 1].toArray().map((v) => +v.toFixed(1)), target: b.controls.target.toArray().map((v) => +v.toFixed(1)) }; }))} ${(await cells()).length}`);
+  // ---- the GM's own pieces: a picture from the phone becomes a figure (Prep → Import), and Packs shows it ----
+  {
+  const shot = (name) => p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${name}.png` });
+  // Upright with a file server; lying down with none (the picture stays on the phone and goes from player to player).
+  await p.evaluate((list) => window.__ct.store.set('set:blossom', list), label === 'portrait' ? [`http://localhost:${BLOSSOM}`] : []);
+  await p.evaluate(() => { for (const s of document.querySelectorAll('.sheet:not(.closed) [data-close]')) s.click(); });
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="import"]');
+  await p.waitForSelector('#impShoot');
+  bad = await layout();
+  const inputs = await p.evaluate(() => ({ camera: document.querySelector('#impCamera').getAttribute('capture'), accept: document.querySelector('#impCamera').accept, many: document.querySelector('#impFiles').multiple }));
+  assert(inputs.camera === 'environment' && inputs.accept === 'image/*' && inputs.many && !bad.length, `Import offers the camera and the phone's pictures ${bad.join('; ')}`);
+  await shot('import');
+  await p.setInputFiles('#impFiles', TOKEN);
+  await p.waitForSelector('#impCrop');
+  await settle();
+  bad = await layout();
+  // One finger moves the picture, two zoom it; the buttons do the same for a thumb.
+  const cropBox = await p.locator('#impCrop').boundingBox(), [kx, ky] = [cropBox.x + cropBox.width / 2, cropBox.y + cropBox.height / 2];
+  await p.tap('#impIn');
+  await touch('touchStart', [[kx, ky]]);
+  for (let i = 1; i <= 4; i++) await touch('touchMove', [[kx + i * 6, ky + i * 3]]);
+  await touch('touchEnd', []);
+  await touch('touchStart', [[kx - 30, ky]]);
+  await touch('touchStart', [[kx - 30, ky], [kx + 30, ky]]);
+  for (let i = 1; i <= 4; i++) await touch('touchMove', [[kx - 30 - i * 5, ky], [kx + 30 + i * 5, ky]]);
+  await touch('touchEnd', []);
+  await settle();
+  await shot('import-crop');
+  await p.tap('[data-frame="square"]'); // back to the whole picture in a square frame
+  await p.tap('#impNext');
+  await p.waitForSelector('.impCut');
+  await settle();
+  const cutBox = await p.locator('.impCut').boundingBox();
+  const before = await cutAlpha(p);
+  await p.touchscreen.tap(cutBox.x + 5, cutBox.y + 5);
+  await settle();
+  const erased = await cutAlpha(p);
+  // A second finger never edits: rubbing out with two fingers down changes nothing.
+  await p.tap('[data-tool="erase"]');
+  const [mx, my] = [cutBox.x + cutBox.width / 2, cutBox.y + cutBox.height / 2];
+  await touch('touchStart', [[mx, my]]);
+  await touch('touchStart', [[mx, my], [mx + 50, my]]);
+  for (let i = 1; i <= 4; i++) await touch('touchMove', [[mx + i * 4, my], [mx + 50 + i * 4, my]]);
+  await touch('touchEnd', []);
+  await settle();
+  const twoFingers = await cutAlpha(p);
+  bad.push(...await layout());
+  assert(before.corner === 255 && erased.corner === 0 && erased.mid === 255 && twoFingers.mid === 255 && !bad.length, `tapping the background cuts it away and leaves the figure; two fingers edit nothing ${JSON.stringify({ before, erased, twoFingers })} ${bad.join('; ')}`);
+  await shot('import-cut');
+  await p.tap('#impNext');
+  await p.waitForSelector('#impName');
+  await p.fill('#impName', 'Orc');
+  await p.evaluate(() => document.activeElement?.blur());
+  bad = await layout();
+  await p.waitForTimeout(250);
+  await shot('import-name');
+  await p.tap('#impDone');
+  await p.waitForSelector('.impDone li.ok');
+  bad.push(...await layout());
+  const saved = await p.evaluate(() => ({ text: document.querySelector('.impDone li.ok').textContent, pack: window.__ct.packs.listPacks()[0] }));
+  const piece = saved.pack?.pieces[0];
+  assert((label === 'portrait' ? /Stored on 1 server/ : /Saved on this phone and shared with players directly/).test(saved.text) && piece?.group === 'minis' && piece.entry.kind === 'standee' && piece.entry.name === 'Orc'
+    && /^image\/(webp|png)$/.test(piece.entry.ref.m) && piece.bytes <= 60 * 1024 + 28 && !bad.length, `a picture becomes a figure of the table's own pack, and says where it was stored (${saved.text.slice(3, 70)}; ${piece?.bytes} bytes) ${bad.join('; ')}`);
+  await shot('import-done');
+  await p.tap('#impPacks');
+  await p.waitForSelector('.pkPiece i[style]');
+  bad = await layout();
+  await shot('packs');
+  await p.tap('.pkPiece');
+  await p.tap('.pkDropPiece');
+  await p.waitForSelector('.pkYes');
+  bad.push(...await layout());
+  await p.waitForTimeout(250);
+  await shot('packs-confirm');
+  await p.tap('.pkKeep');
+  await p.tap('.pkRename');
+  await p.fill('.pkName', 'Horde');
+  await p.evaluate(() => document.activeElement?.blur());
+  bad.push(...await layout());
+  await p.tap('.pkSave');
+  await p.waitForFunction(() => window.__ct.packs.listPacks()[0]?.name === 'Horde' && document.querySelector('.pkHead b')?.textContent === 'Horde');
+  assert(await p.evaluate(() => window.__ct.packs.listPacks()[0].pieces.length === 1 && document.querySelectorAll('.pkPiece').length === 1) && !bad.length, `Packs shows the pack with its pieces; removing asks first, in the page; a pack can be renamed ${bad.join('; ')}`);
+  await p.evaluate(() => window.__ct.ui.prep.close());
+  // And in Build the piece is on its shelf, with its picture, like any other.
+  await p.tap('[data-mode="build"]');
+  await p.tap('[data-cat="figures"]');
+  if (await p.evaluate(() => ![...document.querySelectorAll('#palette .chip')].some((c) => c.textContent === 'Horde'))) await p.tap('#palette .cur');
+  await p.evaluate(() => [...document.querySelectorAll('#palette .chip')].find((c) => c.textContent === 'Horde').click());
+  await p.waitForFunction(() => /url\(/.test(document.querySelector('#palette .tile[title="Orc"] i, #palette .cur i')?.getAttribute('style') ?? ''));
+  bad = await layout();
+  await shot('packs-shelf');
+  const hand = await p.evaluate(() => ({ k: window.__ct.board.hooks.newMini().k, id: window.__ct.packs.listPacks()[0].pieces[0].id }));
+  assert(hand.k === hand.id && !bad.length, `the new figure is on its shelf in Build, with its picture, and in hand ${JSON.stringify(hand)} ${bad.join('; ')}`);
+  }
+  // A theme saved on this device is still under "Mine" when the app is opened again.
+  await p.reload();
+  await p.click('#join');
+  await p.waitForSelector('#hud:not([hidden])', { state: 'attached' });
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="theme"]');
+  await p.waitForSelector('.cards[data-group="mine"] .card');
+  const kept = await p.evaluate(() => ({ name: document.querySelector('.cards[data-group="mine"] .card b').textContent, shipped: document.querySelectorAll('.cards[data-group="offered"] .card').length }));
+  assert(kept.name === 'Salt and rum' && kept.shipped >= 4, `a saved theme is under Mine after a reload ${JSON.stringify(kept)}`);
   await p.context().close();
+}
+
+// ---- files without a server (src/blob.ts): Blossom server, player to player, and a server that says no ----
+{
+  const a = await join('Fay', 'files-1234'), b = await join('Gus', 'files-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  const server = `http://localhost:${BLOSSOM}`;
+  /** Put pseudo-random bytes on a page; returns the reference, a checksum of the plain bytes and how the servers answered. */
+  const put = (page, size, seed) => page.evaluate(async ([size, seed]) => {
+    const bytes = new Uint8Array(size);
+    for (let i = 0, x = seed; i < size; i++) bytes[i] = (x = (x * 1103515245 + 12345) >>> 0) >>> 16;
+    const { blobs } = window.__ct;
+    const ref = await blobs.put(bytes, 'image/png');
+    const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].join();
+    return { ref, sum, outcomes: blobs.outcomes(ref.h) };
+  }, [size, seed]);
+  const get = (page, ref) => page.evaluate(async (ref) => {
+    const { blobs } = window.__ct;
+    const seen = [];
+    const off = blobs.onProgress((h, loaded, total) => seen.push([h, loaded, total]));
+    try {
+      const [bytes, again] = await Promise.all([blobs.get(ref), blobs.get(ref)]); // asked twice, fetched once
+      const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].join();
+      return { sum, n: bytes.length, same: again.length === bytes.length, via: blobs.source(ref.h), progress: seen.filter(([h]) => h === ref.h).length, last: seen.at(-1) };
+    } catch (e) { return { error: String(e) }; } finally { off(); }
+  }, ref);
+  const servers = async (list) => {
+    await a.evaluate((list) => window.__ct.store.set('set:blossom', list), list);
+    await b.waitForFunction((n) => window.__ct.blobs.servers().length === n, list.length);
+  };
+
+  // (a) A server is configured and takes the blob: the other player gets it from there.
+  await servers([server]);
+  const one = await put(a, 50_000, 1);
+  assert(one.outcomes.length === 1 && one.outcomes[0].ok && one.ref.s?.[0] === server && one.ref.n === 50_028 && /^[0-9a-f]{64}$/.test(one.ref.h),
+    `a blob put with a Blossom server configured is accepted there (${JSON.stringify(one.outcomes)})`);
+  const stored = await fetch(`${server}/${one.ref.h}`).then((r) => r.arrayBuffer());
+  assert(stored.byteLength === one.ref.n, 'the server holds the ciphertext under its hash');
+  const gotOne = await get(b, one.ref);
+  assert(gotOne.sum === one.sum && gotOne.via === 'server' && gotOne.same && gotOne.progress > 0, `the other player gets identical bytes from the server (${JSON.stringify({ ...gotOne, sum: undefined })})`);
+  assert((await get(b, one.ref)).via === 'cache', 'and finds it in the local cache the next time');
+  const bad = await get(b, { ...one.ref, m: 'image/jpeg' });
+  assert(/Error/.test(bad.error ?? ''), 'a reference that lies about the type is refused');
+
+  // (b) No server at all: the blob travels from player to player (too big for the relay path, so WebRTC it is).
+  await servers([]);
+  const two = await put(a, 300_000, 2);
+  assert(two.outcomes.length === 0 && !two.ref.s, 'with no server configured a blob is kept on the device only');
+  const gotTwo = await get(b, two.ref);
+  assert(gotTwo.sum === two.sum && gotTwo.via === 'peer' && gotTwo.progress > 10 && gotTwo.last?.[1] === two.ref.n,
+    `with no server the other player gets it peer-to-peer over WebRTC (${JSON.stringify({ ...gotTwo, sum: undefined })})`);
+
+  // (c) The server refuses the upload (too large for it): that is reported, not thrown, and the players pass it on themselves.
+  await servers([server]);
+  const three = await put(a, 250_000, 3);
+  assert(three.outcomes.length === 1 && three.outcomes[0].ok === false && three.outcomes[0].status === 413 && /too large/i.test(three.outcomes[0].reason) && !three.ref.s,
+    `a server that refuses the upload is reported, not thrown (${JSON.stringify(three.outcomes)})`);
+  const gotThree = await get(b, three.ref);
+  assert(gotThree.sum === three.sum && gotThree.via === 'peer', `and the blob still arrives, peer-to-peer (${gotThree.via ?? gotThree.error})`);
+
+  // WebRTC unavailable (as behind strict NATs): a small blob goes through the relay in pieces, a big one fails cleanly.
+  await servers([]);
+  await b.evaluate(() => { window.__rtc = window.RTCPeerConnection; delete window.RTCPeerConnection; });
+  const four = await put(a, 40_000, 4);
+  const gotFour = await get(b, four.ref);
+  assert(gotFour.sum === four.sum && gotFour.via === 'relay', `without WebRTC a small blob comes through the relay in pieces (${gotFour.via ?? gotFour.error})`);
+  const five = await put(a, 100_000, 5);
+  const gotFive = await get(b, five.ref);
+  assert(/not available/.test(gotFive.error ?? ''), 'and a big one is reported as unavailable rather than hanging');
+  await b.evaluate(() => { window.RTCPeerConnection = window.__rtc; });
+  assert((await get(b, five.ref)).sum === five.sum, 'which works again once WebRTC is back');
+  const url = await b.evaluate(async (ref) => {
+    const { blobs } = window.__ct;
+    const u = await blobs.objectUrl(ref);
+    const n = (await (await fetch(u)).arrayBuffer()).byteLength;
+    blobs.release(ref);
+    await new Promise((r) => setTimeout(r, 50));
+    return { n, revoked: await fetch(u).then(() => false, () => true) };
+  }, one.ref);
+  assert(url.n === 50_000 && url.revoked, 'objectUrl hands out the decrypted file and revokes it on release');
+  await a.context().close();
+  await b.context().close();
+}
+
+// ---- the table's own sounds (src/sounds.ts): a recording the GM adds plays on every device; the soundboard; the mixer ----
+{
+  const a = await join('Ivy', 'sounds-1234'), b = await join('Jo', 'sounds-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  const far = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 20000 * SLOW }).then(() => true, () => false);
+  await a.evaluate((s) => window.__ct.store.set('set:blossom', [s]), `http://localhost:${BLOSSOM}`);
+  await b.waitForFunction(() => window.__ct.blobs.servers().length === 1 && /localhost/.test(window.__ct.blobs.servers()[0]));
+  // Browsers only make sound after a tap: one on each table.
+  await a.mouse.click(640, 300);
+  await b.mouse.click(640, 300);
+  await a.click('#menuBtn');
+  await a.click('[data-act="gm"]');
+  await b.waitForFunction(() => document.body.classList.contains('player'));
+  const audio = await b.evaluate(() => window.__ct.sound.ctx?.state);
+  assert(audio === 'running', `this browser makes sound (the player's audio is ${audio})`);
+  // The player has sound switched off for now: nothing of the GM's may be fetched until it is on again.
+  await b.click('#menuBtn');
+  await b.click('[data-act="atmo"]');
+  await b.click('#soundOn');
+  assert(await b.evaluate(() => window.__ct.sound.enabled === false), 'the player switches sound off on their device');
+
+  await a.click('[data-mode="prep"]');
+  await a.click('.prepRow[data-page="sound"]');
+  await a.waitForSelector('[data-add="track"]');
+  // Over budget: an effect of eleven seconds is refused in words, on the page, before anything is uploaded.
+  await chooseFile(a, '[data-add="effect"]', { name: 'long.wav', mimeType: 'audio/wav', buffer: wavFile(11) });
+  await a.waitForSelector('.sndMsg.bad');
+  const refused = await a.evaluate(() => ({ msg: document.querySelector('.sndMsg.bad').textContent, draft: !!document.querySelector('[data-draft]'), n: window.__ct.sounds.list().length }));
+  assert(/11 s long.*up to 10 s/.test(refused.msg) && !refused.draft && refused.n === 0, `a file over its budget is refused with a plain message (${refused.msg})`);
+  await chooseFile(a, '[data-add="track"]', { name: 'notes.txt', mimeType: 'audio/mpeg', buffer: Buffer.from('this is not a sound at all, whatever it says') });
+  assert(await ok(a, () => /not a sound file/.test(document.querySelector('.sndMsg.bad')?.textContent ?? '')), 'and so is a file that is not a sound, whatever its name says');
+  // A WAV effect that is too heavy but short is made smaller on the device (one channel, a lower sample rate).
+  await chooseFile(a, '[data-add="effect"]', { name: 'thunder.wav', mimeType: 'audio/wav', buffer: wavFile(3, 44100, 90) });
+  await a.waitForSelector('[data-draft="effect"]');
+  const shrunk = await a.evaluate(() => ({ note: document.querySelector('[data-draft] .sndMsg')?.textContent ?? '', meta: document.querySelector('[data-draft] small').textContent }));
+  assert(/made smaller: one channel at 22 kHz, 129 KB/.test(shrunk.note) && /WAV · 3\.0 s · 129 KB/.test(shrunk.meta), `a short WAV effect over 150 KB is re-encoded to fit (${shrunk.meta})`);
+  await a.click('[data-draft] button:has-text("Cancel")');
+
+  // Ambience from a file: named, tried on this device only, then Done uploads it and says how the server answered.
+  await chooseFile(a, '[data-add="track"]', { name: 'harbour-night.wav', mimeType: 'audio/wav', buffer: wavFile(2) });
+  await a.waitForSelector('[data-draft="ambience"]');
+  await a.fill('#sndDraftName', 'Harbour');
+  await a.click('[data-try]');
+  assert(await far(a, () => window.__ct.sound.playing === 'trial' && window.__ct.sound.recording === 'playing') && await b.evaluate(() => window.__ct.sounds.list().length === 0),
+    'trying a recording plays it on this device only, before it is uploaded');
+  await a.click('[data-done]');
+  await a.waitForFunction(() => window.__ct.sounds.list().length === 1 && !document.querySelector('[data-draft]'));
+  const added = await a.evaluate(() => { const [id, s] = window.__ct.sounds.list()[0]; return { id, s, ref: JSON.parse(s.scape.file), msg: document.querySelector('.sndPart .sndMsg').textContent, row: document.querySelector('.sndRow small').textContent, trial: window.__ct.sound.playing }; });
+  assert(added.s.name === 'Harbour' && added.s.kind === 'ambience' && added.ref.m === 'audio/wav' && added.ref.n === 32072 && added.ref.s?.length === 1 && /localhost:\d+: took it/.test(added.msg) && /Ambience · 31 KB · WAV/.test(added.row) && added.trial !== 'trial',
+    `Done uploads the recording and says how each server answered (${added.msg})`);
+  const tid = `t:${added.id}`;
+  await a.click(`[data-use="${added.id}"]`);
+  // Everyone gets the choice at once; a device with sound off fetches nothing.
+  assert(await ok(b, (tid) => window.__ct.store.get('at:amb') === tid && [...document.querySelectorAll('#scapes button')].some((x) => x.textContent === 'Harbour' && x.classList.contains('on')), tid),
+    'the GM picks it for the board, and it is among the soundscapes by name for everyone');
+  assert(await far(a, (tid) => window.__ct.sound.playing === tid && window.__ct.sound.recording === 'playing', tid), 'it plays on the GM\'s device');
+  await b.waitForTimeout(400);
+  const quiet = await b.evaluate(async (h) => ({ playing: window.__ct.sound.playing, resolved: window.__ct.sounds.resolved, has: await window.__ct.blobs.has(h) }), added.ref.h);
+  assert(quiet.playing === 'off' && quiet.resolved === 0 && !quiet.has, `a device with sound off does not fetch the recording ${JSON.stringify(quiet)}`);
+  await b.click('#soundOn');
+  assert(await far(b, (tid) => window.__ct.sound.playing === tid && window.__ct.sound.recording === 'playing' && window.__ct.sounds.resolved === 1, tid)
+    && await b.evaluate((h) => window.__ct.blobs.source(h), added.ref.h) === 'server', 'switched on, the player\'s device fetches the GM\'s recording from the server and plays it');
+  // A recording that plays once is streamed, not decoded; switching to it fades over, and the first one's URL is given back.
+  await a.click(`.sndRow[data-snd="${added.id}"] .sndName`);
+  await a.click('.sndRow.open button:has-text("Loops: on")');
+  assert(await far(b, (id) => window.__ct.sounds.get(id)?.scape.loop === false && window.__ct.sound.recording === 'playing' && window.__ct.sound.els.some((e) => e.wanted && e.el.src.startsWith('blob:')), added.id)
+    && await b.evaluate(() => window.__ct.sounds.resolved === 2), 'set to play once, it is streamed through an audio element on the player\'s device');
+  // Nothing plays in a hidden tab.
+  await b.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+  assert(await ok(b, () => window.__ct.sound.ctx.state === 'suspended' && window.__ct.sound.els.every((e) => e.el.paused) && window.__ct.sound.playing === 'off'), 'a hidden tab falls silent');
+  await b.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+  assert(await far(b, (tid) => window.__ct.sound.playing === tid && window.__ct.sound.recording === 'playing', tid), 'and picks the soundscape up again when it is back');
+
+  // An effect for the soundboard: the GM taps it during play, and the player hears it (a live message, not a store write).
+  await chooseFile(a, '[data-add="effect"]', { name: 'gong.wav', mimeType: 'audio/wav', buffer: wavFile(0.3, 8000, 220) });
+  await a.waitForSelector('[data-draft="effect"]');
+  await a.click('[data-done]');
+  await a.waitForFunction(() => window.__ct.sounds.board().length === 1);
+  const gong = await a.evaluate(() => { const [id, s] = window.__ct.sounds.board()[0]; return { id, h: JSON.parse(s.fx.file).h }; });
+  assert(await far(b, (h) => window.__ct.blobs.has(h), gong.h), 'the player\'s device fetches the table\'s effects ahead of time (sound is on)');
+  await a.goBack();
+  await a.goBack();
+  await a.waitForFunction(() => document.querySelector('#prepPages').hidden);
+  await a.click('#menuBtn');
+  await a.click('[data-act="atmo"]');
+  await b.waitForTimeout(300 * SLOW);
+  const before = await b.evaluate(() => ({ heard: window.__ct.sound.effects, rows: window.__ct.store.entries.size, board: document.querySelector('#sfx').hidden }));
+  await a.click(`#sfx [data-sfx="${gong.id}"]`);
+  assert(before.board && await ok(b, (n) => window.__ct.sound.effects === n + 1, before.heard) && await b.evaluate((n) => window.__ct.store.entries.size === n, before.rows) && await a.evaluate(() => window.__ct.sound.effects >= 1),
+    'a soundboard effect tapped by the GM is heard by the player; players have no soundboard of their own');
+  // Re-voiced: the same effect now stands in for the ping, on every device, and leaves the soundboard.
+  await a.evaluate((id) => { const { sounds } = window.__ct; sounds.save(id, { ...sounds.get(id), as: 'ping' }); }, gong.id);
+  assert(await ok(b, (id) => window.__ct.sounds.bank().effects.ping?.file === window.__ct.sounds.get(id).fx.file && window.__ct.sounds.board().length === 0, gong.id)
+    && await ok(a, () => document.querySelector('#sfx').hidden), 'an effect can stand in for a built-in one (the ping) instead');
+  await a.click('#atmo [data-close]');
+
+  // The mixer: a soundscape built from presets, saved by the GM, listed and played for the player.
+  await a.click('[data-mode="prep"]');
+  await a.click('.prepRow[data-page="sound"]');
+  await a.click('[data-mix="wind"]');
+  await a.click('[data-mix="chimes"]');
+  await a.fill('[data-layer="wind"] input[aria-label$="low to high"]', '0.2');
+  await a.click('[data-listen]');
+  assert(await ok(a, () => window.__ct.sound.playing === 'trial' && window.__ct.sound.recording === 'none'), 'the mix is heard live on the GM\'s device');
+  await a.fill('#sndMixName', 'Moor');
+  await a.click('[data-save]');
+  await a.waitForFunction(() => window.__ct.sounds.list().some(([, s]) => s.name === 'Moor'));
+  const moor = await a.evaluate(() => window.__ct.sounds.list().find(([, s]) => s.name === 'Moor')[0]);
+  await a.click(`[data-use="${moor}"]`);
+  assert(await far(b, (id) => window.__ct.sound.playing === `t:${id}` && window.__ct.sound.recording === 'none' && window.__ct.sound.knows(`t:${id}`)
+    && [...document.querySelectorAll('#scapes button')].some((x) => x.textContent === 'Moor' && x.classList.contains('on')) && window.__ct.sound.els.every((e) => !e.wanted), moor),
+    'a mixer soundscape saved by the GM is listed and plays for the player, and the recording before it is let go');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/sound-desktop.png` });
+  // Rename and remove, in the page: no dialogs.
+  await a.click(`.sndRow[data-snd="${moor}"] .sndName`);
+  await a.fill('.sndRow.open input[aria-label="Name"]', 'High moor');
+  await a.press('.sndRow.open input[aria-label="Name"]', 'Enter');
+  assert(await ok(b, () => [...document.querySelectorAll('#scapes button')].some((x) => x.textContent === 'High moor')), 'renaming a sound reaches everyone');
+  await a.click(`[data-remove="${moor}"]`);
+  await a.click(`[data-yes="${moor}"]`);
+  assert(await ok(b, (id) => !window.__ct.sounds.get(id) && window.__ct.store.get('at:amb') === 'off' && window.__ct.sound.playing === 'off' && window.__ct.sounds.list().length === 2, moor),
+    'removing a sound (confirmed in the page) takes it from the table, and the board falls silent by choice');
+  await a.context().close();
+  await b.context().close();
+}
+// ---- the GM's own pieces (src/packs.ts, src/standee.ts): a picture imported on one device is a piece on every device ----
+{
+  console.log('packs');
+  const a = await join('Ivy', 'packs-1234'), b = await join('Jon', 'packs-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await a.evaluate((server) => { const s = window.__ct.store; s.set(`gm:${s.me}`, true); s.set('set:blossom', [server]); }, `http://localhost:${BLOSSOM}`);
+  await b.waitForFunction(() => window.__ct.blobs.servers().length === 1 && document.body.classList.contains('player'));
+  for (const page of [a, b]) await page.evaluate(() => { const { board } = window.__ct; board.camera.position.set(3, 7, 15); board.controls.target.set(3, 0, 3); });
+  /** Take one picture through Prep → Import as the GM would: crop, cut the paper away, name it, say what it is. */
+  const bring = async (name, as) => {
+    await a.evaluate(() => window.__ct.ui.prep.open('import'));
+    await a.setInputFiles('#impFiles', TOKEN);
+    await a.click('#impNext');
+    await a.waitForSelector('.impCut');
+    await a.click('.impCut', { position: { x: 4, y: 4 } });
+    await a.click('#impNext');
+    await a.fill('#impName', name);
+    await a.click(`[data-as="${as}"]`);
+    await a.click('#impDone');
+    await a.waitForFunction((name) => [...document.querySelectorAll('.impDone li.ok b')].some((x) => x.textContent === name), name);
+  };
+  await bring('Orc', 'figure');
+  await bring('Idol', 'thing');
+  const made = await a.evaluate(() => ({ said: document.querySelector('.impDone li.ok span').textContent, pack: window.__ct.packs.listPacks()[0], keys: [...window.__ct.store.keys('pk:')] }));
+  const orc = made.pack.pieces.find((x) => x.entry.name === 'Orc'), idol = made.pack.pieces.find((x) => x.entry.name === 'Idol');
+  assert(made.keys.length === 1 && made.keys[0] === `pk:${made.pack.ns}` && /^u-[0-9a-f]{10}$/.test(made.pack.ns) && orc?.group === 'minis' && idol?.group === 'props' && /Stored on 1 server/.test(made.said)
+    && [orc, idol].every((x) => x.entry.kind === 'standee' && x.bytes <= 60 * 1024 + 28 && x.entry.ref.s?.length === 1), `the GM imports a picture as a figure and as a thing: one pack in the table, files on the server (${orc?.bytes} and ${idol?.bytes} bytes, ${orc?.entry.ref.m})`);
+  // On the table: a figure and a thing. The other player has the pack as stand-ins until the pieces are drawn, then as pictures.
+  await a.evaluate(([m, p]) => { const s = window.__ct.store; s.set('m:tok', { x: 1, y: 0, z: 6, k: m, c: '#3e63dd', n: 'Grok', r: 0, s: 1, hp: 5, mhp: 9 }); s.set('b:0,0,0', { i: p }); }, [orc.id, idol.id]);
+  const drawn = ([m, p]) => {
+    const { board, packs, registry } = window.__ct, card = (o) => o?.geometry?.userData.standee;
+    const batch = board.scene.children.filter((o) => o.userData.standees && o.visible);
+    return registry.known.mini(m) && registry.known.prop(p) && packs.pieceState(m) === 'ready' && packs.pieceState(p) === 'ready'
+      && !!card(board.minis.get('tok')?.group.children[0].children[2]) && !!card(board.props.get('b:0,0,0')?.children[0]) && batch.length === 1 && batch[0].count === 2;
+  };
+  await b.waitForFunction(drawn, [orc.id, idol.id]);
+  await a.waitForFunction(drawn, [orc.id, idol.id]);
+  const seen = await b.evaluate(([m, ref]) => {
+    const { board, blobs, catalog } = window.__ct, page = board.scene.children.find((o) => o.userData.standees), g = page.material.map.image.getContext('2d');
+    const mini = board.minis.get('tok');
+    return { via: blobs.source(ref.h), page: page.material.map.image.width, edge: g.getImageData(8, 8, 1, 1).data[3], mid: [...g.getImageData(128, 128, 1, 1).data], height: catalog.MINIS[m].height,
+      label: mini.group.children[1].visible, base: mini.group.children[0].children[0].isMesh };
+  }, [orc.id, orc.entry.ref]);
+  assert(seen.via === 'server' && seen.page === 1024 && seen.edge === 0 && seen.mid[3] === 255 && seen.mid[0] > 150 && seen.mid[2] < 90 && seen.height > 1 && seen.label && seen.base,
+    `the other player sees them as themselves: the picture fetched through blobs, cut out, on a shared page, with a base and a name plate ${JSON.stringify(seen)}`);
+  await b.waitForTimeout(400);
+  await b.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/standees.png` });
+  // A hidden figure, line of sight and the rest are the board's own, as for any mini: the GM hides it, the player loses it.
+  await a.evaluate(() => { const s = window.__ct.store; s.set('m:tok', { ...s.get('m:tok'), h: true }); });
+  await b.waitForFunction(() => window.__ct.board.minis.get('tok').group.visible === false && window.__ct.board.scene.children.find((o) => o.userData.standees).count === 1);
+  assert(await a.evaluate(() => window.__ct.board.scene.children.find((o) => o.userData.standees).count === 2), 'a hidden standee leaves the player\'s table and stays (faded) on the GM\'s');
+  await a.evaluate(() => { const s = window.__ct.store; s.set('m:tok', null); });
+
+  // Draw calls: twenty tokens cost what one costs (one call for the page they share).
+  const calls = (page) => page.evaluate(() => new Promise((done) => {
+    const { board } = window.__ct, info = board.renderer.info, was = board.hooks.onView;
+    info.autoReset = false;
+    board.touched();
+    info.reset();
+    board.hooks.onView = () => { board.hooks.onView = was; was(); const n = info.render.calls; info.autoReset = true; done(n); };
+  }));
+  const things = (n, id) => b.evaluate(([n, id]) => { const s = window.__ct.store; for (let i = 0; i < 20; i++) s.set(`b:${i % 5},0,${Math.floor(i / 5)}`, i < n ? { i: id } : null); }, [n, id]);
+  const figures = (n, id) => b.evaluate(([n, id]) => { const s = window.__ct.store; for (let i = 0; i < 20; i++) s.set(`m:f${i}`, i < n ? { x: i % 5, y: 0, z: 6 + Math.floor(i / 5), k: id, c: '#3e63dd', n: '', r: 0, s: 1 } : null); }, [n, id]);
+  const settled = (n) => b.waitForFunction((n) => { const m = window.__ct.board.scene.children.find((o) => o.userData.standees); return (m?.visible ? m.count : 0) === n; }, n);
+  await a.evaluate(() => { const s = window.__ct.store; s.set(`gm:${s.me}`, null); }); // free play again: the player may build
+  await b.waitForFunction(() => !document.body.classList.contains('player'));
+  let cost;
+  for (let tries = 0; tries < 4; tries++) { // the board may change its own quality between two measurements on a busy machine: measure until it did not
+    await things(1, idol.id); await settled(1); await b.waitForTimeout(300);
+    const one = await calls(b);
+    await things(20, idol.id); await settled(20); await b.waitForTimeout(300);
+    const twenty = await calls(b);
+    await things(1, idol.id); await settled(1); await b.waitForTimeout(300);
+    cost = { one, twenty, again: await calls(b) };
+    if (cost.one === cost.again) break;
+  }
+  await things(0, idol.id);
+  await settled(0);
+  // Figures keep the base and name plate every mini has; the card itself adds nothing per figure.
+  await figures(1, orc.id); await settled(1); await b.waitForTimeout(300);
+  const fig1 = await calls(b);
+  await figures(20, orc.id); await settled(20); await b.waitForTimeout(300);
+  const fig20 = await calls(b);
+  await b.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/standees-20.png` });
+  await figures(0, orc.id); await settled(0);
+  await figures(1, 'marker'); await b.waitForTimeout(400);
+  const core1 = await calls(b);
+  await figures(20, 'marker'); await b.waitForTimeout(400);
+  const core20 = await calls(b);
+  await figures(0, 'marker');
+  console.log(`      draw calls a frame — standee things: 1 → ${cost.one}, 20 → ${cost.twenty}; standee figures: 1 → ${fig1}, 20 → ${fig20}; built-in marker figures: 1 → ${core1}, 20 → ${core20}`);
+  assert(cost.one === cost.again && cost.twenty === cost.one, `twenty standees cost the draw calls of one (${cost.one} a frame with 1, ${cost.twenty} with 20)`);
+  assert(fig20 - fig1 <= core20 - core1, `and a standee figure costs no more than the simplest built-in one (${fig20 - fig1} for 19 more, against ${core20 - core1})`);
+
+  // The table's export carries the pack (the manifest: the files stay where they are stored).
+  await a.evaluate(([m, p]) => { const s = window.__ct.store; s.set(`gm:${s.me}`, true); s.set('m:tok', { x: 1, y: 0, z: 6, k: m, c: '#3e63dd', n: 'Grok', r: 0, s: 1 }); s.set('b:0,0,0', { i: p }); }, [orc.id, idol.id]);
+  await b.waitForFunction(drawn, [orc.id, idol.id]);
+  const rows = await a.evaluate(() => window.__ct.store.dump().filter((r) => r[1] !== null && r[0].startsWith('pk:')).map(([k, v]) => [k, v]));
+  assert(rows.length === 1 && Object.keys(rows[0][1].pieces.minis).length === 1, 'saving the table keeps its packs');
+  // Removing the pack (Packs page, with its confirm step) leaves stand-ins on every device.
+  await a.click('#impPacks');
+  await a.waitForSelector('.pkPiece i[style]');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/packs-desktop.png` });
+  await a.click('.pkDrop');
+  assert(await a.evaluate(() => [...window.__ct.store.keys('pk:')].length === 1 && !!document.querySelector('.pkAsk[role="alertdialog"]')), 'removing a pack asks first, in the page');
+  await a.click('.pkYes');
+  const standIns = ([m, p]) => {
+    const { board, packs, registry } = window.__ct, batch = board.scene.children.filter((o) => o.userData.standees && o.visible);
+    return !registry.known.mini(m) && !registry.known.prop(p) && packs.pieceState(m) === null && board.props.get('b:0,0,0')?.userData.pending === true
+      && board.minis.get('tok')?.group.children[0].children[2].material.transparent === true && batch.length === 0;
+  };
+  await b.waitForFunction(standIns, [orc.id, idol.id]);
+  assert(await a.evaluate(standIns, [orc.id, idol.id]) && await a.evaluate(() => !document.querySelector('.pkPack')), 'with the pack removed its pieces are stand-ins again, for everyone');
+  // And importing the saved table brings the pack back: the pictures are still where they were stored.
+  await a.evaluate(() => window.__ct.ui.prep.close());
+  await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows })) });
+  await b.waitForFunction(drawn, [orc.id, idol.id]);
+  assert(await a.evaluate(drawn, [orc.id, idol.id]), 'importing the table brings its packs back, pictures and all');
+  await a.context().close();
+  await b.context().close();
 }
 
 // Every piece in the library, laid out for a look (and to prove each one renders).

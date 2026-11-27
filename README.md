@@ -40,6 +40,14 @@ places minis, and moves everything; players move the minis the GM hands them
   — rain, wind, campfire, cave, calm music, battle drums. All sound is
   synthesised on the device (nothing to download) and each player can mute it.
 
+- pick the **rules** the table plays by (☰ → Rules): a game system is a data file (`public/systems`) describing the
+  character sheet, dice, conditions and what happens by itself. Each piece then has a sheet (Sheet in the dock, or the
+  sheet button on a selected piece): tap a stat or a roll to put its dice in your hand; the faces that land are read
+  by the rules (advantage, exploding dice, counted successes). Conditions show over the piece.
+  A system may also bring small scripts for what data cannot say (a critical-hit table, bleeding until a save):
+  they run only on the GM's device, boxed into a sandbox with no access to the app or the network, and only
+  after the GM allows them.
+
 With no GM the table is free play: everyone can do everything. These rules
 decide what each player's app shows — everyone at the table holds the same key,
 so they keep honest players from spoilers rather than stop a determined cheat.
@@ -79,6 +87,16 @@ with HTTPS (the browser's crypto API requires it).
 - State is a last-writer-wins map (`src/store.ts`), so ops and snapshots merge
   in any order and all players converge.
 - Your Nostr key is generated on first visit and stays in the browser.
+
+- Files a GM brings (images, models, sounds) never pass through a server of
+  ours (`src/blob.ts`). Each is encrypted with a second key derived from the
+  table code and named by the SHA-256 of the ciphertext; the table only stores
+  that small reference. The blob itself is kept in the browser's cache, offered
+  to public [Blossom](https://github.com/hzrd149/blossom) servers (table
+  setting `set:blossom`, per-device override in `localStorage`), and when no
+  server has it, fetched from another player at the table over WebRTC
+  (signalling goes through the encrypted room channel). Whatever arrives is
+  checked against its hash before it is decrypted.
 
 Relays are editable on the join screen. For offline/LAN play, run the bundled
 dev relay (`npm run relay`, `ws://<your-ip>:7777`) and use that instead.

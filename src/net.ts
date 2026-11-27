@@ -27,6 +27,11 @@ type Body =
   | { y: 'bye' }
   | { y: 'chat'; m: string; to?: string }
   | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw; s?: boolean }
+  // A roll made from a character sheet (src/ui/sheet.ts): `x` is the dice notation with its numbers worked
+  // out, `v` the numbers rolled for what has no physical die; the result is read from these and the throw.
+  | { y: 'sroll'; k: string; id: string; ri: string; n: string; x: string; v: number[]; t?: Throw; tg?: string; vs?: number; s?: boolean }
+  // A line the rules say, from the device that applies them. `k` names it, so it is shown once.
+  | { y: 'sys'; k: string; m: string }
   | { y: 'boulder'; t: Roll }
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
@@ -38,7 +43,16 @@ type Body =
   | { y: 'pour'; t: Pour }
   /** A mini fell `n` cells (for the log), and a blast went off at cell `c` with radius `r` (so props rock). */
   | { y: 'fall'; id: string; n: number }
-  | { y: 'blast'; c: [number, number, number]; r: number };
+  | { y: 'blast'; c: [number, number, number]; r: number }
+  // A soundboard button the GM tapped (src/sounds.ts): the table's effect `id`, for everyone to hear.
+  | { y: 'sfx'; id: string }
+  // Files passed between players (src/blobpeer.ts): who has a blob, WebRTC signalling, small blobs in pieces.
+  | { y: 'bq'; h: string }
+  | { y: 'bh'; h: string; to: string }
+  | { y: 'bo' | 'ba'; to: string; id: string; sdp: string }
+  | { y: 'bi'; to: string; id: string; c: RTCIceCandidateInit[] }
+  | { y: 'br'; to: string; h: string }
+  | { y: 'bc'; to: string; h: string; i: number; d: string };
 
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */
 export type Msg = Body & { bd?: string };
@@ -187,6 +201,8 @@ export class Net {
   peers = new Map<string, Peer>();
   tag = '';
   synced = false;
+  /** Other modules listening for live messages (file transfers); one that returns true has dealt with it. */
+  taps: Array<(msg: Msg, from: string) => boolean | void> = [];
   private key!: CryptoKey;
   private relays: Relay[] = [];
   private seen = new Set<string>();
@@ -322,7 +338,7 @@ export class Net {
         if (this.peers.delete(ev.pubkey)) this.o.onPeers();
         break;
       default:
-        this.o.onMsg(msg, ev.pubkey);
+        if (!this.taps.some((tap) => tap(msg, ev.pubkey))) this.o.onMsg(msg, ev.pubkey);
     }
   }
 

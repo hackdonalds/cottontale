@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "id": "three-hearts",
+  "name": "Three Hearts",
+  "about": "For the youngest players: three hearts, one thing you are good at, one die.",
+  "hp": "hearts",
+  "dice": [6],
+  "sections": [
+    { "name": "", "fields": [
+      { "id": "hearts", "name": "Hearts", "type": "resource", "max": 3 },
+      { "id": "trait", "name": "Good at", "type": "text", "def": "Being brave", "roll": "d6" }
+    ] }
+  ],
+  "rolls": [
+    { "id": "try", "name": "Try something", "dice": "d6" }
+  ],
+  "conditions": [
+    { "id": "sleepy", "name": "Sleepy", "icon": "😴" },
+    { "id": "cheered", "name": "Cheered on", "icon": "🎉" }
+  ],
+  "triggers": [
+    { "on": "roll", "if": "roll.total == 6", "do": [{ "say": "A six! {name} does it with style." }] },
+    { "on": "hp.zero", "do": [{ "cond": "sleepy", "on": true }, { "say": "{name} needs a rest." }] }
+  ]
+}

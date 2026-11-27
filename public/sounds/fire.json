@@ -1,0 +1,10 @@
+{
+ "name": "🔥 Campfire",
+ "layers": [{"filters": [{"type": "lowpass", "freq": 320}], "gain": 0.4}],
+ "patterns": [
+  {
+   "every": 110,
+   "voices": [{"kind": "burst", "freq": [1400, 3900], "gain": [0.05, 0.19], "dur": [0.03, 0.08], "p": 0.45}]
+  }
+ ]
+}

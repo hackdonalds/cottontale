@@ -1,0 +1,21 @@
+{
+ "id": "cove",
+ "name": "Pirate cove",
+ "icon": "flag",
+ "algo": "wilderness",
+ "sliders": ["Size", "Growth", "Dunes"],
+ "palette": {
+  "ground": [["gravel", 40], ["sand", 180], ["grass", 256]],
+  "path": "gravel",
+  "water": "water",
+  "stream": 2,
+  "sea": 2,
+  "dress": {
+   "gravel": [["rock", 90], ["log", 30], ["bones", 12]],
+   "sand": [["palm", 45], ["rock", 25], ["barrel", 10], ["crate", 8], ["chest", 4]],
+   "grass": [["palm", 110], ["bush", 60], ["flowers", 40], ["rock", 15]]
+  },
+  "shore": [["reeds", 160], ["rock", 50], ["barrel", 20]]
+ },
+ "rooms": []
+}

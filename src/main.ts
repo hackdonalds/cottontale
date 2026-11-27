@@ -2,19 +2,34 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { BOULDER_REACH, boulderHits, simulateBoulder } from './boulder';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
+import * as registry from './registry';
 import { loadKit, type Season } from './kit';
 import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
-import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
-import { MAX_DICE, decode, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
-import { buzz, canBuzz, hapticsOn, rollBuzz, setHaptics, ticker } from './haptics';
-import { askShake, canShake, shakeNeedsAsking, watchShake, type Shake } from './shake';
+import { PRESETS, addPresets, generate, loadPresets, parsePreset, roomName, type GenOpts, type GenRoom, type KnownPiece, type Preset, type Theme } from './gen';
+import { MAX_DICE, decode, kindsFor, results, rollValues, simulate, type Kind, type Start, type Throw } from './dice';
+import { Blobs, deriveBlobKey, pickIce, pickServers } from './blob';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
-import { SOUNDSCAPES, Sound } from './sound';
-import { breakButton } from './breakui';
-import { SHOTS, readShot } from './shots';
+import { SOUNDSCAPES, Sound, addSounds, loadSounds } from './sound';
+import { TableSounds, isTableSoundId } from './sounds';
+import { registerSoundPage, renderSoundboard } from './ui/soundPage';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
+import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type GameTheme, type Known } from './theme';
+import { FAVS, Hotbar, RECENT, type Shelf } from './ui/hotbar';
+import { initPrep, registerPrepPage } from './ui/prep';
+import * as packs from './packs';
+import { registerImportPage } from './ui/importPage';
+import { registerPacksPage } from './ui/packsPage';
+import { registerBuiltinPrepPages } from './ui/prepPages';
+import { initThemeEditor } from './ui/themeEditor';
+import { initSheets, popSheetPage, pushSheetPage, setSheetHeight, sheetHeight } from './ui/sheets';
+import { mountSystem, renderSystemPicker, setPickerNote, setScriptRunner, type SystemUI } from './ui/sheet';
+import { authority } from './system';
+import { buzz, canBuzz, hapticsOn, rollBuzz, setHaptics, ticker } from './haptics';
+import { askShake, canShake, shakeNeedsAsking, watchShake, type Shake } from './shake';
+import { breakButton } from './breakui';
+import { SHOTS, readShot } from './shots';
 import { LOOSE, MAX_LOOSE, POUR_COUNTS } from './loose';
 import { pour } from './pour';
 import { MAX_BLAST, blast, fellLine, shove, type Fall } from './forces';
@@ -184,6 +199,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     onBoulder: (start, vel) => void rollBoulder(start, vel),
   });
 
+  /** The table's game system, once the table is up (src/ui/sheet.ts). */
+  let rules: SystemUI | undefined;
   // The scatter brush: which loose pieces it pours out, and how many at a time.
   let pourKind = 'stone', pourCount = 6;
   async function pourOut(a: Vec, b: Vec): Promise<void> {
@@ -198,7 +215,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
+    rules?.onStore(k, v, prev);
+    packs.packChanged(k); // the GM's own pieces (packs.ts)
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
+    if ((k === 'at:theme' || k === 'set:theme') && ui.ready) renderPalette(); // its pieces come to the front of the library
+    if (ui.ready && v && /^[bwm]:/.test(k)) placed(k, v, prev);
     later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
   };
@@ -232,7 +253,37 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   };
   board.boulder.onRumble = (level) => sound.rumble(level);
   board.boulder.onThud = (strength) => sound.thud(strength);
-  Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
+  rules = mountSystem({
+    store, net, board, me: meId, pk: me, here: () => here, say, send: (m) => void send(m), openSheet,
+    hold: (kinds, text, landed) => {
+      hand.clear();
+      handMod = 0;
+      asked = { kinds, text, landed };
+      renderHand();
+      if (phoneSheet()) closeSheet();
+    },
+    secret: () => secret,
+  });
+  Object.assign(window, { __ct: { store, net, board, sound, registry, rules, catalog: { BLOCKS, PROPS, MINIS } } });
+  // Scripts a game system brings (src/script.ts): fetched only where the table's system has some and this device would referee.
+  let scripts: Promise<typeof import('./script')> | undefined;
+  const referee = () => authority(gms(store), [meId, ...[...net.peers.keys()].map(pid)], meId) === meId;
+  const syncScripts = () => {
+    if (!scripts && !(rules?.system()?.scripts && referee())) return;
+    void (scripts ??= import('./script')).then((m) => m.syncScripts({ system: () => rules!.system(), referee, say, setRunner: setScriptRunner, setNote: setPickerNote, redraw: () => { prep.refresh(); rules?.refresh(); } }));
+  };
+  // The GM's own files (src/blob.ts). Servers: this device's list (local storage `cottontale:blossom`), else the table's (`set:blossom`), else the defaults.
+  const blobs = new Blobs({
+    key: deriveBlobKey(code), sk, net,
+    servers: () => pickServers(ls.get('blossom'), store.get('set:blossom')),
+    ice: () => pickIce(ls.get('stun')),
+  });
+  Object.assign((window as unknown as { __ct: object }).__ct, { blobs });
+  // The table's own sounds (src/sounds.ts): recordings come out of the file store, and only on devices with sound on.
+  const tableSounds = new TableSounds({ store, sound, blobs, full, send: (m) => void net.send(m) });
+  Object.assign((window as unknown as { __ct: object }).__ct, { sounds: tableSounds });
+  packs.initPacks({ store, blobs, me: meId, full });
+  Object.assign((window as unknown as { __ct: object }).__ct, { packs });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
@@ -285,6 +336,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       // Only someone who may build can pour; the recording itself is checked by the view.
       case 'pour': if (!elsewhere && fullPowers(store, pid(from))) void board.loose.play(msg.t); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'sroll': case 'sys': rules?.onMsg(msg, from); break;
+      case 'sfx': if (ui.ready) tableSounds.heard(msg.id, fullPowers(store, pid(from))); break; // the GM's soundboard, heard on every board
       case 'fall': {
         // Only what this player can see is worth a line: a fall must not give a mini away.
         const v = elsewhere ? null : store.get<MiniVal>(`m:${String(msg.id)}`), n = Math.round(Number(msg.n));
@@ -357,8 +410,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const meTag = `<b style="color:${myColor}">${esc(name)}</b>`;
   const hand = new Map<number, number>(); // sides → how many
   let handMod = 0;
-  const handKinds = (): Kind[] => [...hand].flatMap(([sides, n]) => kindsFor(n, sides) ?? []);
-  const handText = () => [...hand].map(([sides, n]) => `${n}d${sides}`).join('+') + (handMod ? (handMod > 0 ? '+' : '') + handMod : '');
+  /** Dice a character sheet put in the hand: it says what they are, and reads them when they land. */
+  let asked: { kinds: Kind[]; text: string; landed: (t: Throw) => void } | null = null;
+  const handKinds = (): Kind[] => asked?.kinds ?? [...hand].flatMap(([sides, n]) => kindsFor(n, sides) ?? []);
+  const handText = () => asked?.text ?? [...hand].map(([sides, n]) => `${n}d${sides}`).join('+') + (handMod ? (handMod > 0 ? '+' : '') + handMod : '');
   const phoneSheet = () => getComputedStyle($('logToggle')).display !== 'none';
 
   function renderHand(): void {
@@ -369,7 +424,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const n = hand.get(+b.dataset.d!);
       if (n) b.dataset.n = String(n); else delete b.dataset.n;
     }
-    const total = [...hand.values()].reduce((a, b) => a + b, 0);
+    const total = asked ? asked.kinds.length : [...hand.values()].reduce((a, b) => a + b, 0);
     if (total) $('logToggle').dataset.n = String(total); else delete $('logToggle').dataset.n;
     syncShake();
     $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw${unwatch ? ', or shake the phone' : ''}` : 'Tap dice to pick them up';
@@ -379,6 +434,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (total) armBoulder(false); // dice in hand: the boulder is put back
   }
   function pickUp(sides: number, n = 1): boolean {
+    asked = null;
     const next = new Map(hand).set(sides, (hand.get(sides) ?? 0) + n);
     const kinds = [...next].map(([s, c]) => kindsFor(c, s));
     if (kinds.some((k) => !k) || kinds.flat().length > MAX_DICE) return false;
@@ -386,6 +442,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     return true;
   }
   function emptyHand(): void {
+    asked = null;
     hand.clear();
     handMod = 0;
     renderHand();
@@ -432,12 +489,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   };
 
   async function throwHand(starts: Start[], vel: Vec): Promise<void> {
-    const kinds = handKinds(), d = handText(), mod = handMod;
+    const kinds = handKinds(), d = handText(), mod = handMod, sheet = asked;
     emptyHand();
     const { target, tray } = board.throwSpot();
     // Simulate the throw, share the recording, and let everyone watch it land.
     const t = await simulate(kinds, starts, vel, target, store, tray, board.solidsNear(target, tray + 1));
     board.dice.endHold();
+    if (sheet) { navigator.vibrate?.(12); return sheet.landed(t); } // the sheet reads its own dice
     const r = rollValues(kinds, results(t)!);
     void send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
     buzz(12);
@@ -573,6 +631,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let cat: Cat = 'land';
   /** On small screens: is the shelf of pieces showing, or folded down to the piece in hand? */
   let trayOpen = true;
+  // Recents, favourites and the library sheet (search and a grid): see ui/hotbar.ts.
+  const hot = new Hotbar({ load: ls.get, save: ls.set, open: (on) => openSheet(on ? 'lib' : null), redraw: renderPalette });
   const building = () => board.tool === 'build' || board.tool === 'mini';
   function setTool(t: Tool): void {
     // Arriving by keyboard shortcut: the tray shows what the tool is for.
@@ -585,10 +645,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       if (b.dataset.tool) b.classList.toggle('on', b.dataset.tool === t);
       if (b.dataset.cat) b.classList.toggle('on', b.dataset.cat === cat);
     }
-    for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', (b.dataset.mode === 'build') === build);
+    for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', b.dataset.mode === (build ? 'build' : 'play'));
     $('edits').hidden = !build;
     document.body.classList.toggle('building', build);
-    if (build) openSheet(null);
+    if (build ? !hot.isOpen || cat === 'scenes' : hot.isOpen) openSheet(null); // the library stays up while its categories change
     renderPalette();
     renderRing();
   }
@@ -599,22 +659,79 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const fits: Record<Cat, (id: string) => boolean> = {
       land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
       walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
-      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light' || id === 'pour',
+      things: (id) => thingIds().includes(id) || id === 'erase' || id === 'light' || id === 'pour',
       figures: () => true,
       scenes: (id) => id === 'copy' || id === 'paste',
     };
-    if (!fits[c](board.brush)) board.brush = { land: 'raise', walls: 'wall', things: PROP_SHELVES[thingShelf][0], figures: board.brush, scenes: 'copy' }[c];
+    if (!fits[c](board.brush)) board.brush = { land: 'raise', walls: 'wall', things: thingIds()[0] ?? PROP_SHELVES.Nature[0], figures: board.brush, scenes: 'copy' }[c];
     setTool(c === 'figures' ? 'mini' : 'build');
   }
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.onclick = () => setTool(b.dataset.tool as Tool);
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-cat]')) b.onclick = () => setCat(b.dataset.cat as Cat);
-  for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => (b.dataset.mode === 'build' ? setCat(cat) : setTool('move'));
+  for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => (b.dataset.mode === 'prep' ? prep.open() : b.dataset.mode === 'build' ? setCat(cat) : setTool('move'));
 
   let thingShelf = 'Nature', miniShelf = 'Heroes';
+  // The table's theme (see theme.ts) puts a shelf of its own in front of the others and its
+  // ground and building blocks first on theirs: more to choose from, and no more chrome.
+  const MINE = '★';
+  const known: Known = { ...registry.known, amb: (id) => id in SOUNDSCAPES || isTableSoundId(id), gen: (id) => id in PRESETS, edge: (id) => id in EDGES };
+  /** The theme of the board in front of us (each board has its own atmosphere, see theme.ts). */
+  const gameTheme = (): GameTheme | null => activeTheme(atmo(store, 'theme', null), known);
+  // Pieces that arrive in a pack (see registry.ts) take their place on the shelves; a pack
+  // that leaves may take the shelf we were on, or the piece in hand, with it.
+  registry.onRegistry(() => {
+    if (thingShelf !== MINE && !PROP_SHELVES[thingShelf]) thingShelf = 'Nature';
+    if (miniShelf !== MINE && !MINI_SHELVES[miniShelf]) miniShelf = 'Heroes';
+    if (!registry.known.mini(miniKind)) miniKind = MINI_SHELVES.Heroes[0];
+    if (!ui.ready) return;
+    if (board.brush.includes(':') && !registry.kindOf(board.brush) && building()) setCat(cat);
+    else renderPalette();
+  });
+  /** The themes on offer (public/themes): data that arrives after the table is up, never part of the app. */
+  let gameThemes: GameTheme[] = [];
+  // Sound recipes and generator presets are files too (public/sounds, public/gens). Themes name them, so they come first.
+  const knownPiece: KnownPiece = (kind, id) => known[kind]!(id);
+  void Promise.all([loadSounds('./sounds').then(addSounds), loadPresets('./gens', knownPiece).then(addPresets)])
+    .then(() => { sound.refresh(); later(); if (!$('gen').classList.contains('closed')) renderGen(); return loadThemes('./themes', known); })
+    .then((list) => { gameThemes = list; renderThemes(); prep.refresh(); });
+  /** A piece by its key (`b_grass`, `p_barrel`, `m_knight`, as its picture is named): its name, or null if this table does not have it. */
+  const nameOf = (key: string): string | null => ({ b: BLOCKS, p: PROPS, m: MINIS } as Record<string, Record<string, { name: string }>>)[key[0]]?.[key.slice(2)]?.name ?? null;
+  /** The pieces on one of this device's own shelves (recents, favourites) that this table still has; null for any other shelf. */
+  const own = (c: Cat, shelf: string, kind: string): string[] | null => (shelf !== RECENT && shelf !== FAVS ? null
+    : (shelf === RECENT ? hot.recent(c) : hot.pinned(c)).filter((k) => k[0] === kind && nameOf(k) !== null).map((k) => k.slice(2)));
+  const thingIds = (): string[] => own('things', thingShelf, 'p') ?? (thingShelf === MINE ? gameTheme()?.pieces.props : PROP_SHELVES[thingShelf]) ?? [];
+  const miniIds = (): string[] => own('figures', miniShelf, 'm') ?? (miniShelf === MINE ? gameTheme()?.pieces.minis : MINI_SHELVES[miniShelf]) ?? [];
+  const themed = (shelf: string[]): string[] => {
+    const first = (gameTheme()?.pieces.blocks ?? []).filter((id) => shelf.includes(id));
+    return [...first, ...shelf.filter((id) => !first.includes(id))];
+  };
+  /** Every shelf of a category: what the library sheet shows, and what its search looks through. */
+  const shelvesOf = (c: Cat): Shelf[] => {
+    const keys = (kind: string, ids: string[] = []) => ids.map((id) => `${kind}_${id}`), mine = gameTheme();
+    const theme = (kind: string, ids: string[] = []): Shelf[] => (mine && ids.length ? [[MINE, `${mine.icon} ${mine.name}`, keys(kind, ids)]] : []);
+    if (c === 'land') return [['Terrain', 'Ground', keys('b', themed(BLOCK_SHELVES.Terrain ?? []))]];
+    if (c === 'walls') return [['Structures', 'Structures', keys('p', PROP_SHELVES.Structures)], ['Building', 'Building blocks', keys('b', themed(BLOCK_SHELVES.Building ?? []))]];
+    if (c === 'things') return [...theme('p', mine?.pieces.props), ...Object.keys(PROP_SHELVES).filter((n) => n !== 'Structures').map((n): Shelf => [n, n, keys('p', PROP_SHELVES[n])])];
+    if (c === 'figures') return [...theme('m', mine?.pieces.minis), ...Object.keys(MINI_SHELVES).map((n): Shelf => [n, n, keys('m', MINI_SHELVES[n])])];
+    return [];
+  };
+  /** Picked in the library, perhaps by searching: the tray turns to a shelf the piece is on. */
+  const showShelfOf = (key: string) => {
+    const id = key.slice(2), home = shelvesOf(cat).find(([, , keys]) => keys.includes(key))?.[0];
+    if (cat === 'things' && home && !thingIds().includes(id)) thingShelf = home;
+    if (cat === 'figures' && home && !miniIds().includes(id)) miniShelf = home;
+  };
+  /** A piece in hand went onto the table: it leads the recents of its category. */
+  function placed(k: string, v: unknown, prev: unknown): void {
+    if (!building() || (k[0] === 'm') !== (cat === 'figures')) return;
+    const p = v as { i?: string; k?: string };
+    const key = k[0] === 'm' ? (prev === null && p.k === miniKind ? `m_${p.k}` : '') : p.i === board.brush ? `${BLOCKS[p.i] ? 'b' : 'p'}_${p.i}` : '';
+    if (key && nameOf(key) !== null && hot.used(cat, key)) setTimeout(renderPalette);
+  }
   /** Where a piece's picture is on the sheet of thumbnails (see assets/blender/thumbs.py). */
   const thumb = (family: string): string | null => {
     const i = (THUMBS.at as Record<string, number>)[family];
-    if (i === undefined) return null;
+    if (i === undefined) return packs.packThumb(family.slice(2)); // a piece of the table's own packs shows its picture
     const x = i % THUMBS.cols, y = Math.floor(i / THUMBS.cols);
     return `background-image:url(./ui/thumbs.webp);background-size:${THUMBS.cols * 100}% ${THUMBS.rows * 100}%;background-position:${(x / (THUMBS.cols - 1)) * 100}% ${(y / (THUMBS.rows - 1)) * 100}%`;
   };
@@ -664,8 +781,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         b.title = name;
         b.innerHTML = `${face(family, flat, emoji)}<span>${esc(name)}</span>`;
         b.classList.toggle('on', on);
+        hot.mark(b, cat, family);
         tiles.append(b);
-        if (on && small) {
+        if (on && small && !chips.querySelector('.cur')) {
           const cur = document.createElement('button');
           cur.className = 'cur';
           cur.title = trayOpen ? 'Fold the shelf away' : 'Choose another piece';
@@ -681,6 +799,16 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const turn = () => chip('Turn', false, () => { board.rot = (board.rot + 1) % 4; }, svg('turn'), 'Turn the next piece (R)');
       const blocks = (ids: string[]) => { for (const id of ids) tile(BLOCKS[id].name, board.brush === id, brush(id), `b_${id}`, BLOCKS[id].color); };
       const props = (ids: string[]) => { for (const id of ids) tile(PROPS[id].name, board.brush === id, brush(id), `p_${id}`, undefined, PROPS[id].icon); };
+      const minis = (ids: string[]) => { for (const id of ids) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon); };
+      // The library: search, and a grid of everything in this category, for when one row is not enough.
+      if (cat !== 'scenes') chip('', hot.isOpen, () => { trayOpen = false; hot.show(!hot.isOpen); }, svg('search'), 'Search the library');
+      /** This device's own shelves lead the others: what it used last, and what it pinned. */
+      const ownShelves = (now: string, kind: string, pick: (shelf: string, id: string) => void) => {
+        for (const [shelf, icon, title] of [[RECENT, 'clock', 'Recent pieces'], [FAVS, 'star', 'Favourites']]) {
+          const ids = own(cat, shelf, kind) ?? [];
+          if (ids.length) chip('', now === shelf, () => { pick(shelf, ids[0]); trayOpen = true; }, svg(icon), title);
+        }
+      };
       if (cat === 'land') {
         // Shaping the land: each is a brush you tap or drag over the ground.
         for (const [id, label, title] of [['raise', 'Raise', 'Raise the ground'], ['lower', 'Lower', 'Lower the ground'], ['level', 'Level', 'Level to where you start'], ['grow', 'Grow', 'Grow what suits the ground']]) {
@@ -688,7 +816,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         }
         chip(`Size ${board.reach * 2 + 1}`, false, () => { board.reach = (board.reach + 1) % 3; }, '', `Brush size: ${board.reach * 2 + 1} across`);
         chip('Repaint', board.surface, () => { board.surface = !board.surface; }, '', 'Repaint the surface instead of stacking');
-        blocks(BLOCK_SHELVES.Terrain);
+        blocks(themed(BLOCK_SHELVES.Terrain));
       } else if (cat === 'walls') {
         // A whole room in one drag: floor, walls, windows and a doorway.
         for (const timber of [false, true]) {
@@ -696,8 +824,13 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         }
         turn();
         props(PROP_SHELVES.Structures);
-        blocks(BLOCK_SHELVES.Building);
+        blocks(themed(BLOCK_SHELVES.Building));
       } else if (cat === 'things') {
+        ownShelves(thingShelf, 'p', (shelf, id) => { thingShelf = shelf; board.brush = id; });
+        if ((thingShelf === RECENT || thingShelf === FAVS) && !thingIds().length) thingShelf = 'Nature';
+        const mine = gameTheme();
+        if (mine?.pieces.props.length) chip(`${mine.icon} ${mine.name}`, thingShelf === MINE, () => { thingShelf = MINE; board.brush = mine.pieces.props[0]; });
+        else if (thingShelf === MINE) thingShelf = 'Nature';
         for (const name of Object.keys(PROP_SHELVES)) {
           if (name !== 'Structures') chip(name, thingShelf === name && board.brush !== 'pour', () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
@@ -707,11 +840,16 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         if (board.brush === 'pour') {
           chip(`× ${pourCount}`, false, () => { pourCount = POUR_COUNTS[(POUR_COUNTS.indexOf(pourCount) + 1) % POUR_COUNTS.length]; }, '', `How many pieces a pour drops: ${pourCount}`);
           for (const [id, k] of Object.entries(LOOSE)) tile(k.name, pourKind === id, () => { pourKind = id; }, k.thumb, undefined, k.icon);
-        } else props(PROP_SHELVES[thingShelf]);
+        } else props(thingIds());
       } else if (cat === 'figures') {
+        ownShelves(miniShelf, 'm', (shelf, id) => { miniShelf = shelf; miniKind = id; });
+        if ((miniShelf === RECENT || miniShelf === FAVS) && !miniIds().length) miniShelf = 'Heroes';
+        const mine = gameTheme();
+        if (mine?.pieces.minis.length) chip(`${mine.icon} ${mine.name}`, miniShelf === MINE, () => { miniShelf = MINE; miniKind = mine.pieces.minis[0]; });
+        else if (miniShelf === MINE) miniShelf = 'Heroes';
         for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
-        for (const id of MINI_SHELVES[miniShelf]) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon);
+        minis(miniIds());
       } else {
         chip('Generate…', false, () => { renderGen(); openSheet('gen'); }, svg('spark'), 'Generate a scene');
         chip('Starter scene', false, meadow);
@@ -721,6 +859,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         chip('Share', false, () => void shareSlab(), '', 'Share what you copied').disabled = !board.slab;
         chip('Import', false, () => void importSlab(), '', 'Paste a shared code');
         tiles.remove();
+      }
+      if (cat !== 'scenes') {
+        // The library sheet, when it is open: the same tiles, wrapped into rows.
+        const one = (key: string): Element | null => {
+          const n = tiles.childElementCount;
+          if (nameOf(key) !== null) ({ b: blocks, p: props, m: minis } as Record<string, (ids: string[]) => void>)[key[0]]([key.slice(2)]);
+          const t = n < tiles.childElementCount ? tiles.lastElementChild as HTMLButtonElement : null;
+          if (t) { const click = t.onclick!; t.onclick = (e) => { showShelfOf(key); click.call(t, e); }; }
+          return t;
+        };
+        hot.draw(cat, { land: 'Ground', walls: 'Walls', things: 'Things', figures: 'Figures' }[cat], shelvesOf(cat), nameOf, one);
       }
       if (small && tiles.isConnected) {
         // With a brush in hand that is not one of the pictures, the row still needs a way back to the shelf.
@@ -875,7 +1024,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function newBoard(copy: boolean): void {
     if (!full()) return;
     const id = crypto.randomUUID().slice(0, 6);
-    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:', 'l:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
+    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:', 'l:', 'at:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
     store.set(`bd:${id}`, { n: copy ? `${boardName(here)} copy`.slice(0, 24) : `Board ${boardList().length + 1}` });
     peek = id; // start on it alone; bring the players over when it is ready
     sync();
@@ -889,24 +1038,74 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   const SKY_NAMES: Record<Sky, string> = { day: '☀️ Day', dusk: '🌇 Dusk', night: '🌙 Night' };
   const SEASON_NAMES: Record<Season, string> = { spring: '🌸 Spring', summer: '🌿 Summer', autumn: '🍂 Autumn', winter: '❄️ Winter' };
-  function choices(el: HTMLElement, items: Record<string, string>, key: string, fallback: string): void {
-    const f = full(), cur = setting(store, key, fallback);
+  function choices(el: HTMLElement, items: Record<string, string>, key: 'sky' | 'season' | 'amb', fallback: string): void {
+    const f = full(), cur = atmo(store, key, fallback);
     el.innerHTML = '';
     for (const [id, label] of Object.entries(items)) {
       const b = document.createElement('button');
-      b.textContent = label.replace(/^[^\p{L}]+/u, ''); // the names carry an emoji for the chat log; the buttons do without
+      b.textContent = label.replace(/^[^\p{L}\p{N}]+/u, ''); // the names carry an emoji for the chat log; the buttons do without
       b.classList.toggle('on', id === cur);
       b.disabled = !f;
-      b.onclick = () => store.set(`set:${key}`, id);
+      b.onclick = () => setAtmo(store, key, id);
+      el.append(b);
+    }
+  }
+  /** The themes to choose from. Shared by the Atmosphere sheet and the Prep page (ui/prepPages.ts). */
+  const themesOffered = (): GameTheme[] => {
+    const offered = [...gameThemes], mine = gameTheme();
+    if (mine && !offered.some((t) => t.id === mine.id)) offered.push(mine); // a theme the table brought with it
+    return offered;
+  };
+  /** Tapping a theme, wherever it is shown: take it up, or let go of the one the table has. */
+  function pickTheme(t: GameTheme): void {
+    if (!full()) return;
+    if (t.id === gameTheme()?.id) {
+      // A soundscape the theme brought leaves with it: fall silent by choice, not by a name nobody knows.
+      if (t.sounds?.scapes?.[atmo(store, 'amb', 'off')]) setAtmo(store, 'amb', 'off');
+      setAtmo(store, 'theme', null);
+      return;
+    }
+    setAtmo(store, 'theme', t); // the whole theme, so the board carries it
+    for (const [k, v] of moodEdits(t)) setAtmo(store, k, v);
+    if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
+    if (t.pieces.props.length) thingShelf = MINE;
+    if (t.pieces.minis.length) miniShelf = MINE;
+  }
+  // Prep: the full-screen pages for getting a table ready (see ui/prep.ts).
+  registerBuiltinPrepPages();
+  // Rules in Prep is the same picker the menu's Rules sheet shows (ui/sheet.ts).
+  registerPrepPage({ id: 'rules', title: 'Rules', icon: 'list', order: 40, hint: 'The game system and its character sheets', render: renderSystemPicker, update: renderSystemPicker });
+  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name });
+  registerSoundPage(tableSounds, { store, full, emotes: Object.keys(EMOTES), soundOn: () => { if (!sound.enabled) $('soundOn').click(); } });
+  // Make your own theme (ui/themeEditor.ts): the Theme page's gallery with Customise, and the editor over the live table.
+  const themeEd = initThemeEditor({ scapes: () => tableSounds.scapeNames(), store, board, known, me: meId, color: () => myColor, full, ls, themes: themesOffered, pickTheme, thumb, lookAround: () => setTool('move'), open: (page) => prep.open(page) });
+  registerImportPage(); registerPacksPage(); // the GM's own pieces: these take the place of the placeholders
+  packs.onPacks(() => { if (ui.ready && building()) renderPalette(); }); // a piece's picture arrived
+  /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
+  function renderThemes(): void {
+    const el = $('themes'), f = full(), cur = gameTheme()?.id;
+    el.innerHTML = '';
+    const offered = themesOffered();
+    $('themeHint').hidden = el.hidden = !offered.length;
+    for (const t of offered) {
+      const b = document.createElement('button');
+      b.textContent = `${t.icon} ${t.name}`;
+      b.classList.toggle('on', t.id === cur);
+      b.setAttribute('aria-pressed', String(t.id === cur));
+      b.disabled = !f;
+      b.onclick = () => pickTheme(t);
       el.append(b);
     }
   }
   function renderAtmo(): void {
+    renderThemes();
     choices($('skies'), SKY_NAMES, 'sky', 'day');
     choices($('seasons'), SEASON_NAMES, 'season', 'summer');
-    choices($('scapes'), SOUNDSCAPES, 'amb', 'off');
+    // The soundscapes this device has loaded, and the ones the table's theme brings, each by its own name.
+    choices($('scapes'), { ...SOUNDSCAPES, ...Object.fromEntries(Object.entries(gameTheme()?.sounds?.scapes ?? {}).map(([id, r]) => [id, r.name])), ...tableSounds.scapeNames() }, 'amb', 'off');
+    renderSoundboard($('sfx'), tableSounds, full()); // the table's own effects, one tap each
     const glow = $<HTMLInputElement>('glow');
-    if (document.activeElement !== glow) glow.value = String(setting(store, 'glow', 1));
+    if (document.activeElement !== glow) glow.value = String(atmo(store, 'glow', 1));
     glow.disabled = !full();
     $('soundOn').innerHTML = sound.enabled ? `${ico('sound')}Sound on this device: on` : `${ico('mute')}Sound on this device: off`;
     $('hapticsOn').hidden = !canBuzz();
@@ -946,21 +1145,28 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const ids = boardList().map((b) => b.id);
     const active = ids.includes(setting(store, 'board', '')) ? setting(store, 'board', '') : '';
     if (!f || (peek !== null && !ids.includes(peek))) peek = null;
-    if ((peek ?? active) !== here) enter(peek ?? active);
+    if ((peek ?? active) !== here) { enter(peek ?? active); renderPalette(); } // another board, another theme's shelf
     renderBoards(active);
     const l = setting(store, 'los', false);
     if (l !== los) { los = l; board.refresh(); }
-    board.setGlow(setting(store, 'glow', 1));
-    const sky = setting<Sky>(store, 'sky', 'day');
-    board.setSky(sky);
-    board.setSeason(setting<Season>(store, 'season', 'summer'));
+    board.setGlow(atmo(store, 'glow', 1));
+    const sky = atmo<Sky>(store, 'sky', 'day'), look = themeLook(gameTheme(), sky);
+    board.setSky(sky, look.light, look.fog);
+    board.setGrade(look.grade);
+    board.setDice(look.dice);
+    board.setSeason(atmo<Season>(store, 'season', 'summer'));
     const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
     act('gm').innerHTML = `${ico('crown')}${amGM ? 'Stop being the GM' : 'Become the GM'}`;
     act('los').innerHTML = `${ico(l ? 'eye' : 'eyeoff')}Line of sight: ${l ? 'on' : 'off'}`;
-    sound.scape(setting(store, 'amb', 'off'));
+    sound.theme(gameTheme()?.sounds);
+    tableSounds.refresh(); // the table's own sounds come before the theme's
+    sound.scape(atmo(store, 'amb', 'off'));
     renderAtmo();
+    prep.refresh();
     renderPlayers();
     renderInit();
+    rules?.refresh();
+    syncScripts();
     if (board.selected) showMiniPanel(board.selected);
     if (cutAuto) autoCut();
   }
@@ -1058,6 +1264,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       // Two to each side of the piece and two below: its name and hit points float above it and must stay readable.
       const at = items.length === 1 ? [-25] : [-155, 155, -25, 25, 122, 58];
       items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
+      if (rules?.system()) { const b = button('Character sheet', ico('sheet'), () => rules!.open(board.selected)); b.dataset.a = '90'; el.append(b); }
     } else {
       const pop = document.createElement('div');
       pop.className = 'pop';
@@ -1125,6 +1332,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const wasOpen = !$('minipanel').hidden;
     $('minipanel').hidden = !id || !moreOpen;
     renderRing();
+    rules?.follow(id);
     // A piece is never left behind the panel it is being edited in: the view slides to keep it clear.
     if (id && (id !== shownFor || wasOpen !== moreOpen)) {
       const roof = $('top').getBoundingClientRect().bottom + 110;
@@ -1200,6 +1408,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   $('miniHide').onclick = () => patch({ h: !sel()?.h });
   $<HTMLSelectElement>('miniOwner').onchange = (e) => setOpt('o', (e.target as HTMLSelectElement).value);
   $('miniDel').onclick = () => { if (board.selected && full()) store.set(`m:${board.selected}`, null); };
+  $('miniSheet').onclick = () => rules?.open(board.selected);
+  $('sheetBtn').onclick = () => ($('sheet').classList.contains('closed') ? rules?.open() : openSheet(null));
 
   // ---- menu ----
 
@@ -1252,6 +1462,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'los' && full()) store.set('set:los', !setting(store, 'los', false));
     if (act === 'boards' || act === 'atmo') openSheet(act);
+    if (act === 'rules') { renderSystemPicker($('rulesList')); openSheet('rules'); }
     if (act === 'gen' && full()) { renderGen(); openSheet('gen'); }
     if (act === 'redo') board.redo();
     if (act === 'meadow') meadow();
@@ -1277,32 +1488,44 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const data = JSON.parse(await input.files![0].text());
       for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmfw]:/.test(k)) store.set(k, v);
         else if (/^(@[\w-]+\/[bmfw]:|bd:)/.test(k)) store.setRaw(k, v);
+        else if (k.startsWith(packs.PACK_KEY) && full() && packs.parsePack(v, k.slice(3))) store.set(k, v); // the table's own packs (their files stay in the blob cache and on the servers)
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
 
   // ---- scene generator ----
   const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0] % 100000;
-  let genOpts: GenOpts = { theme: 'forest', seed: newSeed(), size: 2, density: 2, detail: 2 };
+  let genOpts: GenOpts = { theme: '', seed: newSeed(), size: 2, density: 2, detail: 2 }; // the first preset on offer, until one is picked
   let genRecent: GenOpts[] = [];
   try { genRecent = JSON.parse(ls.get('genRecent') ?? '[]'); } catch { /* start with none */ }
   /** The scene on this board, remembered with the table so its rooms can be redone or locked later. */
-  interface SceneRec { o: GenOpts; rooms: GenRoom[] }
+  // `p` is its preset, when that came with a theme and not with the app: the scene can still be redone once the theme is gone.
+  interface SceneRec { o: GenOpts; rooms: GenRoom[]; p?: unknown }
   const sceneRec = () => store.get<SceneRec>('gen');
+  /** The generator presets on offer: the loaded ones (public/gens), and the ones the table's theme brings. */
+  const presets = (): Preset[] => {
+    const own = gameTheme()?.gens ?? [];
+    return [...Object.values(PRESETS).filter((p) => !own.some((q) => q.id === p.id)), ...own];
+  };
+  const presetOf = (id: Theme): Preset | undefined => gameTheme()?.gens?.find((p) => p.id === id) ?? PRESETS[id];
+  const presetFor = (rec: SceneRec): Preset | undefined => (rec.p ? parsePreset(rec.p, knownPiece) : null) ?? presetOf(rec.o.theme);
+  const genIcon = (p: Preset) => ico(document.getElementById(`i-${p.icon}`) ? p.icon : 'spark');
   function renderGen(): void {
     const themes = $('genThemes'), sliders = $('genSliders'), recent = $('genRecent'), list = $('genRooms');
     themes.innerHTML = sliders.innerHTML = recent.innerHTML = list.innerHTML = '';
-    for (const [id, t] of Object.entries(THEMES) as [Theme, (typeof THEMES)[Theme]][]) {
+    const cur = presetOf(genOpts.theme) ?? presets()[0];
+    if (cur) genOpts = { ...genOpts, theme: cur.id };
+    for (const t of presets()) {
       const b = document.createElement('button');
-      b.innerHTML = `${ico(t.icon)}${t.name}`;
-      b.classList.toggle('on', id === genOpts.theme);
-      b.onclick = () => { genOpts = { ...genOpts, theme: id }; renderGen(); };
+      b.innerHTML = `${genIcon(t)}${esc(t.name)}`;
+      b.classList.toggle('on', t.id === genOpts.theme);
+      b.onclick = () => { genOpts = { ...genOpts, theme: t.id }; renderGen(); };
       themes.append(b);
     }
     (['size', 'density', 'detail'] as const).forEach((key, i) => {
       const row = document.createElement('label'), name = document.createElement('span'), input = document.createElement('input');
       row.className = 'slider';
-      name.textContent = THEMES[genOpts.theme].sliders[i];
+      name.textContent = cur?.sliders[i] ?? '';
       Object.assign(input, { type: 'range', min: '0', max: '4', step: '1', value: String(genOpts[key]) });
       input.oninput = () => { genOpts = { ...genOpts, [key]: +input.value }; };
       row.append(name, input);
@@ -1316,24 +1539,26 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const row = document.createElement('span'), name = document.createElement('button'), dice = document.createElement('button'), lock = document.createElement('button');
         row.className = 'row';
         name.className = 'grow';
-        name.textContent = ROOM_NAMES[q.kind] ?? q.kind;
+        name.textContent = roomName(presetFor(rec), q.kind);
         name.onclick = () => board.lookAt((q.x0 + q.x1 + 1) / 2, 1, (q.z0 + q.z1 + 1) / 2);
         dice.innerHTML = ico('dice');
         dice.title = dice.ariaLabel = 'Refurnish this room';
         dice.disabled = !!q.lock;
-        dice.onclick = () => buildScene(rec.o, rec.rooms.map((r, j) => (j === i ? { ...r, seed: newSeed() } : r)), true);
+        dice.onclick = () => buildScene(rec.o, rec.rooms.map((r, j) => (j === i ? { ...r, seed: newSeed() } : r)), true, presetFor(rec));
         lock.innerHTML = ico(q.lock ? 'lock' : 'unlock');
         lock.title = lock.ariaLabel = q.lock ? 'Locked: unlock this room' : 'Lock this room';
         lock.classList.toggle('on', !!q.lock);
-        lock.onclick = () => store.set('gen', { o: rec.o, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock: !r.lock } : r)) });
+        lock.onclick = () => store.set('gen', { ...rec, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock: !r.lock } : r)) });
         row.append(name, dice, lock);
         list.append(row);
       });
     }
     for (const o of genRecent) {
+      const t = presetOf(o.theme);
+      if (!t) continue; // from a preset this table does not have
       const b = document.createElement('button');
-      b.innerHTML = `${ico(THEMES[o.theme].icon)}#${o.seed}`;
-      b.title = `${THEMES[o.theme].name}, seed ${o.seed}`;
+      b.innerHTML = `${genIcon(t)}#${+o.seed}`;
+      b.title = `${t.name}, seed ${o.seed}`;
       b.onclick = () => { genOpts = { ...o }; buildScene(genOpts); };
       recent.append(b);
     }
@@ -1342,25 +1567,25 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
    * Build a scene in place of the one on the table. `prior` rooms that are locked are kept;
    * with `fixed` every room stays where it is and only what changed in them is rebuilt.
    */
-  function buildScene(o: GenOpts, prior: GenRoom[] = [], fixed = false): void {
-    if (!full()) return;
-    const old = sceneRec();
+  function buildScene(o: GenOpts, prior: GenRoom[] = [], fixed = false, preset = presetOf(o.theme)): void {
+    if (!full() || !preset) return;
+    const old = sceneRec(), was = old && presetFor(old);
     // What the old scene put on the table follows from its numbers, so it can be cleared exactly.
-    const gone = new Set(old ? generate(old.o, old.rooms, true).edits.map(([k]) => k) : []);
-    const scene = generate(o, prior, fixed);
-    board.applyScene([...scene.edits, ['gen', { o, rooms: scene.rooms }]], scene.bounds, gone, !fixed);
+    const gone = new Set(old && was ? generate(old.o, was, old.rooms, true).edits.map(([k]) => k) : []);
+    const scene = generate(o, preset, prior, fixed);
+    board.applyScene([...scene.edits, ['gen', { o, rooms: scene.rooms, ...(PRESETS[preset.id] === preset ? {} : { p: preset }) }]], scene.bounds, gone, !fixed);
     const same = (p: GenOpts) => JSON.stringify(p) === JSON.stringify(o);
     genRecent = [{ ...o }, ...genRecent.filter((p) => !same(p))].slice(0, 6);
     ls.set('genRecent', JSON.stringify(genRecent));
     renderGen();
   }
-  $<HTMLInputElement>('glow').oninput = (e) => { if (full()) store.set('set:glow', +(e.target as HTMLInputElement).value); };
+  $<HTMLInputElement>('glow').oninput = (e) => { if (full()) setAtmo(store, 'glow', +(e.target as HTMLInputElement).value); };
   $('genGo').onclick = () => buildScene(genOpts, sceneRec()?.rooms.filter((q) => q.lock) ?? []);
   $('genAgain').onclick = () => {
     const rec = sceneRec(), locked = rec?.o.theme === genOpts.theme ? rec.rooms.filter((q) => q.lock) : [];
-    if (genOpts.theme === 'tavern' && rec && locked.length) {
+    if (presetOf(genOpts.theme)?.algo === 'building' && rec && locked.length) {
       // A tavern is one building: with a room locked it stays standing and the other rooms are refurnished.
-      buildScene(rec.o, rec.rooms.map((q) => (q.lock ? q : { ...q, seed: newSeed() })), true);
+      buildScene(rec.o, rec.rooms.map((q) => (q.lock ? q : { ...q, seed: newSeed() })), true, presetFor(rec));
       return;
     }
     genOpts = { ...genOpts, seed: newSeed() };
@@ -1412,6 +1637,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).matches('input, textarea')) return;
+    if (prep.isOpen) return; // the table is behind a page: its shortcuts are not for now
     const tools: Tool[] = ['move', 'build', 'mini', 'ruler', 'fog'];
     const allowed = (t: Tool) => t === 'move' || t === 'ruler' || (full() && (t !== 'fog' || gms(store).includes(meId)));
     if (e.key >= '1' && e.key <= '5') { if (allowed(tools[+e.key - 1])) setTool(tools[+e.key - 1]); }
@@ -1446,6 +1672,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     void net.pause();
   });
 
+  initSheets();
+  Object.assign((window as unknown as { __ct: object }).__ct, { ui: { prep, pushSheetPage, popSheetPage, setSheetHeight, sheetHeight } });
+  Object.assign((window as unknown as { __ct: object }).__ct, { themeEd });
   setTool('move');
   renderHand();
   ui.ready = true;
