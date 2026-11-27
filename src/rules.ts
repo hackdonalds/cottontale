@@ -203,8 +203,27 @@ export function columnTop(store: Store, x: number, z: number): { y: number; id: 
   return null;
 }
 
-/** Carry whatever stands on a column (a prop, minis) up or down with its surface. */
+/** Carry whatever stands on a column (minis, walls along its sides) up or down with its surface. */
 function carry(store: Store, x: number, z: number, from: number, by: number, put: Put): void {
+  // A wall rides along unless the ground on its other side is staying at its level: then it
+  // still has something to stand on there. Upper storeys move with the wall under them.
+  const sides: [key: (y: number) => string, nx: number, nz: number][] = [
+    [(y) => ek(x, y, z, 'n'), x, z - 1], [(y) => ek(x, y, z + 1, 'n'), x, z + 1],
+    [(y) => ek(x, y, z, 'w'), x - 1, z], [(y) => ek(x + 1, y, z, 'w'), x + 1, z],
+  ];
+  for (const [key, nx, nz] of sides) {
+    if (!store.get(key(from))) continue;
+    const beside = columnTop(store, nx, nz);
+    if ((beside ? beside.y + 1 : 0) === from) continue;
+    let top = from;
+    while (top + 1 < MAX_Y && store.get(key(top + 1))) top++;
+    const levels = Array.from({ length: top - from + 1 }, (_, i) => from + i);
+    for (const y of by > 0 ? levels.reverse() : levels) {
+      if (y + by < 0 || y + by >= MAX_Y) continue;
+      put(key(y + by), store.get(key(y)));
+      put(key(y), null);
+    }
+  }
   for (const k of [...store.keys('m:')]) {
     const m = store.get<MiniVal>(k)!;
     if (m.x === x && m.z === z && m.y === from) put(k, { ...m, y: from + by });

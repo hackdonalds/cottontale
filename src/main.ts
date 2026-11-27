@@ -473,7 +473,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const b = document.createElement('button'), at = family && thumb(family);
         b.className = 'tile';
         b.title = name;
-        b.innerHTML = `<i${at ? ` style="${at}"` : flat ? ` class="flat" style="background-color:${flat}"` : ''}>${at || flat ? '' : emoji}</i><span>${esc(name)}</span>`;
+        // A block with no model of its own is drawn as a cube of its colour, lit like the pictures.
+        const cube = flat && !at ? `<svg class="cube" viewBox="0 0 24 24"><path fill="${flat}" d="M12 3 20.500 7.500 12 12 3.500 7.500z"/><path fill="${flat}" style="filter:brightness(.78)" d="M3.500 7.500 12 12v9.500L3.500 17z"/><path fill="${flat}" style="filter:brightness(.6)" d="M20.500 7.500 12 12v9.500l8.500-4.500z"/></svg>` : '';
+        b.innerHTML = `<i${at ? ` style="${at}"` : ''}>${at ? '' : cube || emoji}</i><span>${esc(name)}</span>`;
         b.classList.toggle('on', on);
         tiles.append(b);
         return press(b, click);
@@ -599,7 +601,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
   function renderBoards(active: string): void {
     const f = full(), list = $('boardList');
-    if (list.contains(document.activeElement)) return; // someone is typing a name
+    // Someone is typing a name: leave the list alone. (A button in it having focus, as after
+    // tapping Delete, must not stop it redrawing.)
+    if (document.activeElement instanceof HTMLInputElement && list.contains(document.activeElement)) return;
     list.innerHTML = '';
     for (const b of boardList()) {
       const row = document.createElement('span');
@@ -614,19 +618,23 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       if (b.id === active) row.insertAdjacentHTML('beforeend', '<span class="tag">players<br />here</span>');
       const btn = (label: string, title: string, click: () => void) => {
         const x = document.createElement('button');
-        x.textContent = label;
+        x.innerHTML = label;
         x.title = title;
         x.setAttribute('aria-label', title);
         x.onclick = click;
         row.append(x);
       };
       if (f) {
-        if (b.id !== here) btn('👁️', 'Look at it yourself (players stay where they are)', () => { peek = b.id === active ? null : b.id; sync(); });
-        if (b.id !== active) btn('▶', 'Bring everyone here', () => { peek = null; store.set('set:board', b.id); });
-        if (b.id) btn('🗑️', 'Delete this board', () => {
+        if (b.id !== here) btn(ico('eye'), 'Look at it yourself (players stay where they are)', () => { peek = b.id === active ? null : b.id; sync(); });
+        if (b.id !== active) btn(ico('play'), 'Bring everyone here', () => { peek = null; store.set('set:board', b.id); });
+        if (b.id) btn(ico('trash'), 'Delete this board', () => {
           if (!confirm(`Delete “${b.n}” and everything on it?`)) return;
+          // Nobody may be left standing on a board that is gone: the players, or the GM preparing it.
+          if (peek === b.id) peek = null;
+          if (active === b.id) store.set('set:board', '');
           for (const [k, e] of [...store.entries]) if (e.v !== null && k.startsWith(`@${b.id}/`)) store.setRaw(k, null);
           store.set(`bd:${b.id}`, null);
+          sync();
         });
       }
       list.append(row);

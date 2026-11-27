@@ -2,6 +2,7 @@
 # as posed statues like every other piece. The pose is one frame of one of the model's own
 # animations; colour comes from its materials or its texture and is baked into the vertices,
 # so the figure draws with the same material as the rest of the kit.
+import colorsys
 import math
 import os
 
@@ -22,10 +23,25 @@ def _linear(c):
 
 
 class Imported:
-    def __init__(self, name, file, action='Idle', frame=0, height=0.9, fit=0.92, hide=(), turn=0.0, ao=0.45, tris=0, lift=0.0):
+    def __init__(self, name, file, action='Idle', frame=0, height=0.9, fit=0.92, hide=(), turn=0.0, ao=0.45, tris=0, lift=0.0, metal=None, cloth=None):
         """`height` is how tall it stands; `fit` the widest it may be across, which wins."""
         self.name, self.file, self.action, self.frame = name, os.path.join(ROOT, file), action, frame
         self.height, self.fit, self.hide, self.turn, self.ao, self.tris, self.lift = height, fit, set(hide), turn, ao, tris, lift
+        # Repainting, so one body can be several characters: `metal` tints the greys (armour, steel);
+        # `cloth` maps a hue to (new hue, saturation x, value x). Skin and hair are left alone.
+        self.metal, self.cloth = metal, cloth or {}
+
+    def repaint(self, c):
+        h, sat, v = colorsys.rgb_to_hsv(*[max(0.0, min(1.0, float(x) ** (1 / 2.2))) for x in c])
+        if sat < 0.16:
+            if not self.metal or v < 0.2:
+                return c
+            return tuple(float(x) * m for x, m in zip(c, self.metal))
+        for hue, (to, ks, kv) in self.cloth.items():
+            if min(abs(h - hue), 1 - abs(h - hue)) < 0.07:
+                r, g, b = colorsys.hsv_to_rgb(to, min(1, sat * ks), min(1, v * kv))
+                return (r ** 2.2, g ** 2.2, b ** 2.2)
+        return c
 
     def build(self):
         before = set(bpy.data.objects)
@@ -79,6 +95,7 @@ class Imported:
                         u, v = uv.data[li].uv
                         h, w = pixels.shape[:2]
                         c = pixels[int(v % 1 * h) % h, int(u % 1 * w) % w]
+                    c = self.repaint(c) if self.metal or self.cloth else c
                     l[col] = (c[0], c[1], c[2], 1.0)
             e.to_mesh_clear()
             del base
@@ -151,6 +168,22 @@ IMPORTED = {
     'm_rogue': lambda n: Imported(n, KAY + 'Rogue.glb', height=0.9, hide=('1H_Crossbow', '2H_Crossbow', 'Throwable')),
     'm_ranger': lambda n: Imported(n, KAY + 'Rogue_Hooded.glb', action='2H_Ranged_Aiming', height=0.9,
                                    hide=('Knife_Offhand', 'Knife', '1H_Crossbow', 'Throwable')),
+    # The same bodies in other gear, poses and colours.
+    'm_paladin': lambda n: Imported(n, KAY + 'Knight.glb', action='2H_Melee_Idle', height=0.97, metal=(1.3, 1.08, 0.55), cloth={0.99: (0.6, 0.9, 1.0)},
+                                    hide=('1H_Sword_Offhand', 'Badge_Shield', 'Rectangle_Shield', 'Spike_Shield', 'Round_Shield', '1H_Sword')),
+    'm_guard': lambda n: Imported(n, KAY + 'Knight.glb', action='Blocking', height=0.95, metal=(0.72, 0.76, 0.86), cloth={0.99: (0.36, 0.8, 0.8)},
+                                  hide=('1H_Sword_Offhand', 'Badge_Shield', 'Round_Shield', 'Spike_Shield', '2H_Sword', 'Knight_Cape')),
+    'm_witch': lambda n: Imported(n, KAY + 'Mage.glb', action='Spellcasting', height=1.0, cloth={0.72: (0.4, 0.9, 0.42), 0.9: (0.78, 0.9, 0.55)},
+                                  hide=('Spellbook_open', '2H_Staff')),
+    'm_cleric': lambda n: Imported(n, KAY + 'Mage.glb', height=0.95, cloth={0.72: (0.13, 0.3, 1.9), 0.9: (0.12, 0.85, 1.0)}, hide=('Mage_Hat', 'Spellbook', '1H_Wand')),
+    'm_villager': lambda n: Imported(n, KAY + 'Rogue.glb', action='Unarmed_Idle', height=0.9, cloth={0.4: (0.09, 0.75, 0.9)},
+                                     hide=('Knife_Offhand', '1H_Crossbow', '2H_Crossbow', 'Knife', 'Throwable', 'Rogue_Cape')),
+    'm_child': lambda n: Imported(n, KAY + 'Rogue.glb', action='Cheer', frame=10, height=0.62, cloth={0.4: (0.58, 0.8, 1.0)},
+                                  hide=('Knife_Offhand', '1H_Crossbow', '2H_Crossbow', 'Knife', 'Throwable', 'Rogue_Cape')),
+    'm_merchant': lambda n: Imported(n, KAY + 'Barbarian.glb', action='Idle', height=0.98, cloth={0.6: (0.8, 0.8, 0.9)},
+                                     hide=('1H_Axe_Offhand', '1H_Axe', '2H_Axe', 'Barbarian_Round_Shield', 'Barbarian_Hat', 'Barbarian_Cape')),
+    'm_druid': lambda n: Imported(n, KAY + 'Rogue_Hooded.glb', action='Spellcasting', height=0.9, cloth={0.4: (0.3, 0.7, 0.62)},
+                                  hide=('Knife_Offhand', '1H_Crossbow', '2H_Crossbow', 'Knife', 'Throwable')),
     'm_skeleton': lambda n: Imported(n, 'kaykit-skeletons/Skeleton_Warrior.glb', height=0.95),
     'm_wolf': lambda n: Imported(n, 'quaternius/Wolf.glb', height=0.7, fit=1.05),
     'm_ogre': lambda n: Imported(n, 'quaternius/Orc.glb', height=1.3, fit=1.35, tris=5000),

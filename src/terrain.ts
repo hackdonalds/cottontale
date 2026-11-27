@@ -31,6 +31,11 @@ export interface Terrain {
 
 const PAD = 0.3; // half the width of the level pad in the middle of a cell
 const EARTH = new THREE.Color('#8b6a48'), ROCK = new THREE.Color('#857a6c'), CUT = new THREE.Color('#6f4f36');
+/** What shows where ground is cut through: earth under soil, stone under rock. */
+const CUT_ROCK = new THREE.Color('#4a4a52'), WET = new THREE.Color('#6b5a44');
+const STONY = new Set(['basalt', 'gravel']);
+/** How far below the top of its block the water lies (water blocks are drawn 0.82 high). */
+const WATERLINE = 0.24;
 const ck = (x: number, z: number) => `${x},${z}`;
 
 /**
@@ -52,9 +57,15 @@ export function buildTerrain(columns: Map<string, Column>, worn: (x: number, z: 
     const zs = hz % 2 === 0 ? [hz / 2 - 1, hz / 2] : [(hz - 1) / 2];
     let n = 0, h = 0, lo = Infinity, hi = -Infinity, k = 0, w = 0;
     const c = new THREE.Color(0, 0, 0);
+    let wet = 0;
     for (const x of xs) for (const z of zs) {
       const g = ground(x, z);
-      if (!g) continue; // built blocks and bare table neither lift nor lower the ground beside them
+      if (!g) {
+        // Water draws the bank down to meet it: the shore slopes in instead of standing as a kerb.
+        const o = columns.get(ck(x, z));
+        if (o?.id === 'water') { wet++; h += o.y + 1 - WATERLINE; lo = Math.min(lo, o.y); hi = Math.max(hi, o.y); }
+        continue; // built blocks and bare table neither lift nor lower the ground beside them
+      }
       n++;
       h += g.y + 1;
       lo = Math.min(lo, g.y);
@@ -63,7 +74,7 @@ export function buildTerrain(columns: Map<string, Column>, worn: (x: number, z: 
       k += GROUND[g.id].kind;
       w += worn(x, z);
     }
-    h /= n;
+    h /= n + wet;
     const had = shared.get(key);
     if (had !== undefined) return { i: had, h };
     c.multiplyScalar(1 / n);
@@ -71,6 +82,7 @@ export function buildTerrain(columns: Map<string, Column>, worn: (x: number, z: 
     // A drop of one level is a grassy bank with earth showing through; more than that is a rock face.
     const steep = Math.min(1, (hi - lo) / 2);
     c.lerp(steep > 0.5 ? ROCK : EARTH, steep > 0.5 ? steep * 0.85 : steep * 0.7).lerp(EARTH, (w / n) * 0.6);
+    if (wet) c.lerp(WET, 0.75); // damp earth at the water's edge
     k += (2 - k) * Math.max(steep, (w / n) * 0.6);
     const i = pos.length / 3;
     pos.push(hx / 2, h, hz / 2);
@@ -127,7 +139,7 @@ export function buildTerrain(columns: Map<string, Column>, worn: (x: number, z: 
       const at = pts.map((p) => [pos[p.i * 3], pos[p.i * 3 + 2]]);
       for (let e = 0; e < 2; e++) {
         const [ax, az] = at[e], [bx, bz] = at[e + 1], ah = pts[e].h, bh = pts[e + 1].h;
-        const shade = (y: number) => tmp.copy(CUT).multiplyScalar(0.65 + 0.35 * Math.min(1, (y - floor) / 1.2)).clone();
+        const shade = (y: number) => tmp.copy(STONY.has(top.id) ? CUT_ROCK : CUT).multiplyScalar(0.65 + 0.35 * Math.min(1, (y - floor) / 1.2)).clone();
         const a0 = own(ax, ah, az, shade(ah), 2), b0 = own(bx, bh, bz, shade(bh), 2);
         const a1 = own(ax, floor, az, shade(floor), 2), b1 = own(bx, floor, bz, shade(floor), 2);
         tri(a0, a1, b0, cell, true);

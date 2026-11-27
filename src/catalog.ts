@@ -574,8 +574,17 @@ export const PROP_SHELVES: Record<string, string[]> = {
   Furniture: ['table', 'chair', 'bench', 'bed', 'bookshelf', 'throne', 'rug', 'barrel', 'crate', 'sacks', 'cauldron', 'anvil', 'candles'],
   Dungeon: ['torch', 'campfire', 'chest', 'hoard', 'potion', 'cage', 'bones', 'spikes', 'coffin', 'portal'],
 };
+// Characters that share a body with another and differ in gear, pose and paint (see
+// assets/blender/imported.py). Their plain stand-ins are a figure in their colour.
+for (const [id, name, icon, color, height] of [
+  ['paladin', 'Paladin', '⚜️', '#d9b64a', 0.95], ['cleric', 'Cleric', '📿', '#e9e2d0', 0.95], ['druid', 'Druid', '🌿', '#3f6b3a', 0.9],
+  ['villager', 'Villager', '🧑‍🌾', '#8a6a45', 0.9], ['merchant', 'Merchant', '🍺', '#7b5ea7', 0.95], ['guard', 'Guard', '💂', '#6f7f96', 0.95],
+  ['child', 'Child', '🧒', '#4f7fc0', 0.62], ['witch', 'Witch', '🧙‍♀️', '#2f5b3a', 1],
+] as const) MINIS[id] ??= { name, icon, height, make: () => person(color) };
+
 export const MINI_SHELVES: Record<string, string[]> = {
-  Heroes: ['knight', 'barbarian', 'mage', 'rogue', 'ranger', 'pirate'],
+  Heroes: ['knight', 'paladin', 'barbarian', 'mage', 'cleric', 'druid', 'rogue', 'ranger'],
+  Folk: ['villager', 'merchant', 'guard', 'child', 'pirate', 'witch'],
   Beasts: ['bunny', 'dog', 'wolf', 'horse', 'rat', 'bat', 'snake', 'spider'],
   Monsters: ['ogre', 'troll', 'skeleton', 'zombie', 'ghost', 'imp', 'slime', 'mimic', 'dragon'],
   Markers: ['marker', 'flag', 'cross'],

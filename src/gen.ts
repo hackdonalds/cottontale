@@ -192,11 +192,13 @@ function furnish(b: Build, r: Rng, q: GenRoom, kit: { centre?: string; walls: st
     (x === q.x0 || x === q.x1 || z === q.z0 || z === q.z1 ? along : inner).push([x, z]);
   }
   const area = (q.x1 - q.x0 + 1) * (q.z1 - q.z0 + 1);
+  // Pieces are modelled facing +z. Against a wall they turn their backs to it and face the room.
+  const facing = (x: number, z: number) => (z === q.z0 ? 0 : z === q.z1 ? 2 : x === q.x0 ? 1 : x === q.x1 ? 3 : r.int(4));
   const place = (cells: [number, number][], from: string[], count: number) => {
     for (let n = 0, tries = 0; n < count && tries < 40 && cells.length; tries++) {
       const [x, z] = cells[r.int(cells.length)];
       if (!free(x, z)) continue;
-      b.prop(x, 1, z, r.pick(from), r.int(4));
+      b.prop(x, 1, z, r.pick(from), facing(x, z));
       n++;
     }
   };
@@ -306,7 +308,7 @@ function tavern(o: GenOpts, prior: GenRoom[]): Scene {
     const [x, z] = spots.splice(hall_r.int(spots.length), 1)[0];
     if (clear.has(ck(x, z)) || x === door) continue;
     b.prop(x, 1, z, 'table', hall_r.int(2));
-    for (const [dx, dz, turn] of [[1, 0, 1], [-1, 0, 3], [0, 1, 0], [0, -1, 2]] as const) {
+    for (const [dx, dz, turn] of [[1, 0, 3], [-1, 0, 1], [0, 1, 2], [0, -1, 0]] as const) { // each seat faces the table
       const sx = x + dx, sz = z + dz;
       if (sx < hall.x0 || sx > hall.x1 || sz < hall.z0 || sz > hall.z1 || clear.has(ck(sx, sz)) || sx === door || b.has(sx, 1, sz) || !hall_r.chance(2, 3)) continue;
       b.prop(sx, 1, sz, hall_r.chance(1, 4) ? 'bench' : 'chair', turn);
@@ -321,7 +323,7 @@ function tavern(o: GenOpts, prior: GenRoom[]): Scene {
   furnish(b, rng(hall.seed + 1), hall, { walls: ['barrel', 'barrel', 'bookshelf', 'candles', 'cauldron', 'crate'], floor: ['rug'] }, o.detail, none, null, 0);
   furnish(b, rng(rooms[1].seed), rooms[1], { walls: ['barrel', 'crate', 'sacks', 'crate', 'barrel'], floor: ['sacks'] }, o.detail + 1, none, null, 0);
   const bed = rooms[2];
-  if (!none.has(ck(bed.x1, bed.z0))) b.prop(bed.x1, 1, bed.z0, 'bed', 1);
+  if (!none.has(ck(bed.x1, bed.z0))) b.prop(bed.x1, 1, bed.z0, 'bed'); // headboard to the back wall
   furnish(b, rng(bed.seed), bed, { walls: ['chest', 'bookshelf', 'candles'], floor: ['rug'] }, o.detail, none, null, 0);
   return { edits: b.edits(), bounds: [x0 - yard, x1 + yard, z0 - yard, z1 + yard], rooms };
 }

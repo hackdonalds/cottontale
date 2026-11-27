@@ -279,6 +279,23 @@ describe('shaping the land', () => {
     expect(s.get<MiniVal>('m:a')!.y).toBe(1);
   });
 
+  it('carries a wall up with the ground it stands on, unless the ground beside it stays', () => {
+    const { s, put } = land();
+    s.set(ek(1, 1, 1, 'n'), { i: 'wall' }); // between (1,0) and (1,1)
+    s.set(ek(1, 2, 1, 'n'), { i: 'wallwood' }); // a storey on top of it
+    sculpt(s, 1, 1, 1, put);
+    expect(s.get(ek(1, 1, 1, 'n'))).toEqual({ i: 'wall' }); // (1,0) is still at its level: it stays
+    sculpt(s, 1, 0, 1, put);
+    expect(s.get(ek(1, 1, 1, 'n'))).toBeNull(); // now both sides have risen: so has the wall
+    expect(s.get(ek(1, 2, 1, 'n'))).toEqual({ i: 'wall' });
+    expect(s.get(ek(1, 3, 1, 'n'))).toEqual({ i: 'wallwood' });
+    sculpt(s, 1, 0, -1, put);
+    sculpt(s, 1, 1, -1, put);
+    expect(s.get(ek(1, 1, 1, 'n'))).toEqual({ i: 'wall' });
+    expect(s.get(ek(1, 2, 1, 'n'))).toEqual({ i: 'wallwood' });
+    expect(s.get(ek(1, 3, 1, 'n'))).toBeNull();
+  });
+
   it('never digs through the last layer, and leaves floors alone', () => {
     const { s, put } = land();
     s.set('b:1,1,1', null);

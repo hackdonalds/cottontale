@@ -201,6 +201,10 @@ await a.click('#menuBtn');
 await a.click('[data-act="boards"]');
 await a.click('#boardList .row:first-child button[title="Bring everyone here"]');
 assert(await ok(b, () => [...window.__ct.store.keys('b:')].length === 2 && window.__ct.board.minis.size === 1), 'and back to the main board, with everything still there');
+a.once('dialog', (d) => d.accept());
+await a.click('#boardList button[title="Delete this board"]');
+assert(await ok(a, () => document.querySelectorAll('#boardList .row').length === 1 && [...window.__ct.store.keys('bd:')].length === 0)
+  && await ok(b, () => [...window.__ct.store.entries.entries()].every(([k, e]) => !k.startsWith('@') || e.v === null)), 'a deleted board leaves the list at once, and takes its contents with it');
 await a.click('#boards [data-close]');
 
 // Copy an area and paste it elsewhere.
