@@ -10,7 +10,10 @@
 //     split in chunks, so late joiners and returning players get the full map.
 import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
 import type { Ruler } from './board';
+import type { Roll } from './boulder';
 import type { Throw } from './dice';
+import type { Pour } from './loose';
+import type { Shot } from './shots';
 import type { Row, Store } from './store';
 
 export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
@@ -29,10 +32,18 @@ type Body =
   | { y: 'sroll'; k: string; id: string; ri: string; n: string; x: string; v: number[]; t?: Throw; tg?: string; vs?: number; s?: boolean }
   // A line the rules say, from the device that applies them. `k` names it, so it is shown once.
   | { y: 'sys'; k: string; m: string }
+  | { y: 'boulder'; t: Roll }
   | { y: 'ruler'; r: Ruler | null }
   | { y: 'emote'; id: string; e: string }
+  | ({ y: 'shot' } & Shot)
   | { y: 'ping'; p: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] }
+  /** A piece (`i`) at a cell or edge key was broken on purpose: burst it when its removal arrives. */
+  | { y: 'broke'; k: string; i: string }
+  | { y: 'pour'; t: Pour }
+  /** A mini fell `n` cells (for the log), and a blast went off at cell `c` with radius `r` (so props rock). */
+  | { y: 'fall'; id: string; n: number }
+  | { y: 'blast'; c: [number, number, number]; r: number }
   // A soundboard button the GM tapped (src/sounds.ts): the table's effect `id`, for everyone to hear.
   | { y: 'sfx'; id: string }
   // Files passed between players (src/blobpeer.ts): who has a blob, WebRTC signalling, small blobs in pieces.

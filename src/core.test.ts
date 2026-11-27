@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES, makeMini, makeProp } from './catalog';
 import { kindOf, known as has, namespaceOf, onRegistry, pieceId, registerPack, registered, unregisterPack } from './registry';
-import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
+import { decode, kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
@@ -117,6 +117,20 @@ describe('dice', () => {
     expect(kindsFor(2, 100)).toEqual(['d100', 'd10', 'd100', 'd10']);
     expect(kindsFor(1, 7)).toBeNull();
     expect(kindsFor(13, 6)).toBeNull();
+  });
+
+  it('bounces dice off the pieces standing on the table', async () => {
+    const kinds = kindsFor(4, 6)!;
+    const starts = kinds.map((_, i) => ({ p: [-3, 1.2, -1.5 + i] as [number, number, number], q: [0, 0, 0, 1] as [number, number, number, number] }));
+    // Thrown hard at a wall across the table: none gets through it. Without the wall they do.
+    const wall = { p: [1, 1.5, 0] as [number, number, number], h: [0.1, 1.5, 6] as [number, number, number] };
+    const far = async (solids: typeof wall[]) => Math.max(...decode(await simulate(kinds, starts, [14, 0, 0], [0, 0, 0], new Store('a'), 6, solids))!.pos.flatMap((d) => d.map((p) => p.x)));
+    expect(await far([wall])).toBeLessThan(1);
+    expect(await far([])).toBeGreaterThan(1.5);
+    // A figure (an upright cylinder) in the way: dice end up around it, never inside it (a d6 lying against it is a quarter of a cell from its side).
+    const mini = { p: [0, 0.6, 0] as [number, number, number], h: [0.36, 0.6, 0] as [number, number, number], round: true };
+    const t = decode(await simulate(kinds, starts.map((s) => ({ ...s, p: [-3, 1.2, 0] as [number, number, number] })), [9, 0, 0], [0, 0, 0], new Store('a'), 6, [mini]))!;
+    t.pos.forEach((d) => { const end = d[d.length - 1]; if (end.y < 1) expect(Math.hypot(end.x, end.z)).toBeGreaterThan(0.36 + 0.2); });
   });
 
   it('simulates a throw onto terrain that settles flat and replays to the same result', async () => {

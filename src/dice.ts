@@ -11,7 +11,7 @@ import { BLOCKS } from './catalog';
 import type { Store } from './store';
 import type { DiceLook } from './theme';
 
-export type Kind = 'd4' | 'd6' | 'd8' | 'd10' | 'd12' | 'd20' | 'd100';
+export type Kind = 'd2' | 'd4' | 'd6' | 'd8' | 'd10' | 'd12' | 'd20' | 'd100';
 type V3 = [number, number, number];
 
 /** A recorded throw: per die, delta-coded [x,y,z (cm from origin), qx,qy,qz,qw (‰)] per frame. */
@@ -59,11 +59,14 @@ function hull(verts: THREE.Vector3[]): { faces: number[][]; normals: THREE.Vecto
   return { faces, normals };
 }
 
-const RADIUS: Record<Kind, number> = { d4: 0.44, d6: 0.42, d8: 0.42, d10: 0.42, d100: 0.42, d12: 0.44, d20: 0.46 };
+const RADIUS: Record<Kind, number> = { d2: 0.46, d4: 0.44, d6: 0.42, d8: 0.42, d10: 0.42, d100: 0.42, d12: 0.44, d20: 0.46 };
 
 function points(kind: Kind): V3[] {
   const s = [-1, 1];
   switch (kind) {
+    // A coin: a squat twelve-sided prism lying flat, thick enough for the physics to hold on to.
+    // Its rim comes to a ridge, so it cannot stand on edge and spoil the flip.
+    case 'd2': return [0.2, 0, -0.2].flatMap((y) => Array.from({ length: 12 }, (_, i) => { const r = y ? 0.86 : 1; return [r * Math.cos((i * Math.PI) / 6), y, r * Math.sin((i * Math.PI) / 6)] as V3; }));
     case 'd4': return [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]];
     case 'd6': return s.flatMap((x) => s.flatMap((y) => s.map((z) => [x, y, z] as V3)));
     case 'd8': return [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -90,6 +93,7 @@ export function shape(kind: Kind): Shape {
   const { faces, normals } = hull(verts);
   let labels: number[];
   if (kind === 'd4') labels = [1, 2, 3, 4]; // read from the vertex pointing up
+  else if (kind === 'd2') labels = faces.map((f, i) => (f.length === 4 ? 0 : normals[i].y > 0 ? 1 : 2)); // heads, tails; the rim reads as nothing
   else {
     // Like real dice: opposite faces add up to the same total.
     const ten = kind === 'd10' || kind === 'd100';
@@ -115,6 +119,7 @@ export function reading(kind: Kind, q: THREE.Quaternion): number {
   const v = new THREE.Vector3();
   let best = 0, top = -Infinity;
   dirs.forEach((d, i) => {
+    if (kind === 'd2' && !sh.labels[i]) return; // a coin on its rim still shows a side: the one leaning up
     const y = v.copy(d).applyQuaternion(q).y;
     if (y > top) { top = y; best = i; }
   });
@@ -123,11 +128,12 @@ export function reading(kind: Kind, q: THREE.Quaternion): number {
 
 // ---- recording ------------------------------------------------------------------
 
-function decode(t: Throw): { pos: THREE.Vector3[][]; rot: THREE.Quaternion[][] } | null {
+/** The path of every die of a recorded throw, frame by frame, or null if the recording is malformed. */
+export function decode(t: Throw): { pos: THREE.Vector3[][]; rot: THREE.Quaternion[][] } | null {
   if (!t || !Array.isArray(t.k) || !Array.isArray(t.q) || !Array.isArray(t.o)) return null;
   const n = t.n;
   if (!Number.isInteger(n) || n < 1 || n > MAX_FRAMES || !t.k.length || t.k.length > MAX_DICE || t.q.length !== t.k.length) return null;
-  if (t.o.length !== 3 || !t.o.every(Number.isFinite) || !t.k.every((k) => k in RADIUS)) return null;
+  if (t.o.length !== 3 || !t.o.every(Number.isFinite) || !t.k.every((k) => Object.prototype.hasOwnProperty.call(RADIUS, k))) return null;
   const pos: THREE.Vector3[][] = [], rot: THREE.Quaternion[][] = [];
   for (const d of t.q) {
     if (!Array.isArray(d) || d.length !== n * 7 || !d.every(Number.isFinite)) return null;
@@ -160,18 +166,47 @@ export function rollValues(kinds: Kind[], labels: number[]): number[] {
 }
 /** What to show floating above each die once it has landed. */
 function faceTexts(kinds: Kind[], labels: number[]): string[] {
-  return kinds.map((k, i) => (k === 'd100' ? `${labels[i]}0` : k === 'd10' && kinds[i - 1] !== 'd100' ? String(labels[i] || 10) : String(labels[i])));
+  return kinds.map((k, i) => (k === 'd2' ? 'HT'[labels[i] - 1] : k === 'd100' ? `${labels[i]}0` : k === 'd10' && kinds[i - 1] !== 'd100' ? String(labels[i] || 10) : String(labels[i])));
 }
 export function kindsFor(n: number, sides: number): Kind[] | null {
   const k: Kind[] = sides === 100 ? ['d100', 'd10'] : [`d${sides}` as Kind];
-  if (!(k[0] in RADIUS) || sides === 1 || n * k.length > MAX_DICE) return null;
+  if (!Object.prototype.hasOwnProperty.call(RADIUS, k[0]) || sides === 1 || n * k.length > MAX_DICE) return null;
   return Array.from({ length: n }, () => k).flat();
 }
+
+/**
+ * Something standing on the table that dice bounce off: a box (`h` = half extents) or, with
+ * `round`, an upright cylinder (`h[0]` radius, `h[1]` half height). `p` is its centre; `q`
+ * turns it, for things that lie as they fell.
+ */
+export interface Solid { p: V3; h: V3; round?: boolean; q?: [number, number, number, number] }
 
 /** Where a held die is when it leaves the hand. */
 export interface Start { p: V3; q: [number, number, number, number] }
 
 // ---- simulation (thrower only) ------------------------------------------------------
+
+/**
+ * The blocks around a spot as boxes for a physics world: [x, y, z, height] of each run of
+ * stacked blocks (one tall box has fewer seams to snag on than a pile of cubes).
+ */
+export function columns(store: Store, cx: number, cz: number, edge: number): [number, number, number, number][] {
+  const solid = (x: number, y: number, z: number) => {
+    const v = store.get<{ i: string }>(`b:${x},${y},${z}`);
+    return !!v && !!BLOCKS[v.i];
+  };
+  const out: [number, number, number, number][] = [];
+  for (let x = cx - edge; x <= cx + edge; x++) for (let z = cz - edge; z <= cz + edge; z++) {
+    for (let y = 0; y < 40; y++) {
+      if (!solid(x, y, z)) continue;
+      let top = y;
+      while (solid(x, top + 1, z)) top++;
+      out.push([x, y, z, top - y + 1]);
+      y = top;
+    }
+  }
+  return out;
+}
 
 const rnd = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
 const spread = (r: number) => (rnd() * 2 - 1) * r;
@@ -182,7 +217,7 @@ const spread = (r: number) => (rnd() * 2 - 1) * r;
  * dice are kept on. The physics engine is loaded on first use, keeping it out
  * of the initial download.
  */
-export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: V3, store: Store, tray = 6): Promise<Throw> {
+export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: V3, store: Store, tray = 6, solids: Solid[] = []): Promise<Throw> {
   const C = await import('cannon-es');
   const world = new C.World({ gravity: new C.Vec3(0, -32, 0), allowSleep: true });
   world.defaultContactMaterial.friction = 0.32;
@@ -194,6 +229,7 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
     const b = new C.Body({ type: C.Body.STATIC, shape, position: new C.Vec3(x, y, z) });
     b.quaternion.setFromEuler(ex, ey, 0);
     world.addBody(b);
+    return b;
   };
   const TRAY = tray, EDGE = Math.ceil(tray) + 1;
   fixed(new C.Plane(), 0, 0, 0, -Math.PI / 2);
@@ -201,22 +237,10 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
   fixed(new C.Plane(), o[0] + TRAY, 0, o[2], 0, -Math.PI / 2);
   fixed(new C.Plane(), o[0], 0, o[2] - TRAY, 0, 0);
   fixed(new C.Plane(), o[0], 0, o[2] + TRAY, 0, Math.PI);
-  const solid = (x: number, y: number, z: number) => {
-    const v = store.get<{ i: string }>(`b:${x},${y},${z}`);
-    return !!v && !!BLOCKS[v.i];
-  };
   const tops = new Map<string, number>();
-  const cx = Math.floor(o[0]), cz = Math.floor(o[2]);
-  for (let x = cx - EDGE; x <= cx + EDGE; x++) for (let z = cz - EDGE; z <= cz + EDGE; z++) {
-    for (let y = 0; y < 40; y++) {
-      if (!solid(x, y, z)) continue;
-      let top = y;
-      while (solid(x, top + 1, z)) top++; // stacked blocks become one tall box: fewer seams to snag on
-      const h = top - y + 1;
-      fixed(new C.Box(new C.Vec3(0.5, h / 2, 0.5)), x + 0.5, y + h / 2, z + 0.5);
-      tops.set(`${x},${z}`, top + 1);
-      y = top;
-    }
+  for (const [x, y, z, h] of columns(store, Math.floor(o[0]), Math.floor(o[2]), EDGE)) {
+    fixed(new C.Box(new C.Vec3(0.5, h / 2, 0.5)), x + 0.5, y + h / 2, z + 0.5);
+    tops.set(`${x},${z}`, y + h);
   }
 
   // Let go: every die leaves with the hand's velocity plus a little of its own. A
@@ -230,19 +254,39 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
     const clamp = (v: number, c: number) => Math.min(c + TRAY - 0.6, Math.max(c - TRAY + 0.6, v));
     const x = clamp(st.p[0], o[0]), z = clamp(st.p[2], o[2]);
     const ground = tops.get(`${Math.floor(x)},${Math.floor(z)}`) ?? 0;
+    // A coin is flipped, not rolled: tossed higher and slower, turning end over end about an
+    // axis lying in its own plane (as near as that gets to square across the throw).
+    const coin = kind === 'd2';
+    const turn = new THREE.Vector3(spread(spin), spread(spin), spread(spin));
+    if (coin) {
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(...st.q));
+      turn.set(-fling.z, 0, fling.x).addScaledVector(up, -up.dot(turn));
+      if (turn.lengthSq() < 0.01) turn.set(0, 1, 0); // on edge, facing the throw: spin it like a top
+      turn.setLength(18 + rnd() * 10).add(new THREE.Vector3(spread(3), spread(3), spread(3)));
+    }
+    const push = coin ? 0.6 : 1;
     const body = new C.Body({
       mass: 1,
       shape: new C.ConvexPolyhedron({ vertices: sh.verts.map((v) => new C.Vec3(v.x, v.y, v.z)), faces: sh.faces.map((f) => [...f]) }),
       position: new C.Vec3(x, Math.max(st.p[1], ground + 0.7), z),
       quaternion: new C.Quaternion(...st.q),
-      velocity: new C.Vec3(fling.x * (0.85 + rnd() * 0.3) + spread(0.8), 1.5 + rnd() * 1.5, fling.z * (0.85 + rnd() * 0.3) + spread(0.8)),
-      angularVelocity: new C.Vec3(spread(spin), spread(spin), spread(spin)),
-      linearDamping: 0.12, angularDamping: 0.12,
+      velocity: new C.Vec3(fling.x * push * (0.85 + rnd() * 0.3) + spread(0.8), coin ? 6 + rnd() * 3 : 1.5 + rnd() * 1.5, fling.z * push * (0.85 + rnd() * 0.3) + spread(0.8)),
+      angularVelocity: new C.Vec3(turn.x, turn.y, turn.z),
+      linearDamping: 0.12, angularDamping: coin ? 0.4 : 0.12, // a coin lying flat would otherwise spin on like a top
       allowSleep: true, sleepSpeedLimit: 0.25, sleepTimeLimit: 0.3,
     });
     world.addBody(body);
     return body;
   });
+
+  // Pieces on the table. One a die starts inside of is left out: it would be shot out of it.
+  const reach = 0.5;
+  for (const s of solids) {
+    const [hx, hy, hz] = s.round ? [s.h[0], s.h[1], s.h[0]] : s.h;
+    if (bodies.some((b) => Math.abs(b.position.x - s.p[0]) < hx + reach && Math.abs(b.position.y - s.p[1]) < hy + reach && Math.abs(b.position.z - s.p[2]) < hz + reach)) continue;
+    const b = fixed(s.round ? new C.Cylinder(s.h[0], s.h[0], s.h[1] * 2, 8) : new C.Box(new C.Vec3(hx, hy, hz)), ...s.p);
+    if (s.q) b.quaternion.set(...s.q);
+  }
 
   const q: number[][] = kinds.map(() => []);
   const last = kinds.map(() => [0, 0, 0, 0, 0, 0, 0]);
@@ -355,6 +399,20 @@ function material(kind: Kind, color: string, blank = false, look: DiceLook = {})
       });
       return;
     }
+    if (kind === 'd2') {
+      // Heads and tails, ringed like a struck coin; the rim stays plain.
+      if (!sh.labels[f]) return;
+      g.save();
+      g.translate(x, y);
+      g.lineWidth = CELL * 0.035;
+      g.strokeStyle = g.fillStyle as string;
+      g.beginPath();
+      g.arc(0, 0, CELL * 0.36, 0, Math.PI * 2);
+      g.stroke();
+      text('HT'[sh.labels[f] - 1], CELL * 0.4);
+      g.restore();
+      return;
+    }
     const label = kind === 'd100' ? `${sh.labels[f]}0` : String(sh.labels[f]);
     g.save();
     g.translate(x, y);
@@ -407,8 +465,11 @@ const LINGER = 12; // seconds the dice stay on the table after settling
 export class DiceView {
   private playing: Playing[] = [];
   private held: Held | null = null;
-  /** Called when a die bounces, with how hard (for sound). */
-  onHit: (strength: number) => void = () => {};
+  /** Called when a die bounces, with how hard and whose die it is (for sound and touch). */
+  onHit: (strength: number, owner: string) => void = () => {};
+  /** Called when a die is knocked sideways: where it was, and how its velocity changed (so what it hit can react). */
+  onBump: (at: THREE.Vector3, dv: THREE.Vector3) => void = () => {};
+  private dv = new THREE.Vector3();
   /** The table's dice look; nothing = each player's colour on plain dice. */
   private look: DiceLook = {};
   constructor(private scene: THREE.Scene) {}
@@ -483,7 +544,15 @@ export class DiceView {
         if (a > prev && a >= 1 && a + 1 < p.n) {
           for (const P of p.pos) {
             const down = P[a].y - P[a - 1].y, up = P[a + 1].y - P[a].y;
-            if (down < -0.03 && up > down * 0.3) this.onHit(Math.min(1, -down * 4));
+            if (down < -0.03 && up > down * 0.3) this.onHit(Math.min(1, -down * 4), p.owner);
+          }
+        }
+        // A die whose sideways speed has changed sharply has run into something. Worked out from the
+        // recording, so every player sees the same pieces get knocked.
+        for (let i = Math.max(1, prev + 1); i <= a && i + 1 < p.n; i++) {
+          for (const P of p.pos) {
+            const dv = this.dv.copy(P[i + 1]).addScaledVector(P[i], -2).add(P[i - 1]).multiplyScalar(FPS);
+            if (Math.hypot(dv.x, dv.z) > 1.2) this.onBump(P[i], dv);
           }
         }
         p.kinds.forEach((_, k) => {

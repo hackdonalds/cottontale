@@ -74,6 +74,7 @@
     <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5.500" y="10.500" width="13" height="9.500" rx="2"/><path d="M8.500 10.500V8a3.500 3.500 0 0 1 6.800-1.200"/></symbol>
     <symbol id="i-next" viewBox="0 0 24 24"><path d="M6 5.500v13l9-6.500zM18 5.500v13"/></symbol>
     <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4.500 9.500v5h3.500l4.500 4v-13l-4.500 4zM16 9a4.500 4.500 0 0 1 0 6M18.500 6.500a8 8 0 0 1 0 11"/></symbol>
+    <symbol id="i-buzz" viewBox="0 0 24 24"><rect x="8" y="4.500" width="8" height="15" rx="2"/><path d="M4.500 9.500v5M19.500 9.500v5"/></symbol>
     <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4.500 9.500v5h3.500l4.500 4v-13l-4.500 4zM16.500 9.500l4 5M20.500 9.500l-4 5"/></symbol>
     <symbol id="i-tree" viewBox="0 0 24 24"><path d="M12 3.500 7 10h2.500L5.500 16h13L14.500 10H17zM12 16v4.500"/></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="8" r="3.500"/><path d="m10.500 10.500 9 9M16 16l-2 2M19 19l-2 2"/></symbol>
@@ -111,6 +112,8 @@
         <button data-act="boards"><svg><use href="#i-map"/></svg>Boards</button>
         <button data-act="atmo"><svg><use href="#i-moon"/></svg>Atmosphere &amp; sound</button>
         <button data-act="rules"><svg><use href="#i-sheet"/></svg>Rules</button>
+        <button data-act="ambient"></button>
+        <button data-act="follow"></button>
         <button data-act="redo" data-gm><svg><use href="#i-redo"/></svg>Redo</button>
         <button data-act="gen" data-gm><svg><use href="#i-spark"/></svg>Generate a scene</button>
         <button data-act="meadow" data-gm><svg><use href="#i-house"/></svg>Add a starter scene</button>
@@ -251,6 +254,7 @@
       <p class="hint" id="sndState" role="status" hidden></p>
       <div id="sfx" class="choices" hidden></div>
       <button id="soundOn"></button>
+      <button id="hapticsOn" hidden></button>
     </div>
 
     <!-- The table's game system (src/ui/sheet.ts): the sheet is drawn from the system's schema. -->
@@ -266,9 +270,9 @@
 
     <div id="log" class="panel sheet closed">
       <div id="msgs"></div>
-      <span class="row"><p id="hand" class="hint grow"></p><button id="secret" title="Roll in secret" aria-label="Roll in secret" data-gm data-gmonly>🙈</button></span>
+      <span class="row"><p id="hand" class="hint grow"></p><button id="shake" title="Shake the phone to throw" aria-label="Shake the phone to throw" hidden><svg><use href="#i-buzz"/></svg></button><button id="boulder" title="Boulder trap: press on the table and flick to roll it" data-gm data-gmonly>🪨 Boulder</button><button id="secret" title="Roll in secret" aria-label="Roll in secret" data-gm data-gmonly>🙈</button></span>
       <div id="dice">
-        <button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button><button data-d="10">d10</button>
+        <button data-d="2" title="Flip a coin">coin</button><button data-d="4">d4</button><button data-d="6">d6</button><button data-d="8">d8</button><button data-d="10">d10</button>
         <button data-d="12">d12</button><button data-d="20">d20</button><button data-d="100">d100</button>
         <button id="diceClear" title="Put the dice back" aria-label="Put the dice back"><svg><use href="#i-x"/></svg></button>
       </div>

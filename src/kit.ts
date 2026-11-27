@@ -66,6 +66,13 @@ export type Season = typeof SEASONS[number];
 export function setSeason(name: Season): void { SEASON.value = Math.max(0, SEASONS.indexOf(name)); }
 
 /**
+ * The breeze, shared the same way: x is the time in seconds, y how strongly it blows (0: still).
+ * Leaves and flames move in the vertex shader, so a stirring forest costs the CPU nothing.
+ */
+const WIND = { value: new THREE.Vector2(0, 0) };
+export function setWind(seconds: number, strength: number): void { WIND.value.set(seconds, strength); }
+
+/**
  * Teach a material to paint surface detail over its vertex colours. The geometry
  * needs a `kind` per vertex (0 plain, 2 stone, 3 leaf, 4 evergreen, 7 glowing
  * things such as flame, and wood with its grain along x 1, y 5 or z 6). Where on the pattern a point falls is worked out from
@@ -77,8 +84,9 @@ export function withDetail<T extends THREE.MeshStandardMaterial>(mat: T, terrain
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.detailMap = { value: (detail ??= detailTexture()) };
     shader.uniforms.season = SEASON;
+    shader.uniforms.wind = WIND;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\nattribute float kind;\n${shared}`)
+      .replace('#include <common>', `#include <common>\nattribute float kind;\nuniform vec2 wind;\n${shared}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vDetailPos = position;
         vDetailDir = normal;
@@ -99,6 +107,20 @@ export function withDetail<T extends THREE.MeshStandardMaterial>(mat: T, terrain
           vDetailPos += fract(sin(vec3(dot(home, vec3(12.9898, 78.233, 37.719)), dot(home, vec3(39.346, 11.135, 83.155)), dot(home, vec3(73.156, 52.235, 9.151)))) * 43758.5453) * 16.0;
           // A standing thing lives through the seasons: its own roll of the dice, and how much sky each face sees.
           vLiving = vec3(1.0, fract(sin(dot(home, vec3(4.898, 7.23, 3.71))) * 43758.5453), smoothstep(0.1, 0.6, normal.y));
+          // A light breeze: leaves and needles sway, more the higher they are above the piece's foot,
+          // and each piece in its own time. (Shadows stay put: the shadow map is not redrawn for this.)
+          float gust = dot(home, vec3(1.7, 0.3, 2.3));
+          float sway = step(2.5, kind) * step(kind, 4.5) * max(position.y, 0.0) * wind.y;
+          transformed.x += (sin(wind.x * 1.1 + gust) * 0.02 + sin(wind.x * 2.7 + gust * 1.3 + position.y * 2.0) * 0.006) * sway;
+          transformed.z += (cos(wind.x * 0.8 + gust * 0.7) * 0.015 + sin(wind.x * 3.1 + gust + position.x * 3.0) * 0.006) * sway;
+          #ifdef USE_COLOR
+            // Flame licks upward and wavers. Of all that glows only fire does: it is the warm-coloured
+            // part, and not the flat beds of embers under it.
+            float fire = step(6.5, kind) * step(0.6, color.r) * smoothstep(0.1, 0.18, color.g - color.b) * step(abs(normal.y), 0.9) * wind.y;
+            float lick = wind.x * 9.0 + gust * 5.0 + dot(position, vec3(31.0, 17.0, 23.0));
+            transformed.y += (0.5 + 0.5 * sin(lick)) * 0.03 * fire;
+            transformed.xz += vec2(sin(lick * 0.7 + 1.0), cos(lick * 0.6)) * 0.012 * fire;
+          #endif
         #endif`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\nuniform sampler2D detailMap;\nuniform float season;\n${shared}`)
