@@ -165,6 +165,14 @@ assert(await ok(b, (id) => document.body.classList.contains('player') && getComp
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
 assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 6), 'selecting a piece shows a ring of actions on it, not a panel');
+{ // Pan the piece out of view: its ring goes too, and comes back with it.
+  const pan = (dx) => a.evaluate((dx) => { const { board } = window.__ct; board.controls.target.x += dx; board.camera.position.x += dx; board.controls.update(); board.hooks.onView(); }, dx);
+  const ringShown = () => a.evaluate(() => getComputedStyle(document.querySelector('#ring')).visibility !== 'hidden');
+  await pan(200);
+  assert(!(await ringShown()), 'panning a selected piece out of view hides its ring');
+  await pan(-200);
+  assert(await ringShown(), 'and panning back shows it again');
+}
 await a.click('#ring [title="More"]');
 await a.selectOption('#miniOwner', { label: '🎮 Bo' });
 assert(await ok(b, (id) => window.__ct.board.hooks.canMove(id), id), 'GM hands a mini to a player, who can then move it');
@@ -476,7 +484,7 @@ assert((await count(c, 'm:')) === figures && (await count(c, 'w:')) === walls, '
     && await sb.evaluate(() => document.body.classList.contains('player')), 'only the GM pours');
   await sa.evaluate(() => { const { store } = window.__ct; for (const k of [...store.keys('f:')]) store.set(k, null); });
   // The eraser takes the pieces under the pointer; undo puts them back, and a pour is one undo step.
-  await sa.click('#palette [aria-label="Erase"]');
+  await sa.click('#erase');
   const at = await sa.evaluate(() => {
     const { board } = window.__ct, p = [...board.loose.pieces.values()][0].p;
     const v = board.ground.position.clone().set(p[0], p[1], p[2]).project(board.camera);
@@ -571,7 +579,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   // Layout: with the mini editor open, then the palette open, nothing may overlap or leave the screen.
   const layout = () => p.evaluate(() => {
     const vis = (e) => e.offsetParent !== null || getComputedStyle(e).position === 'fixed';
-    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
+    const boxes = ['#top', '#tools', '#palette', '#minipanel', '#floors', '#edits', '#init'].map((q) => document.querySelector(q)).filter((e) => !e.hidden && vis(e))
       .map((e) => ({ id: e.id, r: e.getBoundingClientRect() }));
     const bad = [];
     for (const a of boxes) {
@@ -695,7 +703,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const strewn = await poured(12);
   assert(tapped && strewn && (await cells()).length === 1, `a tap pours six coins in a heap (${heap.toFixed(1)} across), a drag strews six more (${span(await loose()).toFixed(1)} across), and nothing else is edited`);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-scatter.png` });
-  await p.tap('#palette [aria-label="Erase"]');
+  await p.tap('#erase');
   const coin = await p.evaluate(() => { // a coin on screen, clear of the bars
     const { board } = window.__ct, c = document.querySelector('#c');
     for (const v of board.loose.pieces.values()) {

@@ -220,6 +220,12 @@ export class Sound {
     this.note(this.master!, 'sine', 90, 0.25 + strength * 0.5, 0.28, 0.004, 34);
     this.burst(this.master!, 240, 0.2 + strength * 0.4, 0.12, 'lowpass');
   }
+  /** A mini set down on the table: a soft knock of plastic on wood. */
+  knock(): void {
+    if (!this.ready()) return;
+    this.note(this.master!, 'sine', 150 + Math.random() * 30, 0.3, 0.09, 0.002, 70);
+    this.burst(this.master!, 900 + Math.random() * 500, 0.12, 0.03, 'bandpass');
+  }
   ping(): void {
     if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
   }

@@ -19,6 +19,7 @@ import { heading, land } from './forces';
 import { Look } from './look';
 import { LooseView } from './looseview';
 import { decodeLoose } from './loose';
+import { TABLE_SPAN, tableTexture } from './table';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 export type { CellVal, MiniVal };
@@ -54,6 +55,8 @@ export interface BoardHooks {
   onPour?(a: Vec, b: Vec): void;
   /** A light was stepped to another strength with the light brush. */
   onLight(name: string): void;
+  /** A carried mini touched down (`mine`: this player put it there). */
+  onLand(mine: boolean): void;
   /** The picture was just redrawn: anything pinned to a spot on the table should follow. */
   onView(): void;
   /** A mini set down by hand had nothing under it and fell this many cells. */
@@ -449,6 +452,8 @@ export class Board {
   private quality = 0;
   private slow = 0;
   private dragPos: Vec | null = null;
+  /** The mini this player has just let go of: its landing is felt as well as heard. */
+  private landing: string | null = null;
   private lastLive = 0;
   private lastRuler = 0;
   private undoStack: Undo[][] = [];
@@ -536,22 +541,13 @@ export class Board {
 
     // The grid is painted into the ground texture (not hairline GL lines), so
     // its thickness scales with the cells and stays visible on high-DPI phones.
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = 128;
-    const g = cv.getContext('2d')!;
-    g.fillStyle = '#2a2420'; // a dark table top: the scene is the bright thing on it
-    g.fillRect(0, 0, 128, 128);
-    g.strokeStyle = '#463c35';
-    g.lineWidth = 6; // half of it falls outside the tile, leaving a 3px line per edge
-    g.strokeRect(0, 0, 128, 128);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.setScalar(LIMIT * 2);
+    // A wooden table top, at a size a phone can hold.
+    const tex = tableTexture(this.coarse ? 512 : 1024);
+    tex.repeat.setScalar((LIMIT * 2) / TABLE_SPAN);
     tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(LIMIT * 2, LIMIT * 2).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ map: tex, roughness: 1 }),
+      new THREE.MeshStandardMaterial({ map: tex, roughness: 0.62 }), // oiled wood: a soft sheen from the room
     );
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
@@ -1505,6 +1501,8 @@ export class Board {
     m.squash = 0;
     if (far) this.kick(id, (dx / far) * 2.4, (dz / far) * 2.4);
     if (!m.group.visible) return; // a mini this player cannot see must not give itself away
+    this.hooks.onLand(this.landing === id); // heard by all who see it, felt by whoever set it down
+    if (this.landing === id) this.landing = null;
     for (const [oid, o] of this.minis) {
       const ox = o.val.x - v.x, oz = o.val.z - v.z, d = Math.hypot(ox, oz);
       if (oid !== id && d && d < 1.6 && Math.abs(o.val.y - v.y) <= 1 && o.group.visible && !o.val.d) this.kick(oid, (ox / d) * 0.5, (oz / d) * 0.5);
@@ -2484,6 +2482,7 @@ export class Board {
       const p = this.dragPos;
       this.dragPos = null;
       if (m && g.moved && p) {
+        this.landing = g.mini;
         // Set down over a drop, it falls.
         const l = land(this.store, { ...m.val, x: p[0], y: p[1], z: p[2] });
         this.store.set(`m:${g.mini}`, l.v);
