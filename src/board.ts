@@ -210,6 +210,13 @@ function baseMaterial(color: string): THREE.MeshStandardMaterial {
 }
 const SUN_OFFSET = new THREE.Vector3(22, 40, 14);
 
+/**
+ * Labels, speech bubbles and editing aids are see-through flat things. The finished look works
+ * out shadowing and focus from how deep each pixel is, and to that a see-through label is a
+ * solid slab: it came out as a dark box. So they live on a layer of their own, which is drawn
+ * over the finished picture instead of through it.
+ */
+const OVERLAY = 1;
 function textSprite(draw: (g: CanvasRenderingContext2D) => void, w: number, h: number, scale: number): THREE.Sprite {
   const cv = document.createElement('canvas');
   cv.width = w;
@@ -222,6 +229,7 @@ function textSprite(draw: (g: CanvasRenderingContext2D) => void, w: number, h: n
   tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false }));
   s.scale.set(scale, (scale * h) / w, 1);
+  s.layers.set(OVERLAY);
   return s;
 }
 
@@ -452,6 +460,8 @@ export class Board {
       new THREE.MeshBasicMaterial({ color: '#58d6e8', transparent: true, opacity: 0.28, depthWrite: false }),
     );
     this.marquee.visible = false;
+    this.ghost.layers.set(OVERLAY);
+    this.marquee.layers.set(OVERLAY);
     this.scene.add(this.ghost, this.marquee);
 
     this.camera.position.set(7, 9, 11);
@@ -1993,8 +2003,23 @@ export class Board {
     }
     if (changed) this.renderer.shadowMap.needsUpdate = true;
     this.shadowDirty = false;
-    if (this.look) this.look.render(this.camera.position.distanceTo(this.controls.target));
-    else this.renderer.render(this.scene, this.camera);
+    if (this.look) {
+      this.camera.layers.set(0);
+      this.look.render(this.camera.position.distanceTo(this.controls.target));
+      // Then the labels and aids, straight onto the finished picture.
+      this.camera.layers.set(OVERLAY);
+      // (A scene with a background colour wipes the picture before drawing, so it goes without one for this pass.)
+      const sky = this.scene.background;
+      this.scene.background = null;
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.autoClear = true;
+      this.scene.background = sky;
+    }
+    this.camera.layers.enable(0);
+    this.camera.layers.enable(OVERLAY);
+    if (!this.look) this.renderer.render(this.scene, this.camera);
     this.hooks.onView();
   }
   private wasBusy = false;

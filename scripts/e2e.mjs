@@ -282,7 +282,13 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const settle = () => p.waitForTimeout(120);
 
   await p.tap('[data-mode="build"]');
+  const shelf = await p.evaluate(() => document.querySelector('#palette').getBoundingClientRect().height);
   await p.tap('#palette [title="Grass"]');
+  const folded = await p.evaluate(() => ({ h: document.querySelector('#palette').getBoundingClientRect().height, cur: document.querySelector('#palette .cur')?.textContent, tiles: document.querySelectorAll('#palette .tile').length }));
+  assert(folded.h <= 66 && folded.h < shelf && folded.cur === 'Grass' && folded.tiles === 0, `picking a piece folds the shelf to one row showing it (${Math.round(shelf)}px to ${Math.round(folded.h)}px)`);
+  await p.tap('#palette .cur');
+  assert(await p.evaluate(() => document.querySelectorAll('#palette .tile').length > 5), 'and its picture opens the shelf again');
+  await p.tap('#palette .cur');
   await touch('touchStart', [[cx, cy]]);
   await touch('touchEnd', []);
   await settle();

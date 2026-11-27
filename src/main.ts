@@ -379,6 +379,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // library, and the tray above it holds the current category's pieces and actions.
   type Cat = 'land' | 'walls' | 'things' | 'figures' | 'scenes';
   let cat: Cat = 'land';
+  /** On small screens: is the shelf of pieces showing, or folded down to the piece in hand? */
+  let trayOpen = true;
   const building = () => board.tool === 'build' || board.tool === 'mini';
   function setTool(t: Tool): void {
     // Arriving by keyboard shortcut: the tray shows what the tool is for.
@@ -399,6 +401,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   /** Open a category of the library, with a brush that belongs to it in hand. */
   function setCat(c: Cat): void {
     cat = c;
+    trayOpen = true; // arriving at a shelf: show it
     const fits: Record<Cat, (id: string) => boolean> = {
       land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
       walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
@@ -451,19 +454,35 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         return press(b, click);
       };
       /** A piece of the library, shown as its picture (or its colour, or failing both its emoji). */
+      /** The picture of a piece: its thumbnail, or a cube of its colour lit like the thumbnails, or failing both its emoji. */
+      const face = (family: string | null, flat?: string, emoji = '') => {
+        const at = family && thumb(family);
+        const cube = flat && !at ? `<svg class="cube" viewBox="0 0 24 24"><path fill="${flat}" d="M12 3 20.500 7.500 12 12 3.500 7.500z"/><path fill="${flat}" style="filter:brightness(.78)" d="M3.500 7.500 12 12v9.500L3.500 17z"/><path fill="${flat}" style="filter:brightness(.6)" d="M20.500 7.500 12 12v9.500l8.500-4.500z"/></svg>` : '';
+        return `<i${at ? ` style="${at}"` : ''}>${at ? '' : cube || emoji}</i>`;
+      };
+      // On a small screen the tray is a single row once a piece is in hand: the piece, and the
+      // actions that go with it. Its picture opens the shelf again to choose another.
+      const small = innerWidth < 900 || innerHeight < 700;
       const tile = (name: string, on: boolean, click: () => void, family: string | null, flat?: string, emoji = '') => {
-        const b = document.createElement('button'), at = family && thumb(family);
+        const b = document.createElement('button');
         b.className = 'tile';
         b.title = name;
-        // A block with no model of its own is drawn as a cube of its colour, lit like the pictures.
-        const cube = flat && !at ? `<svg class="cube" viewBox="0 0 24 24"><path fill="${flat}" d="M12 3 20.500 7.500 12 12 3.500 7.500z"/><path fill="${flat}" style="filter:brightness(.78)" d="M3.500 7.500 12 12v9.500L3.500 17z"/><path fill="${flat}" style="filter:brightness(.6)" d="M20.500 7.500 12 12v9.500l8.500-4.500z"/></svg>` : '';
-        b.innerHTML = `<i${at ? ` style="${at}"` : ''}>${at ? '' : cube || emoji}</i><span>${esc(name)}</span>`;
+        b.innerHTML = `${face(family, flat, emoji)}<span>${esc(name)}</span>`;
         b.classList.toggle('on', on);
         tiles.append(b);
-        return press(b, click);
+        if (on && small) {
+          const cur = document.createElement('button');
+          cur.className = 'cur';
+          cur.title = trayOpen ? 'Fold the shelf away' : 'Choose another piece';
+          cur.setAttribute('aria-label', cur.title);
+          cur.innerHTML = `${face(family, flat, emoji)}<span>${esc(name)}</span>${ico(trayOpen ? 'down' : 'up')}`;
+          cur.onclick = () => { trayOpen = !trayOpen; renderPalette(); };
+          chips.prepend(cur);
+        }
+        return press(b, () => { click(); trayOpen = false; });
       };
       const svg = (id: string) => `<svg><use href="#i-${id}"/></svg>`;
-      const brush = (id: string) => () => { board.brush = id; };
+      const brush = (id: string) => () => { board.brush = id; trayOpen = false; }; // a brush in hand: fold the shelf
       const eraser = () => chip('Erase', board.brush === 'erase', brush('erase'), svg('erase'));
       const turn = () => chip('Turn', false, () => { board.rot = (board.rot + 1) % 4; }, svg('turn'), 'Turn the next piece (R)');
       const blocks = (ids: string[]) => { for (const id of ids) tile(BLOCKS[id].name, board.brush === id, brush(id), `b_${id}`, BLOCKS[id].color); };
@@ -507,6 +526,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         chip('Share', false, () => void shareSlab(), '', 'Share what you copied').disabled = !board.slab;
         chip('Import', false, () => void importSlab(), '', 'Paste a shared code');
         tiles.remove();
+      }
+      if (small && tiles.isConnected) {
+        // With a brush in hand that is not one of the pictures, the row still needs a way back to the shelf.
+        if (!chips.querySelector('.cur')) {
+          const cur = document.createElement('button');
+          cur.className = 'cur';
+          cur.style.paddingLeft = '12px';
+          cur.title = trayOpen ? 'Fold the shelf away' : 'Show the shelf';
+          cur.setAttribute('aria-label', cur.title);
+          cur.innerHTML = `<span>${{ land: 'Ground', walls: 'Pieces', things: 'Pieces', figures: 'Figures', scenes: '' }[cat]}</span>${ico(trayOpen ? 'down' : 'up')}`;
+          cur.onclick = () => { trayOpen = !trayOpen; renderPalette(); };
+          chips.prepend(cur);
+        }
+        if (!trayOpen) tiles.remove();
       }
     } else if (board.tool === 'ruler' || board.tool === 'fog') {
       el.classList.add('tray');
