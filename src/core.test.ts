@@ -5,8 +5,9 @@ import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } fr
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
-import { THEMES, generate, type GenOpts, type Theme } from './gen';
+import { MAX_ROOM_KINDS, PRESETS, THEMES, addPresets, generate as build, loadPresets, parsePreset, roomName, type GenOpts, type GenRoom, type KnownPiece, type Preset, type Theme } from './gen';
 import { EDGES, edgeBetween as between, nextLight } from './rules';
+import { SOUNDSCAPES, SOUND_LIMITS, Sound, addSounds, loadSounds, parseEffect, parseRecipe, parseSounds, type Scape } from './sound';
 import { Store, type Row } from './store';
 
 describe('Store', () => {
@@ -353,8 +354,18 @@ describe('shaping the land', () => {
   });
 });
 
+// The data the app ships with, read as the app reads it (there are no node types in this project).
+const { readFile } = await import('node:fs/promises' as string) as { readFile: (path: string, enc: string) => Promise<string> };
+const file = async (url: string): Promise<unknown> => JSON.parse(await readFile(url, 'utf8'));
+const knownPiece: KnownPiece = (kind, id) => id in (kind === 'block' ? BLOCKS : kind === 'prop' ? PROPS : EDGES);
+addPresets(await loadPresets('public/gens', knownPiece, file));
+addSounds(await loadSounds('public/sounds', file));
+const fnv = (s: string) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193); return (h >>> 0).toString(16); };
+
 describe('scene generators', () => {
   const themes = Object.keys(THEMES) as Theme[];
+  // Every preset that ships is put through the checks below, the four first generators and the newer ones alike.
+  const generate = (o: GenOpts, prior?: GenRoom[], fixed?: boolean) => build(o, PRESETS[o.theme], prior, fixed);
   const opts = (theme: Theme, seed = 7, v = 2): GenOpts => ({ theme, seed, size: v, density: v, detail: v });
   /** Cells you can walk to from a start, over floor, not through walls. */
   const reach = (edits: Map<string, { i: string }>, start: string, floors: (id: string) => boolean): Set<string> => {
@@ -462,6 +473,79 @@ describe('scene generators', () => {
     }
   });
 
+  it('the four first generators, now data, build exactly the scenes they built as code', () => {
+    // Taken from the generators as they were before any of their pieces moved into public/gens.
+    const before: Record<string, string> = { forest: '2e3d38cb:1562076', dungeon: 'e8d18725:921805', cave: '84b6d2ca:1899971', tavern: 'd7aa7b4c:533372' };
+    for (const theme of Object.keys(before)) {
+      let all = '';
+      for (let seed = 1; seed <= 12; seed++) for (let v = 0; v <= 4; v++) all += JSON.stringify(generate({ theme, seed: seed * 7919, size: v, density: (v + seed) % 5, detail: (v * 2 + seed) % 5 }));
+      expect(`${fnv(all)}:${all.length}`, theme).toBe(before[theme]);
+    }
+  });
+
+  it('every preset file that ships is read whole, and the list offers the seven of them', async () => {
+    const names = await file('public/gens/index.json') as string[];
+    expect(Object.keys(PRESETS)).toEqual(names);
+    expect(names).toEqual(['forest', 'dungeon', 'cave', 'tavern', 'cove', 'crypt', 'hold']);
+    for (const id of names) expect(PRESETS[id], id).toEqual(await file(`public/gens/${id}.json`)); // nothing dropped or filled in
+    expect(THEMES.forest).toMatchObject({ name: 'Wilderness', icon: 'tree', sliders: ['Size', 'Growth', 'Hills'] });
+    expect(roomName(PRESETS.dungeon, 'treasure')).toBe('Treasury');
+    expect(roomName(PRESETS.hold, 'cabin')).toBe("Captain's cabin");
+    expect(roomName(null, 'nowhere')).toBe('nowhere');
+  });
+
+  it('the new presets are their own places, made of pieces the old ones never used', () => {
+    const ids = (theme: string, seed: number) => new Set(generate(opts(theme, seed, 3)).edits.map(([, v]) => (v as { i: string }).i));
+    const cove = ids('cove', 4), crypt = ids('crypt', 4), hold = ids('hold', 4);
+    for (const id of ['sand', 'water', 'palm']) expect(cove.has(id), id).toBe(true);
+    expect(['barrel', 'chest', 'crate'].some((id) => [1, 2, 3, 4, 5].some((seed) => ids('cove', seed).has(id)))).toBe(true);
+    expect(cove.has('moss') || cove.has('pine')).toBe(false);
+    for (const id of ['slate', 'coffin', 'candles', 'wall', 'walldoor']) expect(crypt.has(id), id).toBe(true);
+    expect(crypt.has('torch') || crypt.has('stone')).toBe(false);
+    for (const id of ['darkwood', 'water', 'wallwood', 'barrel']) expect(hold.has(id), id).toBe(true);
+    expect(generate(opts('hold', 4)).rooms.map((q) => q.kind)).toEqual(['hold', 'galley', 'cabin']);
+    // A cove has a sea along one side: a good share of its far edge is water.
+    const map = new Map(generate(opts('cove', 4)).edits) as Map<string, { i: string }>;
+    expect([...map].filter(([k, v]) => /^b:-?\d+,0,11$/.test(k) && v.i === 'water').length).toBeGreaterThan(12);
+    // A crypt's rooms join up like any dungeon's.
+    const { edits, rooms } = generate(opts('crypt', 2, 3)), seen = reach(new Map(edits) as Map<string, { i: string }>, `${rooms[0].x0},${rooms[0].z0}`, () => true);
+    expect(rooms[0].kind).toBe('antechamber');
+    for (const q of rooms) expect(seen.has(`${q.x1},${q.z1}`)).toBe(true);
+  });
+
+  it('reads a preset somebody else wrote: unknown pieces go, numbers are clamped, and it still builds', () => {
+    const hostile = parsePreset({
+      id: 'ada:moon', name: '  Moonbase  ', icon: '<svg onload=alert(1)>', algo: 'dungeon', sliders: ['A very long slider label indeed', 7], run: 'alert(1)',
+      palette: { floor: 'moonrock', corridor: 'cobble', walls: [{ solid: 'forcefield', door: 'walldoor' }, { solid: 'wall', window: 'porthole', door: 'airlock' }], light: 'lamp', stream: 99, sea: -3, shore: 'x', dress: { cobble: [['rock', 5000], ['laser', 5], ['bush', 20]], nope: 'grow' } },
+      rooms: [...Array(40).fill(0).map((_, i) => ({ kind: `r${i}`, name: 'R'.repeat(99), centre: 'reactor', walls: ['crate', 'robot', ...Array(30).fill('barrel')], floor: 'rug', extra: 50 })), { kind: 'Bad Kind' }, { kind: 'r1' }],
+    }, knownPiece)!;
+    expect(hostile).toMatchObject({ id: 'ada:moon', name: 'Moonbase', icon: 'spark', algo: 'dungeon', sliders: ['A very long sl', 'Density', 'Detail'] });
+    expect(hostile.palette).toEqual({ floor: 'cobble', corridor: 'cobble', walls: [{ solid: 'wall' }], stream: 4, sea: 0, shore: [], dress: { cobble: [['rock', 1000]] } });
+    expect(hostile.rooms.length).toBe(MAX_ROOM_KINDS);
+    expect(hostile.rooms[0]).toEqual({ kind: 'r0', name: 'R'.repeat(24), walls: ['crate', ...Array(6).fill('barrel')], floor: [], extra: 2 });
+    expect('run' in hostile).toBe(false);
+    // Nothing a parsed preset can hold stops a scene being built, of whichever kind, from pieces the library has.
+    const sparse = (algo: string, palette: object = { path: 'stone', table: 'ghost-table' }) => parsePreset({ id: 'x', name: 'X', algo, palette }, knownPiece)!;
+    for (const preset of [hostile, sparse('wilderness'), sparse('dungeon'), sparse('cave'), sparse('building'), sparse('building', { rock: 'basalt', walls: [{ solid: 'wall' }] })]) {
+      for (const seed of [1, 2]) for (const v of [0, 4]) {
+        const { edits } = build({ theme: preset.id, seed, size: v, density: v, detail: v }, preset);
+        expect(edits.length, preset.algo).toBeGreaterThan(20);
+        for (const [k, val] of edits) expect((k.startsWith('w:') ? EDGES : { ...BLOCKS, ...PROPS })[(val as { i: string }).i], `${preset.algo} ${k}`).toBeTruthy();
+      }
+    }
+    expect(sparse('building').rooms.map((q) => q.kind)).toEqual(['room1', 'room2', 'room3']);
+    // Not a preset at all: no id, no name, a way of building this app does not have, or not one block it knows.
+    for (const bad of [null, 7, 'cave', [], {}, { id: 'x', name: 'X', algo: 'maze', palette: { floor: 'stone' } }, { id: 'Bad Id', name: 'X', algo: 'cave', palette: { rock: 'stone' } },
+      { id: 'x', name: '', algo: 'cave', palette: { rock: 'stone' } }, { id: 'x', name: 'X', algo: 'cave', palette: { rock: 'moonrock' } }, { id: 'x', name: 'X', algo: 'cave' }]) expect(parsePreset(bad, knownPiece)).toBeNull();
+  });
+
+  it('offers the presets it can read and skips the rest', async () => {
+    const files: Record<string, unknown> = { 'd/index.json': ['a', '../x', 'gone', 'bad', 7], 'd/a.json': { id: 'a', name: 'A', algo: 'cave', palette: { rock: 'stone' } }, 'd/bad.json': { id: 'bad', name: 'B', algo: 'spiral' } };
+    const get = async (url: string) => { if (!(url in files)) throw new Error(url); return files[url]; };
+    expect((await loadPresets('d', knownPiece, get)).map((q: Preset) => q.id)).toEqual(['a']);
+    expect(await loadPresets('nowhere', knownPiece, get)).toEqual([]);
+  });
+
   it('builds a tavern you can enter, with every room reachable from the yard', () => {
     for (const seed of [1, 2, 3, 4]) {
       const { edits, rooms, bounds } = generate(opts('tavern', seed, seed));
@@ -523,10 +607,7 @@ describe('terrain', () => {
 
 describe('themes', async () => {
   const { MAX_PIECES, activeTheme, loadThemes, moodEdits, parseTheme } = await import('./theme');
-  const { SOUNDSCAPES } = await import('./sound');
-  const { readFile } = await import('node:fs/promises' as string) as { readFile: (path: string, enc: string) => Promise<string> }; // no node types in this project
   const known = { block: (id: string) => id in BLOCKS, prop: (id: string) => id in PROPS, mini: (id: string) => id in MINIS, amb: (id: string) => id in SOUNDSCAPES, gen: (id: string) => id in THEMES };
-  const file = async (url: string): Promise<unknown> => JSON.parse(await readFile(url, 'utf8'));
 
   it('every theme file that ships names only pieces, sounds and generators that exist', async () => {
     const names = await file('public/themes/index.json') as string[], shipped = await loadThemes('public/themes', known, file);
@@ -559,6 +640,31 @@ describe('themes', async () => {
     expect('extra' in t).toBe(false);
   });
 
+  it('a theme may bring its own soundscapes, effects and generators, and name them', async () => {
+    const edge = { ...known, edge: (id: string) => id in EDGES };
+    const t = parseTheme({
+      v: 1, id: 'ada:deep', name: 'The deep', gen: 'trench', mood: { amb: 'abyss' },
+      sounds: { scapes: { abyss: { name: 'Abyss', drones: [{ wave: 'sine', freq: 40, gain: 9 }] }, off: { name: 'No', drones: [{ wave: 'sine', freq: 40, gain: 0.1 }] }, junk: 7 }, effects: { ping: { voices: [{ kind: 'note', freq: 300, gain: 0.2, dur: 0.4 }] }, 'Bad Name': {} } },
+      gens: [{ id: 'trench', name: 'Trench', icon: 'cave', algo: 'cave', palette: { ground: [['sand', 256]], rock: 'basalt', clutter: { rim: 'kelp', rubble: 'rock' } } }, { id: 'junk' }, 7],
+    }, edge)!;
+    expect(t.mood.amb).toBe('abyss');
+    expect(t.gen).toBe('trench');
+    expect(t.sounds).toEqual({ scapes: { abyss: { name: 'Abyss', drones: [{ wave: 'sine', freq: 40, gain: 0.5 }] } }, effects: { ping: { voices: [{ kind: 'note', freq: 300, gain: 0.2, dur: 0.4 }] } } });
+    expect(t.gens).toEqual([{ id: 'trench', name: 'Trench', icon: 'cave', algo: 'cave', sliders: ['Size', 'Density', 'Detail'], palette: { ground: [['sand', 256]], rock: 'basalt', clutter: { rubble: 'rock' } }, rooms: [] }]);
+    expect(build({ theme: 'trench', seed: 3, size: 1, density: 2, detail: 3 }, t.gens![0]).edits.length).toBeGreaterThan(100);
+    expect(parseTheme(JSON.parse(JSON.stringify(t)), edge)).toEqual(t); // it travels with the table and reads back the same
+    // Names it does not bring and the app does not have are still dropped; a theme with nothing of its own has no such fields.
+    const plain = parseTheme({ v: 1, id: 'x', name: 'X', gen: 'trench', mood: { amb: 'abyss' }, sounds: { scapes: {} }, gens: [] }, edge)!;
+    expect(plain).toMatchObject({ gen: '', mood: { amb: 'off' } });
+    expect('sounds' in plain || 'gens' in plain).toBe(false);
+    // The examples that ship: the vampires bring a crypt to listen to, the pirates a ship's bell for a ping and the sea from the app's own.
+    const shipped = Object.fromEntries((await loadThemes('public/themes', known, file)).map((q) => [q.id, q]));
+    expect(shipped.vampire.mood.amb).toBe('crypt');
+    expect(shipped.vampire.sounds?.scapes?.crypt.name).toContain('Crypt');
+    expect(shipped.pirate.mood.amb).toBe('sea');
+    expect(shipped.pirate.sounds?.effects?.ping.voices.length).toBe(2);
+  });
+
   it('refuses what is not a theme, or is from a format it does not know', () => {
     for (const bad of [null, 'pirate', 7, [], {}, { v: 2, id: 'x', name: 'X' }, { v: 1, id: 'Bad Id', name: 'X' }, { v: 1, id: 'x', name: '' }]) expect(parseTheme(bad, known)).toBeNull();
   });
@@ -567,5 +673,105 @@ describe('themes', async () => {
     const t = activeTheme({ v: 1, id: 'ada:x', name: 'Mine', mood: { sky: 'night', season: 'winter', glow: 1.75, amb: 'rain' } }, known)!;
     expect(activeTheme(null, known)).toBeNull();
     expect(moodEdits(t)).toEqual([['set:sky', 'night'], ['set:season', 'winter'], ['set:glow', 1.75], ['set:amb', 'rain']]);
+  });
+});
+
+describe('sound recipes', () => {
+  const first = ['rain', 'wind', 'fire', 'cave', 'calm', 'battle'];
+
+  it('every recipe that ships is read whole: the six first soundscapes, the sea, and the effects', async () => {
+    const names = await file('public/sounds/index.json') as string[];
+    expect(names).toEqual([...first, 'sea']);
+    expect(Object.keys(SOUNDSCAPES)).toEqual(['off', ...names]);
+    for (const id of names) {
+      const raw = await file(`public/sounds/${id}.json`);
+      expect(parseRecipe(raw), id).toEqual(raw); // nothing dropped or clamped
+      expect(SOUNDSCAPES[id]).toBe((raw as Scape).name);
+    }
+    expect(first.map((id) => SOUNDSCAPES[id].replace(/^[^\p{L}]+/u, ''))).toEqual(['Rain', 'Wind', 'Campfire', 'Cave', 'Calm', 'Battle']);
+    const effects = await file('public/sounds/effects.json') as Record<string, unknown>;
+    expect(Object.keys(effects)).toEqual(['clack', 'thud', 'ping', 'emote', 'emote:attack', 'emote:hurt', 'emote:cheer', 'emote:think']);
+    for (const [name, raw] of Object.entries(effects)) expect(parseEffect(raw), name).toEqual(raw);
+    expect(parseSounds({ effects }, 0, 64)).toEqual({ effects });
+  });
+
+  it('the first soundscapes keep the numbers they had as code', async () => {
+    const r = Object.fromEntries(await Promise.all(first.map(async (id) => [id, await file(`public/sounds/${id}.json`) as Scape]))) as Record<string, Scape>;
+    expect(r.rain.layers).toEqual([{ filters: [{ type: 'highpass', freq: 600 }, { type: 'lowpass', freq: 7000 }], gain: 0.22 }, { filters: [{ type: 'lowpass', freq: 260 }], gain: 0.3 }]);
+    expect(r.wind.layers).toEqual([{ filters: [{ type: 'bandpass', freq: 420, q: 1.4 }], gain: 0.4, mod: { every: 900, freq: [260, 260 + 700], gain: [0.2, 0.2 + 0.45] } }]);
+    expect(r.fire.layers).toEqual([{ filters: [{ type: 'lowpass', freq: 320 }], gain: 0.4 }]);
+    expect(r.fire.patterns).toEqual([{ every: 110, voices: [{ kind: 'burst', freq: [1400, 1400 + 2500], gain: [0.05, 0.19], dur: [0.03, 0.08], p: 0.45 }] }]);
+    expect(r.cave.drones).toEqual([{ wave: 'sine', freq: 55, gain: 0.12 }]);
+    expect(r.cave.layers).toEqual([{ filters: [{ type: 'bandpass', freq: 180, q: 2 }], gain: 0.12 }]);
+    expect(r.cave.patterns![0]).toEqual({ every: 700, voices: [{ kind: 'note', wave: 'sine', freq: [900, 1800], gain: 0.12, dur: 0.16, attack: 0.005, glide: 0.6, p: 0.4, echo: true }] });
+    expect(r.calm.drones).toEqual([{ wave: 'sine', freq: 110, gain: 0.06 }]);
+    expect(r.calm.patterns![0].every).toBe(1900);
+    expect(r.calm.patterns![0].voices.map((v) => [v.wave, v.freq, v.gain, v.dur, v.attack, v.scale?.join(), v.p, v.lp, v.echo])).toEqual([['triangle', 220, 0.11, 3.2, 0.5, '0,2,4,7,9,12,14,16', undefined, 1400, true], ['sine', 110, 0.09, 4, 0.8, '0,2,4,7,9', 0.4, 1400, true]]);
+    expect(r.battle.drones).toEqual([{ wave: 'sawtooth', freq: 73.4, gain: 0.07, lp: 260 }]);
+    expect(r.battle.patterns![0].every).toBe(210);
+    expect(r.battle.patterns![0].voices.map((v) => [v.kind, v.wave, v.freq, v.gain, v.dur, v.attack, v.glideTo, v.on!.join(''), v.p, v.lp, v.scale?.join()])).toEqual([
+      ['note', 'sine', 130, 0.55, 0.16, 0.004, 42, '10010100', undefined, undefined, undefined],
+      ['burst', undefined, 1800, 0.18, 0.09, undefined, undefined, '00100010', undefined, undefined, undefined],
+      ['note', 'square', 146.8, 0.045, 0.14, undefined, undefined, '10', 0.45, 1000, '0,3,5,7,10,12'],
+    ]);
+    for (const s of Object.values(r)) expect(s.echo ?? s.file).toBeUndefined(); // the echo they always had
+  });
+
+  it('a hostile recipe can be neither deafening nor a burden', () => {
+    const voice = { kind: 'note', wave: 'laser', freq: 1e9, gain: 50, dur: 1e6, attack: -3, glide: 1e9, glideTo: 0, scale: Array(99).fill(700), p: 7, on: Array(999).fill(1), lp: 1, echo: 'yes', at: 5, vel: 9 };
+    const r = parseRecipe({
+      name: 'N'.repeat(99), evil: 'alert(1)',
+      layers: Array(50).fill({ filters: [...Array(9).fill({ type: 'lowpass', freq: 1e9, q: 1e9 }), { type: 'peaking', freq: 100 }], gain: 1e9, mod: { every: 0, freq: [1e9, -5], gain: [9, 9] } }),
+      drones: [...Array(50).fill({ wave: 'sine', freq: 1e9, gain: 1e9, lp: 1e9 }), { wave: 'noise', freq: 100, gain: 0.1 }],
+      patterns: [{ every: 0, voices: Array(50).fill(voice) }, ...Array(50).fill({ every: 500, voices: [voice] })],
+      echo: { time: 99, feedback: 99, mix: 99 }, file: 7, loop: true, gain: 9,
+    })!;
+    expect(r.name.length).toBe(24);
+    expect('evil' in r).toBe(false);
+    expect(r.layers!.length).toBe(SOUND_LIMITS.layers);
+    expect(r.layers![0].filters).toEqual(Array(SOUND_LIMITS.filters).fill({ type: 'lowpass', freq: 12000, q: 8 }));
+    expect(r.layers![0]).toMatchObject({ gain: 1, mod: { every: 200, freq: [20, 12000], gain: [1, 1] } });
+    expect(r.drones).toEqual(Array(SOUND_LIMITS.drones).fill({ wave: 'sine', freq: 2000, gain: 0.5, lp: 12000 }));
+    // Timers: the layers' drifting and the patterns share one small budget; a pattern too busy for a phone is left out whole.
+    const timers = r.layers!.filter((l) => l.mod).length + r.patterns!.length;
+    expect(timers).toBe(SOUND_LIMITS.timers);
+    expect(r.patterns!.every((p) => p.every === 500 && p.voices.length === 1)).toBe(true);
+    expect(r.patterns![0].voices[0]).toEqual({ kind: 'note', freq: 12000, gain: 1, dur: 8, attack: 0.001, glide: 20, glideTo: 20, scale: Array(SOUND_LIMITS.scale).fill(48), p: 1, on: Array(SOUND_LIMITS.steps).fill(1), lp: 50 });
+    expect(r.echo).toEqual({ time: 1, feedback: 0.7, mix: 1 });
+    expect('file' in r || 'loop' in r || 'gain' in r).toBe(false);
+    const burst = { kind: 'burst', freq: 900, gain: 1, dur: 0.01 };
+    expect(parseRecipe({ name: 'Busy', patterns: Array(6).fill({ every: 60, voices: Array(6).fill(burst) }) })).toBeNull(); // 100 sounds a second each: none is kept, and nothing is left to play
+    const rate = (s: Scape) => (s.patterns ?? []).reduce((n, p) => n + p.voices.length * 1000 / p.every, 0);
+    expect(rate(parseRecipe({ name: 'Brisk', patterns: Array(6).fill({ every: 100, voices: [burst, burst] }) })!)).toBe(SOUND_LIMITS.perSecond);
+    // An effect: a few short sounds, soon.
+    const fx = parseEffect({ voices: Array(50).fill(voice) })!;
+    expect(fx.voices.length).toBe(SOUND_LIMITS.voices);
+    expect(fx.voices[0]).toEqual({ kind: 'note', freq: 12000, gain: 1, dur: 3, attack: 0.001, glide: 20, glideTo: 20, scale: Array(SOUND_LIMITS.scale).fill(48), at: 5, vel: 1 });
+    const drone = { name: 'S', drones: [{ wave: 'sine', freq: 50, gain: 0.1 }] };
+    for (const bad of [null, 7, 'rain', [], {}, { name: 'Empty' }, { ...drone, name: '' }, { name: 'X', layers: 'loud' }, { name: 'X', patterns: [{ every: 100, voices: [{ kind: 'scream', freq: 1, gain: 1, dur: 1 }] }] }]) expect(parseRecipe(bad)).toBeNull();
+    for (const bad of [null, {}, { voices: [] }, { voices: [{ kind: 'note' }] }]) expect(parseEffect(bad)).toBeNull();
+    expect(parseSounds({ scapes: { a: drone, 'B!': drone, off: drone }, effects: 7 })).toEqual({ scapes: { a: drone } });
+    expect(Object.keys(parseSounds({ scapes: Object.fromEntries(Array(9).fill(0).map((_, i) => [`s${i}`, drone])) })!.scapes!)).toEqual(['s0', 's1', 's2', 's3']);
+    expect(parseSounds(null)).toBeUndefined();
+  });
+
+  it('a soundscape may be a recording: kept as a reference, for whoever can fetch it', () => {
+    expect(parseRecipe({ name: 'Shanty', file: 'blob:abc123', loop: false, gain: 4 })).toEqual({ name: 'Shanty', file: 'blob:abc123', loop: false, gain: 1 });
+    expect(parseRecipe({ name: 'Shanty', file: 'x'.repeat(999) })).toBeNull();
+    expect(parseRecipe({ name: 'Both', file: 'ref', drones: [{ wave: 'sine', freq: 50, gain: 0.1 }] })).toEqual({ name: 'Both', file: 'ref', drones: [{ wave: 'sine', freq: 50, gain: 0.1 }] });
+  });
+
+  it('knows a soundscape once its recipe has loaded, and a theme\'s own while the theme is on', () => {
+    const sound = new Sound();
+    expect(['off', 'rain', 'sea'].every((id) => sound.knows(id))).toBe(true);
+    expect('crypt' in SOUNDSCAPES || sound.knows('crypt')).toBe(false);
+    sound.theme({ scapes: { crypt: parseRecipe({ name: 'Crypt', drones: [{ wave: 'sine', freq: 49, gain: 0.1 }] })! } });
+    expect(sound.knows('crypt')).toBe(true);
+    sound.scape('crypt'); // nothing to play it on here: it stays silent, without complaint
+    expect(sound.playing).toBe('off');
+    expect(sound.effect('ping')).toBe(true);
+    expect(sound.effect('nonesuch')).toBe(false);
+    sound.theme(null);
+    expect(sound.knows('crypt')).toBe(false);
   });
 });

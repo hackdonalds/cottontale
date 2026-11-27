@@ -243,7 +243,8 @@ await a.keyboard.press('1');
 // Atmosphere: every soundscape starts without error, and the choice reaches the table.
 await a.click('#menuBtn');
 await a.click('[data-act="atmo"]');
-for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Rain']) {
+// (The soundscapes are recipes in public/sounds, loaded after the table is up: the buttons are whatever arrived.)
+for (const name of ['Wind', 'Campfire', 'Cave', 'Calm', 'Battle', 'Sea', 'Rain']) {
   await a.click(`#scapes button:has-text("${name}")`);
   await a.waitForTimeout(350);
 }
@@ -261,14 +262,37 @@ await a.fill('#glow', '1');
 await a.evaluate(() => { window.__ct.store.set('b:6,1,6', null); window.__ct.store.set('b:6,0,6', null); });
 // A theme: one tap sets the whole mood for everyone and brings its pieces to the front of the library.
 await a.click('#themes button:has-text("Vampires")');
-assert(await ok(b, () => { const s = window.__ct.store; return s.get('set:theme')?.id === 'vampire' && s.get('set:sky') === 'night' && s.get('set:season') === 'winter' && s.get('set:amb') === 'rain'; }), 'picking a theme sets sky, season and soundscape for the table');
+assert(await ok(b, () => { const s = window.__ct.store; return s.get('set:theme')?.id === 'vampire' && s.get('set:sky') === 'night' && s.get('set:season') === 'winter' && s.get('set:amb') === 'crypt'; }), 'picking a theme sets sky, season and soundscape for the table');
+// The vampires' soundscape is a recipe the theme carries, not one of the app's: it is offered by its own name and played, on every device.
+await a.waitForTimeout(350);
+const crypt = await a.evaluate(() => ({ button: [...document.querySelectorAll('#scapes button')].some((b) => b.textContent === 'Crypt' && b.classList.contains('on')), playing: window.__ct.sound.playing }));
+assert(crypt.button && crypt.playing === (playing === 'rain' ? 'crypt' : 'off') && await ok(b, () => window.__ct.sound.knows('crypt')),
+  `a theme's own soundscape is listed and plays (this device is playing: ${crypt.playing})`);
+await a.evaluate(() => { for (const fx of ['clack', 'thud', 'ping', 'emote:cheer', 'emote:shrug']) window.__ct.sound[fx.startsWith('emote') ? 'emote' : fx](fx.includes(':') ? fx.split(':')[1] : 0.5); });
 await a.click('#themes button:has-text("Vampires")');
 assert(await ok(b, () => window.__ct.store.get('set:theme') === null && window.__ct.store.get('set:sky') === 'night'), 'tapping it again lets go of the theme and keeps the mood');
+assert(await ok(a, () => ![...document.querySelectorAll('#scapes button')].some((b) => b.textContent === 'Crypt') && !window.__ct.sound.knows('crypt') && window.__ct.sound.playing === 'off'), 'and its soundscape goes with it');
 await a.click('#skies button:has-text("Day")');
 await a.click('#seasons button:has-text("Summer")');
 await a.click('#scapes button:has-text("Silence")');
 await a.click('#skies button:has-text("Day")');
 await a.click('#atmo [data-close]');
+// A scene from a preset that is nothing but data (public/gens/cove.json): it is built, and the other player gets it.
+const beforeCove = await count(a, 'b:');
+await a.click('#menuBtn');
+await a.click('[data-act="gen"]');
+const offered = await a.evaluate(() => [...document.querySelectorAll('#genThemes button')].map((b) => b.textContent));
+await a.click('#genThemes button:has-text("Pirate cove")');
+const labels = await a.evaluate(() => [...document.querySelectorAll('#genSliders .slider span')].map((e) => e.textContent).join());
+await a.click('#genGo');
+const cove = await ok(b, () => {
+  const s = window.__ct.store, ids = [...s.keys('b:')].map((k) => s.get(k).i);
+  return s.get('gen')?.o.theme === 'cove' && ids.length > 200 && ids.includes('palm') && ids.filter((i) => i === 'sand').length > 50 && ids.filter((i) => i === 'water').length > 20;
+});
+assert(cove && labels === 'Size,Growth,Dunes' && ['Wilderness', 'Dungeon', 'Cave', 'Tavern', 'Pirate cove', 'Crypt', "Ship's hold"].join() === offered.join(), `a preset from a file builds a scene that reaches the other player (${offered.join(', ')})`);
+await a.click('#gen [data-close]');
+await a.keyboard.press('Control+z');
+assert(await ok(b, (n) => [...window.__ct.store.keys('b:')].length === n && !window.__ct.store.get('gen'), beforeCove), 'and one undo takes it away again');
 
 await a.click('#menuBtn');
 await a.click('[data-act="gm"]');

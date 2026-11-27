@@ -1,0 +1,10 @@
+{
+ "name": "🌬️ Wind",
+ "layers": [
+  {
+   "filters": [{"type": "bandpass", "freq": 420, "q": 1.4}],
+   "gain": 0.4,
+   "mod": {"every": 900, "freq": [260, 960], "gain": [0.2, 0.65]}
+  }
+ ]
+}

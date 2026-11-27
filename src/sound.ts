@@ -1,21 +1,216 @@
 // Sound, all synthesised in the browser: no audio files to download.
 // Soundscapes are chosen by the GM for the whole table; each device decides
 // whether it wants to hear anything at all.
+//
+// What a soundscape or an effect sounds like is data, a "recipe", played by the one
+// engine below: layers of looped filtered noise, drones, and patterns of timed notes and
+// noise bursts. No recipe is written into the app: the ones on offer are files
+// (public/sounds/*.json, listed in index.json, and effects.json) and a theme may bring its
+// own. Either way it is somebody else's data: `parseRecipe` and `parseEffect` keep what they
+// understand and clamp every number, so a recipe can be neither deafening nor a burden.
 
-export const SOUNDSCAPES: Record<string, string> = {
-  off: '🔇 Silence', rain: '🌧️ Rain', wind: '🌬️ Wind', fire: '🔥 Campfire', cave: '💧 Cave', calm: '🎵 Calm', battle: '🥁 Battle',
+// ---- recipes: the data the engine plays ---------------------------------------------------
+
+export type Wave = 'sine' | 'triangle' | 'square' | 'sawtooth';
+export type Pass = 'lowpass' | 'highpass' | 'bandpass';
+/** One value, or anywhere between two (drawn afresh each time it sounds). */
+export type Span = number | [lo: number, hi: number];
+export interface Filter { type: Pass; freq: number; q?: number }
+/** Looped noise through filters. `mod` drifts it: every so many ms the first filter and the gain glide somewhere new. */
+export interface Layer { filters: Filter[]; gain: number; mod?: { every: number; freq?: [number, number]; gain?: [number, number] } }
+/** A steady tone behind a lowpass (400 Hz unless `lp` says otherwise). */
+export interface Drone { wave: Wave; freq: number; gain: number; lp?: number }
+/**
+ * One sound: a note (an oscillator with a soft attack and a dying tail) or a burst of filtered noise.
+ * - `scale`: semitones above `freq`, one picked each time · `glide`: slide to this many times the pitch, `glideTo`: to this pitch
+ * - in a pattern: `p` the chance it sounds on a beat, `on` the beats it may sound on (a row of 0/1 that repeats),
+ *   `lp` a lowpass it plays through, `echo` whether it goes to the echo
+ * - in an effect: `at` ms after the effect starts, `vel` how much louder a harder knock makes it
+ */
+export interface Voice {
+  kind: 'note' | 'burst'; wave?: Wave; type?: Pass; freq: Span; gain: Span; dur: Span;
+  attack?: number; glide?: number; glideTo?: number; scale?: number[];
+  p?: number; on?: number[]; lp?: number; echo?: boolean;
+  at?: number; vel?: number;
+}
+/** A timer: every `every` ms is a beat, and each voice may sound on it. */
+export interface Pattern { every: number; voices: Voice[] }
+/**
+ * A soundscape. `name` is what the picker calls it (it may lead with an emoji).
+ * Instead of (or besides) being synthesised it may be a recording: `file` is a reference only the
+ * app's file store understands (see `Sound.resolver`), looped unless `loop` is false, at `gain`.
+ */
+export interface Scape {
+  name: string; layers?: Layer[]; drones?: Drone[]; patterns?: Pattern[];
+  echo?: { time: number; feedback: number; mix: number };
+  file?: string; loop?: boolean; gain?: number;
+}
+export interface Effect { voices: Voice[] }
+export interface SoundBank { scapes?: Record<string, Scape>; effects?: Record<string, Effect> }
+
+/** The most a recipe may ask of a phone. */
+export const SOUND_LIMITS = { layers: 6, filters: 3, drones: 6, patterns: 6, voices: 6, timers: 8, perSecond: 40, live: 24, steps: 32, scale: 16 } as const;
+const WAVES: readonly Wave[] = ['sine', 'triangle', 'square', 'sawtooth'], PASSES: readonly Pass[] = ['lowpass', 'highpass', 'bandpass'];
+const ID = /^[a-z0-9][a-z0-9:_-]{0,23}$/;
+/** A recording this short is decoded whole, so it loops without a gap; anything longer is streamed. */
+const SHORT_LOOP = 30;
+/** The gains of a soundscape may add up to this much; past it the whole of it is turned down to fit. */
+const LOUD = 2;
+
+const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
+const list = (v: unknown, max: number): unknown[] => (Array.isArray(v) ? v.slice(0, max) : []);
+const num = (v: unknown, lo: number, hi: number): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : undefined);
+const pair = (v: unknown, lo: number, hi: number): [number, number] | undefined => {
+  const a = Array.isArray(v) && v.length === 2 ? num(v[0], lo, hi) : undefined, b = a === undefined ? undefined : num((v as unknown[])[1], lo, hi);
+  return a === undefined || b === undefined ? undefined : [Math.min(a, b), Math.max(a, b)];
 };
+const span = (v: unknown, lo: number, hi: number): Span | undefined => (Array.isArray(v) ? pair(v, lo, hi) : num(v, lo, hi));
+const top = (s: Span): number => (typeof s === 'number' ? s : s[1]);
+/** Copy the keys that were given and understood: what comes out of a parser has no `undefined` in it. */
+function some<T extends object>(o: { [K in keyof T]: T[K] | undefined }): T {
+  for (const k of Object.keys(o) as (keyof T)[]) if (o[k] === undefined) delete o[k];
+  return o as T;
+}
+
+function parseVoice(raw: unknown, fx: boolean): Voice | null {
+  const r = obj(raw), kind = r.kind === 'note' || r.kind === 'burst' ? r.kind : null;
+  const freq = span(r.freq, 20, 12000), gain = span(r.gain, 0, 1), dur = span(r.dur, 0.01, fx ? 3 : 8);
+  if (!kind || freq === undefined || gain === undefined || dur === undefined) return null;
+  const scale = list(r.scale, SOUND_LIMITS.scale).map((n) => num(n, -24, 48)).filter((n): n is number => n !== undefined);
+  const on = list(r.on, SOUND_LIMITS.steps).map((n) => (n ? 1 : 0));
+  return some<Voice>({
+    kind,
+    wave: kind === 'note' && WAVES.includes(r.wave as Wave) ? r.wave as Wave : undefined,
+    type: kind === 'burst' && PASSES.includes(r.type as Pass) ? r.type as Pass : undefined,
+    freq, gain, dur,
+    attack: kind === 'note' ? num(r.attack, 0.001, 2) : undefined,
+    glide: kind === 'note' ? num(r.glide, 0.05, 20) : undefined,
+    glideTo: kind === 'note' ? num(r.glideTo, 20, 12000) : undefined,
+    scale: scale.length ? scale : undefined,
+    p: fx ? undefined : num(r.p, 0, 1),
+    on: !fx && on.length ? on : undefined,
+    lp: fx ? undefined : num(r.lp, 50, 12000),
+    echo: !fx && r.echo === true ? true : undefined,
+    at: fx ? num(r.at, 0, 2000) : undefined,
+    vel: fx ? num(r.vel, 0, 1) : undefined,
+  });
+}
+
+/**
+ * Read a soundscape somebody else wrote. Null if it is not one; otherwise only what the engine
+ * understands, every number within bounds: gains, pitches, how many layers, drones and timers,
+ * and how many sounds a second its patterns may start.
+ */
+export function parseRecipe(raw: unknown): Scape | null {
+  const r = obj(raw), name = typeof r.name === 'string' ? r.name.trim().slice(0, 24) : '';
+  if (!name) return null;
+  let timers = 0, rate = 0;
+  const layers: Layer[] = [], drones: Drone[] = [], patterns: Pattern[] = [];
+  for (const l of list(r.layers, SOUND_LIMITS.layers).map(obj)) {
+    const gain = num(l.gain, 0, 1), filters: Filter[] = [];
+    for (const f of list(l.filters, SOUND_LIMITS.filters).map(obj)) {
+      const freq = num(f.freq, 20, 12000);
+      if (PASSES.includes(f.type as Pass) && freq !== undefined) filters.push(some<Filter>({ type: f.type as Pass, freq, q: num(f.q, 0.1, 8) }));
+    }
+    if (gain === undefined) continue;
+    const m = obj(l.mod), every = num(m.every, 200, 60000), mf = pair(m.freq, 20, 12000), mg = pair(m.gain, 0, 1);
+    const mod = every !== undefined && (mf || mg) && timers < SOUND_LIMITS.timers ? some<NonNullable<Layer['mod']>>({ every, freq: mf, gain: mg }) : undefined;
+    if (mod) timers++;
+    layers.push(some<Layer>({ filters, gain, mod }));
+  }
+  for (const d of list(r.drones, SOUND_LIMITS.drones).map(obj)) {
+    const freq = num(d.freq, 20, 2000), gain = num(d.gain, 0, 0.5);
+    if (WAVES.includes(d.wave as Wave) && freq !== undefined && gain !== undefined) drones.push(some<Drone>({ wave: d.wave as Wave, freq, gain, lp: num(d.lp, 50, 12000) }));
+  }
+  for (const p of list(r.patterns, SOUND_LIMITS.patterns).map(obj)) {
+    const every = num(p.every, 60, 60000), voices = list(p.voices, SOUND_LIMITS.voices).map((v) => parseVoice(v, false)).filter((v): v is Voice => !!v);
+    if (every === undefined || !voices.length || timers >= SOUND_LIMITS.timers) continue;
+    const adds = voices.reduce((n, v) => n + (v.p ?? 1), 0) * 1000 / every;
+    if (rate + adds > SOUND_LIMITS.perSecond) continue; // too busy for a phone: left out
+    rate += adds;
+    timers++;
+    patterns.push({ every, voices });
+  }
+  const e = obj(r.echo), echo = r.echo === undefined ? undefined : { time: num(e.time, 0.05, 1) ?? 0.34, feedback: num(e.feedback, 0, 0.7) ?? 0.38, mix: num(e.mix, 0, 1) ?? 0.5 };
+  const file = typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 256 ? r.file : undefined;
+  if (!layers.length && !drones.length && !patterns.length && !file) return null;
+  return some<Scape>({
+    name, layers: layers.length ? layers : undefined, drones: drones.length ? drones : undefined, patterns: patterns.length ? patterns : undefined, echo,
+    file, loop: file && typeof r.loop === 'boolean' ? r.loop : undefined, gain: file ? num(r.gain, 0, 1) : undefined,
+  });
+}
+
+/** Read a one-shot effect (a dice clack, a ping, an emote's sting) somebody else wrote. Null if it is not one. */
+export function parseEffect(raw: unknown): Effect | null {
+  const voices = list(obj(raw).voices, SOUND_LIMITS.voices).map((v) => parseVoice(v, true)).filter((v): v is Voice => !!v);
+  return voices.length ? { voices } : null;
+}
+
+/** Read a set of recipes (`{ scapes: { id: recipe }, effects: { name: recipe } }`), such as a theme brings. Undefined if there is nothing in it. */
+export function parseSounds(raw: unknown, maxScapes = 4, maxEffects = 12): SoundBank | undefined {
+  const each = <T>(from: unknown, max: number, parse: (v: unknown) => T | null): Record<string, T> | undefined => {
+    const out: Record<string, T> = {};
+    for (const [id, v] of Object.entries(obj(from))) {
+      const got = ID.test(id) && id !== 'off' && Object.keys(out).length < max ? parse(v) : null;
+      if (got) out[id] = got;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+  const bank = some<SoundBank>({ scapes: each(obj(raw).scapes, maxScapes, parseRecipe), effects: each(obj(raw).effects, maxEffects, parseEffect) });
+  return bank.scapes || bank.effects ? bank : undefined;
+}
+
+/**
+ * The soundscapes this device has loaded, id → name: what "is this soundscape known" is asked of
+ * (`id in SOUNDSCAPES`), and what the picker lists. Silence is always there; the rest arrive with `addSounds`.
+ */
+export const SOUNDSCAPES: Record<string, string> = { off: '🔇 Silence' };
+const SCAPES: Record<string, Scape> = {}, EFFECTS: Record<string, Effect> = {};
+/** Offer these recipes on this device (see `loadSounds`). */
+export function addSounds(bank: SoundBank): void {
+  for (const [id, s] of Object.entries(bank.scapes ?? {})) { SCAPES[id] = s; SOUNDSCAPES[id] = s.name; }
+  Object.assign(EFFECTS, bank.effects);
+}
+
+/** The recipes on offer: `<dir>/index.json` lists the soundscapes, one file each; `<dir>/effects.json` holds the effects. A missing or broken one is skipped. */
+export async function loadSounds(dir: string, get: (url: string) => Promise<unknown> = async (url) => (await fetch(url)).json()): Promise<SoundBank> {
+  const [names, effects] = await Promise.all([get(`${dir}/index.json`).catch(() => null), get(`${dir}/effects.json`).catch(() => null)]);
+  const files = (Array.isArray(names) ? names : []).filter((n): n is string => typeof n === 'string' && /^[a-z0-9_-]+$/.test(n)).slice(0, 64);
+  const scapes: Record<string, unknown> = {};
+  await Promise.all(files.map(async (n) => { scapes[n] = await get(`${dir}/${n}.json`).catch(() => null); }));
+  return parseSounds({ scapes: Object.fromEntries(files.map((n) => [n, scapes[n]])), effects }, 64, 64) ?? {};
+}
+
+// ---- the engine ----------------------------------------------------------------------------
 
 type Stop = () => void;
+/** Turns a recording's reference into a URL an audio element can play (an object URL), or null if it cannot be had. Whoever makes the URL revokes it. */
+export type Resolver = (ref: string) => Promise<string | null>;
+const pick = (s: Span): number => (typeof s === 'number' ? s : s[0] + Math.random() * (s[1] - s[0]));
 
 export class Sound {
   enabled = true;
+  /**
+   * How recordings are fetched (`Scape.file`). Nothing here knows where files live: the app sets this
+   * once it has a file store. Until then a soundscape's recording is silently left out.
+   */
+  resolver?: Resolver;
+  /** The soundscape now sounding ('off' when silent, whatever the table asked for). */
+  playing = 'off';
   private ctx?: AudioContext;
   private master?: GainNode;
   private noise?: AudioBuffer;
   private want = 'off';
-  private playing = 'off';
+  private recipe?: Scape;
+  private own: SoundBank = {};
+  private ownKey = '';
   private stop: Stop = () => {};
+  private live = 0;
+  // One audio element for recordings, made on the first tap (iOS only lets a tapped element play).
+  private el?: HTMLAudioElement;
+  private elNode?: MediaElementAudioSourceNode;
+  private elTurn = 0;
+  private elWanted = false;
 
   /** Browsers only allow audio after a tap: call this from the first one. */
   unlock(): void {
@@ -31,7 +226,9 @@ export class Sound {
       this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
       const d = this.noise.getChannelData(0);
       for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      if (typeof Audio !== 'undefined') { this.el = new Audio(); this.el.preload = 'auto'; this.el.load(); }
     }
+    if (this.elWanted && this.el?.paused) void this.el.play().catch(() => {}); // a recording that was refused without a tap
     void this.ctx.resume().then(() => this.apply());
   }
 
@@ -41,26 +238,48 @@ export class Sound {
     else this.apply();
   }
 
-  /** Switch the table's soundscape (cross-fades). */
+  /** Switch the table's soundscape (cross-fades). One this device has no recipe for is silence. */
   scape(id: string): void {
-    this.want = SOUNDSCAPES[id] ? id : 'off';
+    this.want = id;
     this.apply();
   }
+
+  /** The recipes the table's theme brings: they come before the loaded ones of the same name. Null when it brings none. */
+  theme(bank: SoundBank | null | undefined): void {
+    const key = bank ? JSON.stringify(bank) : '';
+    if (key === this.ownKey) return;
+    this.ownKey = key;
+    this.own = bank ?? {};
+    this.apply();
+  }
+
+  /** More recipes have loaded (`addSounds`): start what the table was waiting to hear. */
+  refresh(): void { this.apply(); }
+
+  /** Whether there is a recipe for this soundscape, the theme's or a loaded one. */
+  knows(id: string): boolean { return id === 'off' || !!(this.own.scapes?.[id] ?? SCAPES[id]); }
 
   /** The phone went to sleep or the tab was hidden: stop making noise. */
   suspend(hidden: boolean): void {
     if (!this.ctx) return;
-    if (hidden) void this.ctx.suspend();
-    else if (this.enabled) void this.ctx.resume();
+    if (hidden) { void this.ctx.suspend(); this.el?.pause(); }
+    else if (this.enabled) { void this.ctx.resume(); if (this.elWanted) void this.el?.play().catch(() => {}); }
   }
 
   private apply(): void {
-    const next = this.enabled && this.ctx?.state === 'running' ? this.want : 'off';
-    if (next === this.playing) return;
+    const recipe = this.enabled && this.ctx?.state === 'running' && this.want !== 'off' ? this.own.scapes?.[this.want] ?? SCAPES[this.want] : undefined;
+    if (recipe === this.recipe) return;
     this.stop();
     this.stop = () => {};
-    this.playing = next;
-    if (next !== 'off') this.stop = this.start(next);
+    this.recipe = recipe;
+    this.playing = recipe ? this.want : 'off';
+    // A soundscape the GM started is the game's own audio: an iPhone's silent switch should not mute it.
+    // (Without one, the odd clack stays "ambient": muted by the switch, and no interruption to the owner's music.)
+    try {
+      const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+      if (session) session.type = recipe ? 'playback' : 'auto';
+    } catch { /* not every browser has it, or lets it be set */ }
+    if (recipe) this.stop = this.start(recipe);
   }
 
   // ---- building blocks ----
@@ -87,9 +306,17 @@ export class Sound {
     for (let i = 0; i < nodes.length - 1; i++) nodes[i].connect(nodes[i + 1]);
     return nodes[nodes.length - 1];
   }
+  /** Only so many sounds at once, whatever a recipe asks for. */
+  private room(s: AudioScheduledSourceNode): boolean {
+    if (this.live >= SOUND_LIMITS.live) return false;
+    this.live++;
+    s.onended = () => { this.live--; };
+    return true;
+  }
   /** A short note with a soft attack and an exponential tail. */
   private note(out: AudioNode, type: OscillatorType, freq: number, vol: number, dur: number, attack = 0.01, glideTo?: number): void {
     const c = this.ctx!, t = c.currentTime, o = c.createOscillator(), g = this.gain(0);
+    if (!this.room(o)) return;
     o.type = type;
     o.frequency.setValueAtTime(freq, t);
     if (glideTo) o.frequency.exponentialRampToValueAtTime(glideTo, t + dur);
@@ -102,85 +329,79 @@ export class Sound {
   /** A burst of filtered noise: crackles, snares, dice. */
   private burst(out: AudioNode, freq: number, vol: number, dur: number, type: BiquadFilterType = 'highpass'): void {
     const c = this.ctx!, t = c.currentTime, s = this.src(false), g = this.gain(vol);
+    if (!this.room(s)) return;
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     this.chain(s, this.filter(type, freq, 1), g, out);
     s.start(t, Math.random() * 1.5, dur + 0.05);
   }
+  /** Sound one voice of a recipe. `strength` (0..1) is how hard the knock was, for voices that care; `level` turns it down. */
+  private voice(out: AudioNode, v: Voice, strength = 0, level = 1): void {
+    const hz = (f: number) => Math.min(12000, Math.max(20, f));
+    const base = pick(v.freq), freq = hz(v.scale ? base * 2 ** (v.scale[Math.floor(Math.random() * v.scale.length)] / 12) : base);
+    const vol = Math.min(1, pick(v.gain) + (v.vel ?? 0) * strength) * level, dur = pick(v.dur);
+    if (vol < 0.0002) return;
+    if (v.kind === 'burst') this.burst(out, freq, vol, dur, v.type);
+    else this.note(out, v.wave ?? 'sine', freq, vol, dur, Math.min(v.attack ?? 0.01, dur), v.glideTo ?? (v.glide ? hz(freq * v.glide) : undefined));
+  }
 
-  private start(id: string): Stop {
+  /** Play a soundscape's recipe until the returned function is called. */
+  private start(r: Scape): Stop {
     const c = this.ctx!, bus = this.gain(0), timers: ReturnType<typeof setInterval>[] = [], nodes: AudioScheduledSourceNode[] = [];
+    // However many layers a recipe piles up, together they are no louder than a soundscape should be.
+    const sum = (r.layers ?? []).reduce((n, l) => n + Math.max(l.gain, l.mod?.gain?.[1] ?? 0), 0) + (r.drones ?? []).reduce((n, d) => n + d.gain, 0)
+      + (r.patterns ?? []).reduce((n, p) => n + p.voices.reduce((m, v) => m + top(v.gain), 0), 0) + (r.file ? r.gain ?? 1 : 0);
     bus.connect(this.master!);
-    bus.gain.linearRampToValueAtTime(1, c.currentTime + 1.2);
-    const loop = (...n: AudioNode[]) => { const s = this.src(); this.chain(s, ...n, bus); s.start(0, Math.random()); nodes.push(s); };
-    const drone = (type: OscillatorType, f: number, v: number, lp = 400) => {
-      const o = c.createOscillator();
-      o.type = type;
-      o.frequency.value = f;
-      this.chain(o, this.filter('lowpass', lp), this.gain(v), bus);
-      o.start();
-      nodes.push(o);
-    };
-    const every = (ms: number, fn: () => void) => timers.push(setInterval(fn, ms));
+    bus.gain.linearRampToValueAtTime(Math.min(1, LOUD / Math.max(sum, 0.001)), c.currentTime + 1.2);
+    const every = (ms: number, fn: () => void) => { if (timers.length < SOUND_LIMITS.timers) timers.push(setInterval(fn, ms)); };
     // A feedback delay gives the sparse sounds some room.
     const echo = c.createDelay(1);
-    echo.delayTime.value = 0.34;
-    const fb = this.gain(0.38);
+    echo.delayTime.value = r.echo?.time ?? 0.34;
+    const fb = this.gain(r.echo?.feedback ?? 0.38);
     this.chain(echo, fb, echo);
-    this.chain(echo, this.gain(0.5), bus);
+    this.chain(echo, this.gain(r.echo?.mix ?? 0.5), bus);
     const wet = this.gain(1);
     wet.connect(bus);
     wet.connect(echo);
 
-    switch (id) {
-      case 'rain':
-        loop(this.filter('highpass', 600), this.filter('lowpass', 7000), this.gain(0.22));
-        loop(this.filter('lowpass', 260), this.gain(0.3));
-        break;
-      case 'wind': {
-        const band = this.filter('bandpass', 420, 1.4), g = this.gain(0.4);
-        loop(band, g);
-        every(900, () => {
-          const t = c.currentTime;
-          band.frequency.linearRampToValueAtTime(260 + Math.random() * 700, t + 0.9);
-          g.gain.linearRampToValueAtTime(0.2 + Math.random() * 0.45, t + 0.9);
-        });
-        break;
-      }
-      case 'fire':
-        loop(this.filter('lowpass', 320), this.gain(0.4));
-        every(110, () => { if (Math.random() < 0.45) this.burst(bus, 1400 + Math.random() * 2500, 0.05 + Math.random() * 0.14, 0.03 + Math.random() * 0.05); });
-        break;
-      case 'cave':
-        drone('sine', 55, 0.12);
-        loop(this.filter('bandpass', 180, 2), this.gain(0.12));
-        every(700, () => { if (Math.random() < 0.4) { const f = 900 + Math.random() * 900; this.note(wet, 'sine', f, 0.12, 0.16, 0.005, f * 0.6); } });
-        break;
-      case 'calm': {
-        const scale = [0, 2, 4, 7, 9, 12, 14, 16], lp = this.filter('lowpass', 1400);
-        lp.connect(wet);
-        drone('sine', 110, 0.06);
-        every(1900, () => {
-          const n = scale[Math.floor(Math.random() * scale.length)];
-          this.note(lp, 'triangle', 220 * 2 ** (n / 12), 0.11, 3.2, 0.5);
-          if (Math.random() < 0.4) this.note(lp, 'sine', 110 * 2 ** (scale[Math.floor(Math.random() * 5)] / 12), 0.09, 4, 0.8);
-        });
-        break;
-      }
-      case 'battle': {
-        const kick = [1, 0, 0, 1, 0, 1, 0, 0], snare = [0, 0, 1, 0, 0, 0, 1, 0], minor = [0, 3, 5, 7, 10, 12];
-        const lp = this.filter('lowpass', 1000);
-        lp.connect(wet);
-        drone('sawtooth', 73.4, 0.07, 260);
-        let step = 0;
-        every(210, () => {
-          const i = step++ % 8;
-          if (kick[i]) this.note(bus, 'sine', 130, 0.55, 0.16, 0.004, 42);
-          if (snare[i]) this.burst(bus, 1800, 0.18, 0.09);
-          if (i % 2 === 0 && Math.random() < 0.45) this.note(lp, 'square', 146.8 * 2 ** (minor[Math.floor(Math.random() * minor.length)] / 12), 0.045, 0.14);
-        });
-        break;
-      }
+    for (const l of r.layers ?? []) {
+      const s = this.src(), filters = l.filters.map((f) => this.filter(f.type, f.freq, f.q)), g = this.gain(l.gain), mod = l.mod;
+      this.chain(s, ...filters, g, bus);
+      s.start(0, Math.random());
+      nodes.push(s);
+      if (mod) every(mod.every, () => {
+        const t = c.currentTime + mod.every / 1000;
+        if (mod.freq && filters[0]) filters[0].frequency.linearRampToValueAtTime(pick(mod.freq), t);
+        if (mod.gain) g.gain.linearRampToValueAtTime(pick(mod.gain), t);
+      });
     }
+    for (const d of r.drones ?? []) {
+      const o = c.createOscillator();
+      o.type = d.wave;
+      o.frequency.value = d.freq;
+      this.chain(o, this.filter('lowpass', d.lp ?? 400), this.gain(d.gain), bus);
+      o.start();
+      nodes.push(o);
+    }
+    for (const p of r.patterns ?? []) {
+      // Where each voice plays into is set up once; a beat only starts the sounds themselves.
+      const outs = p.voices.map((v) => {
+        const to = v.echo ? wet : bus;
+        if (!v.lp) return to;
+        const lp = this.filter('lowpass', v.lp);
+        lp.connect(to);
+        return lp;
+      });
+      let step = 0;
+      every(p.every, () => {
+        const i = step++;
+        p.voices.forEach((v, k) => {
+          if (v.on && !v.on[i % v.on.length]) return;
+          if (v.p !== undefined && Math.random() >= v.p) return;
+          this.voice(outs[k], v);
+        });
+      });
+    }
+    const quiet = r.file && this.resolver ? this.record(r, bus) : () => {};
     return () => {
       for (const t of timers) clearInterval(t);
       const end = c.currentTime + 0.9;
@@ -188,33 +409,79 @@ export class Sound {
       bus.gain.setValueAtTime(bus.gain.value, c.currentTime);
       bus.gain.linearRampToValueAtTime(0, end);
       for (const n of nodes) n.stop(end + 0.05);
+      quiet();
       setTimeout(() => bus.disconnect(), 1200);
+    };
+  }
+
+  /**
+   * Play a soundscape's recording into `bus`. A short loop is decoded whole so it repeats without a gap;
+   * anything longer is streamed through the audio element, never decoded into memory.
+   */
+  private record(r: Scape, bus: AudioNode): Stop {
+    const c = this.ctx!, el = this.el, out = this.gain(r.gain ?? 1), loop = r.loop !== false, turn = ++this.elTurn;
+    let dead = false, decoded: AudioBufferSourceNode | undefined;
+    out.connect(bus);
+    void (async () => {
+      const url = await this.resolver!(r.file!);
+      if (!url || !el || dead || turn !== this.elTurn) return;
+      el.loop = loop;
+      el.src = url;
+      await new Promise<void>((ok, no) => { el.onloadedmetadata = () => ok(); el.onerror = () => no(new Error('unreadable')); });
+      if (dead || turn !== this.elTurn) return;
+      if (loop && el.duration <= SHORT_LOOP) {
+        try {
+          const buffer = await c.decodeAudioData(await (await fetch(url)).arrayBuffer());
+          if (dead) return;
+          decoded = c.createBufferSource();
+          decoded.buffer = buffer;
+          decoded.loop = true;
+          decoded.connect(out);
+          decoded.start();
+          return;
+        } catch { /* stream it instead */ }
+      }
+      if (dead || turn !== this.elTurn) return;
+      this.elNode ??= c.createMediaElementSource(el);
+      this.elNode.disconnect();
+      this.elNode.connect(out);
+      this.elWanted = true;
+      await el.play(); // refused without a tap on some phones: the next tap starts it (see unlock)
+    })().catch(() => {});
+    return () => {
+      dead = true;
+      setTimeout(() => {
+        decoded?.stop();
+        out.disconnect();
+        if (turn !== this.elTurn || !el) return; // another recording has the element now
+        this.elWanted = false;
+        el.pause();
+        el.removeAttribute('src');
+        el.load();
+      }, 1000);
     };
   }
 
   // ---- one-shot effects ----
 
   private ready(): boolean { return this.enabled && this.ctx?.state === 'running'; }
+  /** Play a named effect's recipe (the theme's, else a loaded one). `strength` 0..1 is how hard the knock was. True if there is one. */
+  effect(name: string, strength = 0): boolean {
+    const fx = this.own.effects?.[name] ?? EFFECTS[name];
+    if (!fx) return false;
+    if (!this.ready()) return true;
+    const sum = fx.voices.reduce((n, v) => n + top(v.gain) + (v.vel ?? 0), 0), level = Math.min(1, LOUD / Math.max(sum, 0.001));
+    for (const v of fx.voices) {
+      if (v.at) setTimeout(() => this.ready() && this.voice(this.master!, v, strength, level), v.at);
+      else this.voice(this.master!, v, strength, level);
+    }
+    return true;
+  }
   /** A die knocking on the table. */
-  clack(strength: number): void {
-    if (this.ready()) this.burst(this.master!, 2200 + Math.random() * 1500, 0.1 + strength * 0.35, 0.035, 'bandpass');
-  }
+  clack(strength: number): void { this.effect('clack', strength); }
   /** A mini set down on the table: a soft knock of plastic on wood. */
-  thud(): void {
-    if (!this.ready()) return;
-    this.note(this.master!, 'sine', 150 + Math.random() * 30, 0.3, 0.09, 0.002, 70);
-    this.burst(this.master!, 900 + Math.random() * 500, 0.12, 0.03, 'bandpass');
-  }
-  ping(): void {
-    if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
-  }
-  /** A little sting for an emote. */
-  emote(kind: string): void {
-    if (!this.ready()) return;
-    const m = this.master!;
-    if (kind === 'attack') this.burst(m, 3000, 0.25, 0.12);
-    else if (kind === 'hurt') this.note(m, 'sawtooth', 220, 0.14, 0.22, 0.005, 90);
-    else if (kind === 'cheer') [523, 659, 784].forEach((f, i) => setTimeout(() => this.ready() && this.note(m, 'triangle', f, 0.14, 0.25), i * 90));
-    else this.note(m, 'sine', kind === 'think' ? 520 : 700, 0.1, 0.25, 0.01, kind === 'think' ? 780 : 560);
-  }
+  thud(): void { this.effect('thud'); }
+  ping(): void { this.effect('ping'); }
+  /** A little sting for an emote: its own (`emote:<kind>`), else the one for any emote (`emote`). */
+  emote(kind: string): void { if (!this.effect(`emote:${kind}`)) this.effect('emote'); }
 }

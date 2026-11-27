@@ -7,7 +7,7 @@
   "sky": "night",
   "season": "winter",
   "glow": 1.75,
-  "amb": "rain"
+  "amb": "crypt"
  },
  "gen": "dungeon",
  "pieces": {
@@ -52,5 +52,90 @@
    "cleric",
    "child"
   ]
+ },
+ "sounds": {
+  "scapes": {
+   "crypt": {
+    "name": "⚰️ Crypt",
+    "layers": [
+     {
+      "filters": [
+       {
+        "type": "bandpass",
+        "freq": 140,
+        "q": 3
+       }
+      ],
+      "gain": 0.1,
+      "mod": {
+       "every": 5000,
+       "gain": [
+        0.04,
+        0.14
+       ]
+      }
+     }
+    ],
+    "drones": [
+     {
+      "wave": "sine",
+      "freq": 49,
+      "gain": 0.12
+     },
+     {
+      "wave": "sine",
+      "freq": 51.5,
+      "gain": 0.06
+     }
+    ],
+    "patterns": [
+     {
+      "every": 1100,
+      "voices": [
+       {
+        "kind": "note",
+        "wave": "sine",
+        "freq": [
+         1200,
+         2200
+        ],
+        "gain": 0.1,
+        "dur": 0.12,
+        "attack": 0.004,
+        "glide": 0.55,
+        "p": 0.3,
+        "echo": true
+       }
+      ]
+     },
+     {
+      "every": 4700,
+      "voices": [
+       {
+        "kind": "note",
+        "wave": "triangle",
+        "freq": 196,
+        "gain": 0.06,
+        "dur": 5,
+        "attack": 0.02,
+        "scale": [
+         0,
+         3,
+         7
+        ],
+        "p": 0.35,
+        "lp": 900,
+        "echo": true
+       }
+      ]
+     }
+    ],
+    "echo": {
+     "time": 0.46,
+     "feedback": 0.55,
+     "mix": 0.6
+    }
+   }
+  }
  }
 }

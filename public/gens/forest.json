@@ -1,0 +1,20 @@
+{
+ "id": "forest",
+ "name": "Wilderness",
+ "icon": "tree",
+ "algo": "wilderness",
+ "sliders": ["Size", "Growth", "Hills"],
+ "palette": {
+  "ground": [["moss", 62], ["grass", 193], ["dirt", 206], ["meadow", 256]],
+  "path": "dirt",
+  "water": "water",
+  "stream": 3,
+  "dress": {
+   "moss": "grow",
+   "grass": "grow",
+   "dirt": "grow",
+   "meadow": "grow"
+  }
+ },
+ "rooms": []
+}
