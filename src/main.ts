@@ -6,6 +6,8 @@ import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
 import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
+import { buzz, canBuzz, hapticsOn, rollBuzz, setHaptics, ticker } from './haptics';
+import { askShake, canShake, shakeNeedsAsking, watchShake, type Shake } from './shake';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
 import { breakButton } from './breakui';
@@ -191,10 +193,16 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     },
   });
   await net.start();
-  board.dice.onHit = (strength) => sound.clack(strength);
   breakButton(board, $('hud'), $('top'), (k, i) => void send({ y: 'broke', k, i }), (wood) => sound.crumble(wood));
   board.loose.onHit = (strength) => sound.clack(strength * 0.6);
   board.shots.onSound = (kind, hit) => sound.shot(kind, hit);
+  // Everyone hears the dice; only the thrower feels them in the hand.
+  const tick = ticker();
+  board.dice.onHit = (strength, owner) => {
+    sound.clack(strength);
+    const ms = owner === me ? tick(strength, performance.now()) : 0;
+    if (ms) buzz(ms);
+  };
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
@@ -274,9 +282,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const r = (Array.isArray(m.r) ? m.r : []).slice(0, 20).map(Number);
     const total = r.reduce((a, b) => a + b, 0) + (Number(m.mod) || 0);
     const detail = r.length > 1 || m.mod ? ` <span class="sys">(${r.join(' + ')}${m.mod ? ` ${m.mod > 0 ? '+' : '−'} ${Math.abs(m.mod)}` : ''})</span>` : '';
-    say(`🎲 ${who} rolled ${esc(String(m.d))}: <span class="tot">${total}</span>${detail}`, mine);
+    // A lone coin reads as a side, not a sum.
+    const shown = m.d === '1d2' && !m.mod && r.length === 1 ? (r[0] === 1 ? 'Heads' : 'Tails') : total;
+    say(`🎲 ${who} rolled ${esc(String(m.d))}: <span class="tot">${shown}</span>${detail}`, mine);
     const t = $('toast');
-    t.innerHTML = `<big>${total}</big>${mine ? 'You' : who} · ${esc(String(m.d))}`;
+    t.innerHTML = `<big>${shown}</big>${mine ? 'You' : who} · ${esc(String(m.d))}`;
     t.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
@@ -300,7 +310,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     const total = [...hand.values()].reduce((a, b) => a + b, 0);
     if (total) $('logToggle').dataset.n = String(total); else delete $('logToggle').dataset.n;
-    $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw` : 'Tap dice to pick them up';
+    syncShake();
+    $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw${unwatch ? ', or shake the phone' : ''}` : 'Tap dice to pick them up';
     $('hand').classList.toggle('full', total > 0);
     $<HTMLCanvasElement>('c').style.cursor = total ? 'grabbing' : '';
     if (total) void import('cannon-es'); // warm up the physics engine before the throw
@@ -318,6 +329,46 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderHand();
   }
 
+  // Shake to roll, an extra for phones. The motion sensor is only listened to while dice are in
+  // hand. Where the browser wants asking (iOS) it starts off, and is asked for from a tap.
+  let shakeOn = canShake() && (ls.get('shake') ?? (shakeNeedsAsking() ? 'off' : 'on')) === 'on';
+  let shakeOk = !shakeNeedsAsking();
+  let unwatch: (() => void) | null = null;
+  function syncShake(): void {
+    const want = shakeOn && shakeOk && hand.size > 0;
+    if (want && !unwatch) unwatch = watchShake(onShake);
+    else if (!want && unwatch) { unwatch(); unwatch = null; }
+    $('shake').classList.toggle('on', shakeOn);
+  }
+  /** From a tap: make sure we may listen (iOS forgets between visits, and answers at once if already allowed). */
+  async function armShake(): Promise<void> {
+    if (!shakeOn || shakeOk) return;
+    shakeOk = await askShake();
+    if (!shakeOk) {
+      shakeOn = false;
+      ls.set('shake', 'off');
+      say('<span class="sys">This browser will not share its motion sensor, so shaking is off.</span>');
+    }
+    renderHand();
+  }
+  function onShake(s: Shake): void {
+    // Thrown across the middle of the view, the way the phone was shaken (up the screen = away from you).
+    const { target, cam, tray } = board.throwSpot();
+    const len = Math.hypot(target[0] - cam[0], target[2] - cam[2]);
+    const fx = len > 0.01 ? (target[0] - cam[0]) / len : 0, fz = len > 0.01 ? (target[2] - cam[2]) / len : -1;
+    const dx = -fz * s.x + fx * s.y, dz = fx * s.x + fz * s.y, speed = 5 + 9 * s.power;
+    if (phoneSheet()) closeSheet();
+    board.toss([target[0] - dx * tray * 0.4, target[1] + 1.5, target[2] - dz * tray * 0.4], [dx * speed, 0, dz * speed]);
+  }
+  $('shake').hidden = !canShake();
+  $('shake').onclick = () => {
+    shakeOn = !shakeOn;
+    ls.set('shake', shakeOn ? 'on' : 'off');
+    say(`<span class="sys">${shakeOn ? 'Shake the phone to throw the dice in your hand.' : 'Shaking no longer throws the dice.'}</span>`);
+    renderHand();
+    void armShake();
+  };
+
   async function throwHand(starts: Start[], vel: Vec): Promise<void> {
     const kinds = handKinds(), d = handText(), mod = handMod;
     emptyHand();
@@ -327,8 +378,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     board.dice.endHold();
     const r = rollValues(kinds, results(t)!);
     void send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
-    navigator.vibrate?.(12);
+    buzz(12);
     await board.dice.play(t, myColor, me);
+    const felt = rollBuzz(kinds, r);
+    if (felt) buzz(felt);
     showRoll(meTag, { d, r, mod }, true);
   }
   function closeSheet(): void { openSheet(null); }
@@ -339,7 +392,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('secret').classList.toggle('on', secret);
     say(`<span class="sys">${secret ? 'Your rolls are now secret: players see blank dice.' : 'Your rolls are public again.'}</span>`);
   };
-  for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => { pickUp(+b.dataset.d!); renderHand(); };
+  for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => { pickUp(+b.dataset.d!); renderHand(); void armShake(); };
   $('diceClear').onclick = emptyHand;
 
   /** `/r 2d6+1d20+3`: standard dice go into the hand; anything else (d7, 30 dice) is just rolled as numbers. */
@@ -741,7 +794,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (document.activeElement !== glow) glow.value = String(setting(store, 'glow', 1));
     glow.disabled = !full();
     $('soundOn').innerHTML = sound.enabled ? `${ico('sound')}Sound on this device: on` : `${ico('mute')}Sound on this device: off`;
+    $('hapticsOn').hidden = !canBuzz();
+    $('hapticsOn').innerHTML = `${ico('buzz')}Vibration on this device: ${hapticsOn() ? 'on' : 'off'}`;
   }
+  $('hapticsOn').onclick = () => {
+    setHaptics(!hapticsOn());
+    buzz(20); // feel that it is on
+    renderAtmo();
+  };
   $('soundOn').onclick = () => {
     sound.setEnabled(!sound.enabled);
     ls.set('sound', sound.enabled ? 'on' : 'off');

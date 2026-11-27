@@ -747,6 +747,41 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   });
   assert(onScreen && (await cells()).length === 1, 'flung dice come to rest in view, and the throw edits nothing');
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
+
+  // Phone extras: a coin in the picker, shake to throw, and the throw is felt.
+  await p.context().grantPermissions(['accelerometer', 'gyroscope']).catch(() => {}); // a headless browser cannot show the prompt
+  await p.evaluate(() => { window.__vib = []; navigator.vibrate = (x) => (window.__vib.push(x), true); });
+  const shakeIt = () => p.evaluate(() => {
+    for (const y of [22, 22, 22, -22, -22, -22]) dispatchEvent(new DeviceMotionEvent('devicemotion', { acceleration: { x: 0, y, z: 0 }, interval: 16 }));
+  });
+  await shakeIt();
+  await settle();
+  assert(await p.evaluate(() => !window.__ct.board.dice.held), 'shaking with an empty hand throws nothing');
+  await p.tap('#logToggle');
+  const small = await p.evaluate(() => ['#shake', '#dice [data-d="2"]'].filter((q) => { const r = document.querySelector(q).getBoundingClientRect(); return r.width < 44 || r.height < 44; }));
+  assert(!small.length, `coin and shake buttons are finger-sized ${small.join(' ')}`);
+  // Where the browser wants asking before it shares its motion sensor, shaking starts off: switch it on by touch.
+  if (!(await p.evaluate(() => document.querySelector('#shake').classList.contains('on')))) await p.tap('#shake');
+  await p.tap('#dice [data-d="2"]');
+  await p.waitForFunction(() => /shake/.test(document.querySelector('#hand').textContent));
+  assert(await p.evaluate(() => /1d2 in hand.*shake/.test(document.querySelector('#hand').textContent) && document.querySelector('#shake').classList.contains('on')), 'a coin goes in the hand, and the hint offers a shake');
+  await shakeIt();
+  await p.waitForFunction(() => /rolled 1d2: (Heads|Tails)/.test(document.querySelector('#msgs').textContent));
+  const coin = await p.evaluate(() => {
+    const { board } = window.__ct, mine = board.dice.playing[board.dice.playing.length - 1];
+    const v = mine.meshes[0].position.clone().project(board.camera);
+    return { kind: mine.kinds.join(), seen: Math.abs(v.x) < 1 && Math.abs(v.y) < 1, hand: board.hand.length, sheet: document.querySelector('#log').classList.contains('closed'), vib: window.__vib.length };
+  });
+  assert(coin.kind === 'd2' && coin.seen && !coin.hand && coin.sheet && (await cells()).length === 1, 'a shake flips the coin into view, once, and edits nothing');
+  assert(coin.vib > 0, `the thrower feels the throw (${coin.vib} buzzes)`);
+  // Switched off, a shake does nothing; the touch throw is untouched by all this.
+  await p.tap('#logToggle');
+  await p.tap('#shake');
+  await p.tap('#dice [data-d="2"]');
+  await shakeIt();
+  await settle();
+  assert(await p.evaluate(() => window.__ct.board.hand.length === 1 && !window.__ct.board.dice.held && !/shake/.test(document.querySelector('#hand').textContent)), 'with shaking switched off the coin stays in the hand');
+  await p.tap('#diceClear');
   await p.context().close();
 }
 
