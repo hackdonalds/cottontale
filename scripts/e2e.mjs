@@ -127,7 +127,7 @@ assert(await ok(b, (id) => document.body.classList.contains('player') && getComp
   && !window.__ct.board.hooks.canMove(id) && !!document.querySelector('#players svg'), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
-assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 4), 'selecting a piece shows a ring of actions on it, not a panel');
+assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 5), 'selecting a piece shows a ring of actions on it, not a panel');
 await a.click('#ring [title="More"]');
 await a.selectOption('#miniOwner', { label: '🎮 Bo' });
 assert(await ok(b, (id) => window.__ct.board.hooks.canMove(id), id), 'GM hands a mini to a player, who can then move it');
@@ -206,6 +206,19 @@ await a.press('#stats .st', 'Tab');
 assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return v.d === true && v.st?.[0] === 'AC 15'; }, id), 'knocked-down state and extra stats sync');
 await a.click('#ring [title="Emote"]');
 await a.click('#ring [title="Stand up"]');
+
+// Shoved off a tower, a mini falls: it lands knocked down and the log says so, but never about a hidden one.
+await a.evaluate(() => {
+  const { store } = window.__ct, mini = { k: 'knight', c: '#fff', r: 0, s: 1, o: '*', x: 30, y: 3, z: 30 };
+  for (let y = 0; y < 3; y++) for (const x of [30, 40]) store.set(`b:${x},${y},30`, { i: 'stone' });
+  store.set('m:tower', { ...mini, n: 'Goblin' });
+  store.set('m:lurker', { ...mini, n: 'Lurker', x: 40, h: true });
+});
+await a.evaluate(() => { const { board } = window.__ct; board.hooks.onShove('lurker', 1, 0); board.hooks.onShove('tower', 1, 0); });
+assert(await ok(b, () => { const v = window.__ct.store.get('m:tower'), l = window.__ct.store.get('m:lurker'); return v.x === 31 && v.y === 0 && v.d === true && l.x === 41 && l.y === 0 && /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent); })
+  && await a.evaluate(() => /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent) && /Lurker fell 15 ft/.test(document.querySelector('#msgs').textContent))
+  && await b.evaluate(() => !/Lurker/.test(document.querySelector('#msgs').textContent)), 'a mini shoved off a tower falls, lands knocked down, and the log tells everyone; a hidden one falls unannounced');
+await a.evaluate(() => { for (const k of ['m:tower', 'm:lurker']) window.__ct.store.set(k, null); });
 
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
@@ -387,7 +400,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return { panel: !document.querySelector('#minipanel').hidden, free: Math.round(((dock - top) / innerHeight) * 100),
       buttons: [...document.querySelectorAll('#ring button')].map((b) => b.getBoundingClientRect()).filter((r) => r.left >= 0 && r.top >= top && r.right <= innerWidth && r.bottom <= innerHeight).length };
   });
-  assert(!ring.panel && ring.buttons === 4 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
+  assert(!ring.panel && ring.buttons === 5 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
   // Hit points from the ring, then the full editor on request, with the piece still in view above it.
   await p.tap('#ring [title="Hit points"]');
   await p.tap('#ring [title="Gain a hit point"]');
@@ -490,6 +503,53 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await touch('touchEnd', []);
   const pg = await p.evaluate(() => ({ pings: window.__ct.board.pings.length, rulers: window.__ct.board.rulers.size, sel: window.__ct.board.selected, tool: window.__ct.board.tool }));
   assert(pg.pings === 1 && !pg.rulers, `press and hold pings; leaving the ruler tool puts the ruler away ${JSON.stringify(pg)}`);
+
+  // Shove: the ring arms it, the next tap on the table says which way, and the mini goes one cell.
+  // The spots to touch: a clear run of cells through the mini, as screen points.
+  const lane = () => p.evaluate(() => {
+    const { board, store } = window.__ct, id = [...store.keys('m:')][0].slice(2), v = store.get(`m:${id}`), c = document.querySelector('#c');
+    const top = document.querySelector('#top').getBoundingClientRect().bottom + 8, dock = document.querySelector('#tools').getBoundingClientRect().top - 60;
+    const at = (x, z) => { const s = board.ground.position.clone().set(x + 0.5, v.y, z + 0.5).project(board.camera); return [((s.x + 1) / 2) * c.clientWidth, ((1 - s.y) / 2) * c.clientHeight]; };
+    const free = (x, z) => ![...store.keys(`b:${x},`)].some((k) => +k.split(',')[2] === z && +k.split(',')[1] >= v.y);
+    for (const [sx, sz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const pts = [-1, 0, 1, 2, 3].map((i) => [v.x + sx * i, v.z + sz * i]);
+      if (pts.every(([x, z]) => free(x, z)) && pts.map(([x, z]) => at(x, z)).every(([x, y]) => x > 30 && x < innerWidth - 30 && y > top && y < dock)) return { id, v, sx, sz, pts: pts.map(([x, z]) => at(x, z)) };
+    }
+    return null;
+  });
+  const tapAt = async ([x, y]) => { await touch('touchStart', [[x, y]]); await touch('touchEnd', []); await settle(); };
+  let ln = await lane();
+  assert(!!ln, 'there is room on screen to push the mini about');
+  await p.evaluate((id) => window.__ct.board.select(id), ln.id);
+  await p.tap('#ring [title="Shove"]');
+  bad = await layout();
+  assert(await p.evaluate((id) => window.__ct.board.shoving === id && /Tap which way/.test(document.querySelector('#ring').textContent), ln.id) && !bad.length, `Shove on the ring waits for a direction ${bad.join('; ')}`);
+  await tapAt(ln.pts[4]);
+  const shoved = await p.evaluate((id) => ({ v: window.__ct.store.get(`m:${id}`), armed: window.__ct.board.shoving, sel: window.__ct.board.selected, ring: document.querySelectorAll('#ring > button').length }), ln.id);
+  assert(shoved.v.x === ln.v.x + ln.sx && shoved.v.z === ln.v.z + ln.sz && !shoved.armed && shoved.sel === ln.id && shoved.ring === 5, `a tap on the table shoves the mini one cell that way ${JSON.stringify(shoved)}`);
+
+  // Blast: the circle template in Measure, then the Blast chip. Next to the centre, the mini is thrown and floored; one undo.
+  ln = await lane();
+  assert(!!ln, 'and still room for a blast');
+  await p.tap('[data-tool="ruler"]');
+  await p.tap('#palette [title="Radius"]');
+  assert(await p.evaluate(() => document.querySelector('#palette [title^="Blast"]').disabled), 'Blast waits for a circle to be drawn');
+  const [from, , to] = ln.pts; // centre one cell behind the mini, two cells of radius
+  await touch('touchStart', [from]);
+  for (let i = 1; i <= 6; i++) await touch('touchMove', [[from[0] + ((to[0] - from[0]) * i) / 6, from[1] + ((to[1] - from[1]) * i) / 6]]);
+  await touch('touchEnd', []);
+  await settle();
+  bad = await layout();
+  await p.tap('#palette [title^="Blast"]');
+  await settle();
+  const blown = await p.evaluate((id) => window.__ct.store.get(`m:${id}`), ln.id);
+  const went = (blown.x - ln.v.x) * ln.sx + (blown.z - ln.v.z) * ln.sz;
+  assert(went >= 1 && went <= 4 && blown.d === true && [blown.x, blown.y, blown.z].every(Number.isInteger) && !bad.length, `the GM's blast throws the mini outward and floors it (${went} cells) ${bad.join('; ')}`);
+  await p.tap('#palette [title="Undo the last edit"]');
+  await settle();
+  const back = await p.evaluate((id) => window.__ct.store.get(`m:${id}`), ln.id);
+  assert(back.x === ln.v.x && back.z === ln.v.z && !back.d, 'one undo takes the whole blast back');
+  await p.tap('[data-tool="move"]');
 
   for (const sheet of ['boards', 'atmo']) {
     await p.tap('#menuBtn');

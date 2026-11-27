@@ -8,6 +8,7 @@ import { DiceView, type Solid, type Kind, type Start } from './dice';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
+import { heading, land } from './forces';
 import { Look } from './look';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
@@ -42,6 +43,10 @@ export interface BoardHooks {
   onLight(name: string): void;
   /** The picture was just redrawn: anything pinned to a spot on the table should follow. */
   onView(): void;
+  /** A mini set down by hand had nothing under it and fell this many cells. */
+  onFall(id: string, cells: number): void;
+  /** The player pointed which way to shove a mini (`sx`, `sz` each -1, 0 or 1; both 0 = never mind). */
+  onShove(id: string, sx: number, sz: number): void;
 }
 
 const LIMIT = 96;
@@ -1184,6 +1189,45 @@ export class Board {
     this.invalidate();
   }
 
+  /** Rock a mini (by id) or a prop (by cell key) from outside the board, e.g. one that was shoved and would not budge. */
+  nudge(key: string, vx: number, vz: number): void { if (this.minis.has(key) || this.props.has(key)) this.kick(key, vx, vz); }
+
+  /** A blast went off here: the furniture in range rocks away from it, hardest close by. For show only. */
+  rock(c: Vec, radius: number): void {
+    for (const [key, g] of this.props) {
+      const [x, y, z] = parse(key), dx = x - c[0], dz = z - c[2], far = Math.hypot(dx, dz);
+      if (!g.visible || g.userData.pending || far > radius + 0.5 || Math.abs(y - c[1]) > radius) continue;
+      const push = 1.6 - far / (radius + 1);
+      this.kick(key, far ? (dx / far) * push : push, far ? (dz / far) * push : 0);
+    }
+  }
+
+  /** Several edits as one step of undo (a blast moves many minis at once). */
+  editAll(edits: [string, unknown][]): void {
+    if (!this.full || !edits.length) return;
+    this.batch = [];
+    this.undoStack.push(this.batch);
+    for (const [k, v] of edits) this.edit(k, v);
+    this.batch = null;
+  }
+
+  /** The mini waiting to be shoved: the next tap on the table says which way. */
+  shoving: string | null = null;
+  /** Wait for that tap (null calls it off). False if this player may not move the mini. */
+  aimShove(id: string | null): boolean {
+    this.shoving = id && this.hooks.canMove(id) ? id : null;
+    return !!this.shoving;
+  }
+  /** The tap came. On another mini it means "shoved by this one", so away from it; anywhere else, towards the tap. */
+  private pointShove(): void {
+    const id = this.shoving!, v = this.minis.get(id)?.val;
+    this.shoving = null;
+    const other = this.pickMini(), o = other && other !== id ? this.minis.get(other)!.val : null, s = this.pickSurface();
+    const back = v && o && heading(o.x, o.z, v.x + 0.5, v.z + 0.5);
+    const way = !v || other === id || !this.hooks.canMove(id) ? null : o ? back : s && heading(v.x, v.z, s.point.x, s.point.z);
+    this.hooks.onShove(id, way?.[0] ?? 0, way?.[1] ?? 0);
+  }
+
   private tilt = new THREE.Quaternion();
   private axis = new THREE.Vector3();
   /** Rock the knocked pieces: each is a damped spring pulling it back upright. */
@@ -1288,6 +1332,7 @@ export class Board {
   // ---- selection / editing -------------------------------------------------
 
   select(id: string | null): void {
+    if (id !== this.shoving) this.shoving = null;
     if (this.selected) this.minis.get(this.selected)?.group.remove(this.ring);
     this.selected = id && this.minis.has(id) ? id : null;
     if (this.selected) this.attachRing(this.minis.get(this.selected)!);
@@ -1706,7 +1751,7 @@ export class Board {
     this.aim(e);
     switch (this.tool) {
       case 'move': {
-        const id = this.pickMini();
+        const id = this.shoving ? null : this.pickMini(); // waiting for a direction: this touch points, it does not pick up
         if (id && this.hooks.canMove(id)) {
           g.mini = id;
           this.controls.enabled = false;
@@ -1961,7 +2006,12 @@ export class Board {
       const m = this.minis.get(g.mini);
       const p = this.dragPos;
       this.dragPos = null;
-      if (m && g.moved && p) this.store.set(`m:${g.mini}`, { ...m.val, x: p[0], y: p[1], z: p[2] });
+      if (m && g.moved && p) {
+        // Set down over a drop, it falls.
+        const l = land(this.store, { ...m.val, x: p[0], y: p[1], z: p[2] });
+        this.store.set(`m:${g.mini}`, l.v);
+        if (l.fell) this.hooks.onFall(g.mini, l.fell);
+      }
       else if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
       this.select(g.mini);
       return;
@@ -1991,6 +2041,7 @@ export class Board {
     this.gesture = g; // so edit() knows whether to give haptic feedback
     switch (this.tool) {
       case 'move':
+        if (this.shoving) { this.pointShove(); break; }
         this.select(g.tapMini);
         break;
       case 'build': {
