@@ -1120,7 +1120,8 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await touch('touchStart', [[cx, cy - 80], [cx + 80, cy - 80]]);
   await touch('touchEnd', []);
   await settle();
-  assert(await p.evaluate(() => !window.__ct.board.dice.held && window.__ct.board.dice.playing.length === 0 && window.__ct.board.hand.length === 3), 'a second finger cancels the hold without throwing');
+  const let2 = await p.evaluate(() => { const { board } = window.__ct; return { held: !!board.dice.held, playing: board.dice.playing.length, hand: board.hand.length }; });
+  assert(!let2.held && let2.playing === 0 && let2.hand === 3, `a second finger cancels the hold without throwing ${JSON.stringify(let2)}`);
   // Hold with one finger (the sheet gets out of the way), flick, release.
   await touch('touchStart', [[cx - 40, cy - 60]]);
   await p.waitForFunction(() => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'));
