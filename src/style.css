@@ -79,6 +79,13 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 #modes button { display: flex; align-items: center; gap: 5px; min-height: var(--tap); padding: 0 12px 0 9px; font-size: 13.5px; font-weight: 600; background: none; opacity: .75; }
 #modes button svg { width: 18px; height: 18px; }
 #modes button.on { background: var(--acc); border-color: var(--acc); color: #201a05; opacity: 1; }
+/* Prep is a third mode; on a narrow bar it goes without its word. */
+#modes button span { display: none; }
+#modes [data-mode="prep"] { padding: 0 10px; }
+@media (min-width: 480px) {
+  #modes button span { display: inline; }
+  #modes [data-mode="prep"] { padding: 0 12px 0 9px; }
+}
 #menuBtn { padding: 0; display: grid; place-items: center; }
 #logToggle.unread::after { content: ''; position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: #e5484d; }
 
@@ -108,6 +115,10 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 .tile.on i { box-shadow: 0 0 0 2.5px var(--acc); }
 .tile.on i.flat { box-shadow: inset 0 -12px 0 rgba(0, 0, 0, .22), inset 0 0 0 6px #2b211b, 0 0 0 2.5px var(--acc); }
 .tile span { max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; opacity: .85; }
+/* A pinned piece wears a star; while pinning in the library every piece shows where its star goes. */
+.tile i { position: relative; }
+.tile.fav i::after, #lib.pinning .tile i::after { content: '★'; position: absolute; top: 2px; right: 4px; font-size: 14px; line-height: 1; color: var(--acc); text-shadow: 0 1px 2px #000; }
+#lib.pinning .tile:not(.fav) i::after { content: '☆'; color: #f3ebe0; opacity: .8; }
 
 /* The ring of actions around a selected piece. It is a point on the screen (see placeRing);
    its buttons hang off it, so the only table it hides is right beside the piece. */
@@ -157,8 +168,32 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
 #edits button.on { background: var(--acc); color: #201a05; }
 
 /* Sheets (dice & chat, boards, atmosphere): slide-over panels above the dock. */
-.sheet { position: absolute; z-index: 5; left: calc(8px + var(--sl)); right: calc(8px + var(--sr)); bottom: calc(74px + var(--sb)); max-height: min(60%, 440px); display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #2b211b; }
+/* A sheet sits on top of the dock, whatever the dock holds (`--dock`, its height, is kept by ui/sheets.ts),
+   and has three heights: half (as it opens: the table stays in view above it, with the rails on its right),
+   full (up to the top bar, for forms) and peek (its first row). `--room` is all the height there is. */
+.sheet { --room: calc(100% - 88px - var(--st) - var(--sb) - var(--dock, 64px)); position: absolute; z-index: 5; left: calc(8px + var(--sl)); right: calc(8px + var(--sr)); bottom: calc(14px + var(--sb) + var(--dock, 64px)); max-height: min(60%, 440px, var(--room) - 112px); display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #2b211b; }
 .sheet.closed { display: none; }
+.sheet[data-h="full"] { max-height: var(--room); }
+.sheet[data-h="peek"] { max-height: calc(var(--tap) + 18px); overflow: hidden; }
+.sheet[data-h="peek"]:not([data-page]) > :nth-child(n+2), .sheet[data-h="peek"] > .page > :nth-child(n+2) { display: none !important; }
+/* The grab handle: a button that steps the height (and can be dragged). */
+.sheet .grab { flex: none; width: var(--tap); padding: 0; flex-direction: column; gap: 3px; background: none; box-shadow: none; touch-action: none; }
+.grab i { width: 22px; height: 4px; border-radius: 2px; background: currentColor; opacity: .45; }
+#hud .grab svg { width: 16px; height: 16px; opacity: .7; }
+.sheet .grab.bar { width: 100%; margin: -6px 0; flex-direction: row; gap: 8px; }
+/* Drilling down happens inside the sheet: a page with Back takes the place of its content. */
+.sheet[data-page] > :not(.page), .sheet > .page:not(:last-child) { display: none !important; }
+.sheet > .page { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.page > .row { align-items: center; }
+.page > .row > b { font-size: 15px; }
+/* A sheet replaces what it would cover, it never stacks on it: the mini editor always, the
+   cutaway stepper once it is taller than a row, the rest of the right edge when it is full. */
+#hud[data-sheet] #minipanel, #hud[data-sheet="half"] #floors, #hud[data-sheet="full"] :is(#floors, #edits, #strips) { display: none; }
+/* The library: search on its first row (so that is its peek), and every piece of the category in a grid. */
+#lib { height: 100vh; }
+#lib > .row > button { flex: none; padding: 0; }
+#libGrid { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 8px 2px; grid-auto-rows: max-content; justify-items: center; align-content: start; }
+#libGrid h3 { grid-column: 1 / -1; justify-self: start; margin: 2px 2px 0; font-size: 12px; font-weight: 600; opacity: .65; }
 .sheet > .row { align-items: center; }
 #boardList { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; overscroll-behavior: contain; }
 #boardList .row input { flex: 1; }
@@ -190,6 +225,36 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
 #hand { font-size: 13px; opacity: .8; min-height: 18px; }
 #hand.full { color: var(--acc); opacity: 1; }
 
+/* ---- Prep: full-screen pages, one at a time (ui/prep.ts). While one is up nothing else of the HUD is. ---- */
+#hud.prepping > :not(#prepPages) { display: none !important; }
+#prepPages { position: absolute; inset: 0; z-index: 9; display: flex; flex-direction: column; overflow: hidden; background: #14100d; padding: var(--st) var(--sr) var(--sb) var(--sl); }
+#prepBar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px; background: linear-gradient(#32271f, var(--bg)); border-bottom: 1px solid #120d0a; }
+#prepPageBack { flex: none; padding: 0; display: grid; place-items: center; }
+#prepTitle { flex: 1; min-width: 0; margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; outline: none; }
+#prepBody { flex: 1; min-height: 0; overflow: hidden auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+#prepBody > * { flex: none; width: 100%; max-width: 640px; margin-inline: auto; }
+@keyframes prepIn { from { opacity: 0; transform: translateX(10px); } }
+#prepBody.in > * { animation: prepIn .16s ease-out; }
+@media (prefers-reduced-motion: reduce) { #prepBody.in > * { animation: none; } }
+.prepRow { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 10px 12px; border-radius: 14px; text-align: left; }
+.prepRow > i { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: rgba(255, 209, 102, .16); color: var(--acc); }
+.prepRow > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.prepRow small { font-size: 12.5px; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#hud .prepRow > svg { opacity: .5; }
+/* A gallery of large cards (the themes). */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.card { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-height: 138px; padding: 14px; border-radius: 16px; text-align: left; background: linear-gradient(165deg, var(--sky, #4a3a2e), #2b211b 80%); }
+.card big { font-size: 40px; line-height: 1.15; }
+.card b { font-size: 17px; }
+.card small { font-size: 12.5px; opacity: .8; }
+.card.on { background: linear-gradient(165deg, var(--sky, #4a3a2e), #2b211b 80%); box-shadow: 0 0 0 2px var(--acc); }
+.sky-day { --sky: #3f7391; }
+.sky-dusk { --sky: #96523a; }
+.sky-night { --sky: #2f3168; }
+.soon { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 12px; text-align: center; }
+.soon p { margin: 0; max-width: 34em; }
+#hud .soon > svg { width: 44px; height: 44px; opacity: .5; }
+
 #toast { position: absolute; left: 50%; top: 20%; transform: translateX(-50%); width: max-content; max-width: 90%; pointer-events: none !important; text-align: center; font-size: 20px; font-weight: 700; text-shadow: 0 2px 12px #000; opacity: 0; transition: opacity .4s; }
 #toast.show { opacity: 1; transition: none; }
 #toast big { display: block; font-size: 80px; line-height: 1; color: var(--acc); animation: pop .45s cubic-bezier(.2, 1.8, .4, 1); }
@@ -214,7 +279,15 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
   #minipanel { flex: 0 1 340px; margin-left: auto; }
   #floors { top: calc(78px + var(--st)); flex-direction: row; right: auto; left: calc(8px + var(--sl)); }
   #strips { left: calc(170px + var(--sl)); }
-  .sheet { left: auto; width: min(340px, 50%); top: calc(66px + var(--st)); bottom: calc(70px + var(--sb)); max-height: none; overflow-y: auto; }
+  .sheet { left: auto; width: min(340px, 50%); top: calc(72px + var(--st)); bottom: calc(70px + var(--sb)); max-height: none; overflow-y: auto; }
+  /* Docked to the side, a sheet is as tall at half as at full; at peek it is its row, down by the dock. */
+  .sheet[data-h="full"] { max-height: none; }
+  .sheet[data-h="peek"] { top: auto; }
+  #lib { height: auto; }
+  /* Beside the table it covers nothing on the left, and the turn order makes room for it. */
+  #hud[data-sheet] #floors, #hud[data-sheet="full"] #strips { display: flex; }
+  #hud[data-sheet="half"] #edits { display: none; }
+  #hud[data-sheet="half"] #strips, #hud[data-sheet="full"] #strips { right: calc(min(340px, 50%) + 16px + var(--sr)); }
   #toast { top: 16%; }
   #toast big { font-size: 60px; }
 }
@@ -232,6 +305,10 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
   #minipanel { position: absolute; left: 72px; top: 50%; transform: translateY(-50%); width: 320px; }
   #strips { left: 50%; right: auto; transform: translateX(-50%); width: max-content; max-width: 60%; top: 78px; }
   .sheet { left: auto; right: 10px; top: 64px; bottom: auto; width: 320px; max-height: 50%; }
+  .sheet[data-h="full"] { max-height: calc(100% - 74px); }
+  #lib { height: auto; }
+  #log > .grab { display: none; }
+  #hud[data-sheet] :is(#minipanel, #floors, #edits, #strips) { display: flex; }
   #floors { top: 78px; }
   #edits { top: 204px; right: 10px; }
   body.building:not(.player) #strips { right: auto; }

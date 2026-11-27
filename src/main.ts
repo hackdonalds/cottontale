@@ -11,6 +11,10 @@ import { SOUNDSCAPES, Sound } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
 import { activeTheme, loadThemes, moodEdits, type GameTheme, type Known } from './theme';
+import { FAVS, Hotbar, RECENT, type Shelf } from './ui/hotbar';
+import { initPrep } from './ui/prep';
+import { registerBuiltinPrepPages } from './ui/prepPages';
+import { initSheets, popSheetPage, pushSheetPage, setSheetHeight, sheetHeight } from './ui/sheets';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -157,6 +161,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     board.apply(k, v, prev);
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
     if (k === 'set:theme') renderPalette(); // its pieces come to the front of the library
+    if (ui.ready && v && /^[bwm]:/.test(k)) placed(k, v, prev);
     later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
   };
@@ -391,6 +396,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let cat: Cat = 'land';
   /** On small screens: is the shelf of pieces showing, or folded down to the piece in hand? */
   let trayOpen = true;
+  // Recents, favourites and the library sheet (search and a grid): see ui/hotbar.ts.
+  const hot = new Hotbar({ load: ls.get, save: ls.set, open: (on) => openSheet(on ? 'lib' : null), redraw: renderPalette });
   const building = () => board.tool === 'build' || board.tool === 'mini';
   function setTool(t: Tool): void {
     // Arriving by keyboard shortcut: the tray shows what the tool is for.
@@ -403,10 +410,10 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       if (b.dataset.tool) b.classList.toggle('on', b.dataset.tool === t);
       if (b.dataset.cat) b.classList.toggle('on', b.dataset.cat === cat);
     }
-    for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', (b.dataset.mode === 'build') === build);
+    for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', b.dataset.mode === (build ? 'build' : 'play'));
     $('edits').hidden = !build;
     document.body.classList.toggle('building', build);
-    if (build) openSheet(null);
+    if (build ? !hot.isOpen || cat === 'scenes' : hot.isOpen) openSheet(null); // the library stays up while its categories change
     renderPalette();
     renderRing();
   }
@@ -426,7 +433,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.onclick = () => setTool(b.dataset.tool as Tool);
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-cat]')) b.onclick = () => setCat(b.dataset.cat as Cat);
-  for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => (b.dataset.mode === 'build' ? setCat(cat) : setTool('move'));
+  for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => (b.dataset.mode === 'prep' ? prep.open() : b.dataset.mode === 'build' ? setCat(cat) : setTool('move'));
 
   let thingShelf = 'Nature', miniShelf = 'Heroes';
   // The table's theme (see theme.ts) puts a shelf of its own in front of the others and its
@@ -436,13 +443,41 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const gameTheme = (): GameTheme | null => activeTheme(store.get('set:theme'), known);
   /** The themes on offer (public/themes): data that arrives after the table is up, never part of the app. */
   let gameThemes: GameTheme[] = [];
-  void loadThemes('./themes', known).then((list) => { gameThemes = list; renderThemes(); });
-  const thingIds = (): string[] => (thingShelf === MINE ? gameTheme()?.pieces.props : PROP_SHELVES[thingShelf]) ?? [];
-  const miniIds = (): string[] => (miniShelf === MINE ? gameTheme()?.pieces.minis : MINI_SHELVES[miniShelf]) ?? [];
+  void loadThemes('./themes', known).then((list) => { gameThemes = list; renderThemes(); prep.refresh(); });
+  /** A piece by its key (`b_grass`, `p_barrel`, `m_knight`, as its picture is named): its name, or null if this table does not have it. */
+  const nameOf = (key: string): string | null => ({ b: BLOCKS, p: PROPS, m: MINIS } as Record<string, Record<string, { name: string }>>)[key[0]]?.[key.slice(2)]?.name ?? null;
+  /** The pieces on one of this device's own shelves (recents, favourites) that this table still has; null for any other shelf. */
+  const own = (c: Cat, shelf: string, kind: string): string[] | null => (shelf !== RECENT && shelf !== FAVS ? null
+    : (shelf === RECENT ? hot.recent(c) : hot.pinned(c)).filter((k) => k[0] === kind && nameOf(k) !== null).map((k) => k.slice(2)));
+  const thingIds = (): string[] => own('things', thingShelf, 'p') ?? (thingShelf === MINE ? gameTheme()?.pieces.props : PROP_SHELVES[thingShelf]) ?? [];
+  const miniIds = (): string[] => own('figures', miniShelf, 'm') ?? (miniShelf === MINE ? gameTheme()?.pieces.minis : MINI_SHELVES[miniShelf]) ?? [];
   const themed = (shelf: string[]): string[] => {
     const first = (gameTheme()?.pieces.blocks ?? []).filter((id) => shelf.includes(id));
     return [...first, ...shelf.filter((id) => !first.includes(id))];
   };
+  /** Every shelf of a category: what the library sheet shows, and what its search looks through. */
+  const shelvesOf = (c: Cat): Shelf[] => {
+    const keys = (kind: string, ids: string[] = []) => ids.map((id) => `${kind}_${id}`), mine = gameTheme();
+    const theme = (kind: string, ids: string[] = []): Shelf[] => (mine && ids.length ? [[MINE, `${mine.icon} ${mine.name}`, keys(kind, ids)]] : []);
+    if (c === 'land') return [['Terrain', 'Ground', keys('b', themed(BLOCK_SHELVES.Terrain ?? []))]];
+    if (c === 'walls') return [['Structures', 'Structures', keys('p', PROP_SHELVES.Structures)], ['Building', 'Building blocks', keys('b', themed(BLOCK_SHELVES.Building ?? []))]];
+    if (c === 'things') return [...theme('p', mine?.pieces.props), ...Object.keys(PROP_SHELVES).filter((n) => n !== 'Structures').map((n): Shelf => [n, n, keys('p', PROP_SHELVES[n])])];
+    if (c === 'figures') return [...theme('m', mine?.pieces.minis), ...Object.keys(MINI_SHELVES).map((n): Shelf => [n, n, keys('m', MINI_SHELVES[n])])];
+    return [];
+  };
+  /** Picked in the library, perhaps by searching: the tray turns to a shelf the piece is on. */
+  const showShelfOf = (key: string) => {
+    const id = key.slice(2), home = shelvesOf(cat).find(([, , keys]) => keys.includes(key))?.[0];
+    if (cat === 'things' && home && !thingIds().includes(id)) thingShelf = home;
+    if (cat === 'figures' && home && !miniIds().includes(id)) miniShelf = home;
+  };
+  /** A piece in hand went onto the table: it leads the recents of its category. */
+  function placed(k: string, v: unknown, prev: unknown): void {
+    if (!building() || (k[0] === 'm') !== (cat === 'figures')) return;
+    const p = v as { i?: string; k?: string };
+    const key = k[0] === 'm' ? (prev === null && p.k === miniKind ? `m_${p.k}` : '') : p.i === board.brush ? `${BLOCKS[p.i] ? 'b' : 'p'}_${p.i}` : '';
+    if (key && nameOf(key) !== null && hot.used(cat, key)) setTimeout(renderPalette);
+  }
   /** Where a piece's picture is on the sheet of thumbnails (see assets/blender/thumbs.py). */
   const thumb = (family: string): string | null => {
     const i = (THUMBS.at as Record<string, number>)[family];
@@ -496,8 +531,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         b.title = name;
         b.innerHTML = `${face(family, flat, emoji)}<span>${esc(name)}</span>`;
         b.classList.toggle('on', on);
+        hot.mark(b, cat, family);
         tiles.append(b);
-        if (on && small) {
+        if (on && small && !chips.querySelector('.cur')) {
           const cur = document.createElement('button');
           cur.className = 'cur';
           cur.title = trayOpen ? 'Fold the shelf away' : 'Choose another piece';
@@ -513,6 +549,16 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const turn = () => chip('Turn', false, () => { board.rot = (board.rot + 1) % 4; }, svg('turn'), 'Turn the next piece (R)');
       const blocks = (ids: string[]) => { for (const id of ids) tile(BLOCKS[id].name, board.brush === id, brush(id), `b_${id}`, BLOCKS[id].color); };
       const props = (ids: string[]) => { for (const id of ids) tile(PROPS[id].name, board.brush === id, brush(id), `p_${id}`, undefined, PROPS[id].icon); };
+      const minis = (ids: string[]) => { for (const id of ids) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon); };
+      // The library: search, and a grid of everything in this category, for when one row is not enough.
+      if (cat !== 'scenes') chip('', hot.isOpen, () => { trayOpen = false; hot.show(!hot.isOpen); }, svg('search'), 'Search the library');
+      /** This device's own shelves lead the others: what it used last, and what it pinned. */
+      const ownShelves = (now: string, kind: string, pick: (shelf: string, id: string) => void) => {
+        for (const [shelf, icon, title] of [[RECENT, 'clock', 'Recent pieces'], [FAVS, 'star', 'Favourites']]) {
+          const ids = own(cat, shelf, kind) ?? [];
+          if (ids.length) chip('', now === shelf, () => { pick(shelf, ids[0]); trayOpen = true; }, svg(icon), title);
+        }
+      };
       if (cat === 'land') {
         // Shaping the land: each is a brush you tap or drag over the ground.
         for (const [id, label, title] of [['raise', 'Raise', 'Raise the ground'], ['lower', 'Lower', 'Lower the ground'], ['level', 'Level', 'Level to where you start'], ['grow', 'Grow', 'Grow what suits the ground']]) {
@@ -530,6 +576,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         props(PROP_SHELVES.Structures);
         blocks(themed(BLOCK_SHELVES.Building));
       } else if (cat === 'things') {
+        ownShelves(thingShelf, 'p', (shelf, id) => { thingShelf = shelf; board.brush = id; });
+        if ((thingShelf === RECENT || thingShelf === FAVS) && !thingIds().length) thingShelf = 'Nature';
         const mine = gameTheme();
         if (mine?.pieces.props.length) chip(`${mine.icon} ${mine.name}`, thingShelf === MINE, () => { thingShelf = MINE; board.brush = mine.pieces.props[0]; });
         else if (thingShelf === MINE) thingShelf = 'Nature';
@@ -540,12 +588,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         chip('Light', board.brush === 'light', brush('light'), svg('sun'), 'Tap a torch, fire or crystal to step its light: normal, bright, dim, out');
         props(thingIds());
       } else if (cat === 'figures') {
+        ownShelves(miniShelf, 'm', (shelf, id) => { miniShelf = shelf; miniKind = id; });
+        if ((miniShelf === RECENT || miniShelf === FAVS) && !miniIds().length) miniShelf = 'Heroes';
         const mine = gameTheme();
         if (mine?.pieces.minis.length) chip(`${mine.icon} ${mine.name}`, miniShelf === MINE, () => { miniShelf = MINE; miniKind = mine.pieces.minis[0]; });
         else if (miniShelf === MINE) miniShelf = 'Heroes';
         for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
-        for (const id of miniIds()) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon);
+        minis(miniIds());
       } else {
         chip('Generate…', false, () => { renderGen(); openSheet('gen'); }, svg('spark'), 'Generate a scene');
         chip('Starter scene', false, meadow);
@@ -555,6 +605,17 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         chip('Share', false, () => void shareSlab(), '', 'Share what you copied').disabled = !board.slab;
         chip('Import', false, () => void importSlab(), '', 'Paste a shared code');
         tiles.remove();
+      }
+      if (cat !== 'scenes') {
+        // The library sheet, when it is open: the same tiles, wrapped into rows.
+        const one = (key: string): Element | null => {
+          const n = tiles.childElementCount;
+          if (nameOf(key) !== null) ({ b: blocks, p: props, m: minis } as Record<string, (ids: string[]) => void>)[key[0]]([key.slice(2)]);
+          const t = n < tiles.childElementCount ? tiles.lastElementChild as HTMLButtonElement : null;
+          if (t) { const click = t.onclick!; t.onclick = (e) => { showShelfOf(key); click.call(t, e); }; }
+          return t;
+        };
+        hot.draw(cat, { land: 'Ground', walls: 'Walls', things: 'Things', figures: 'Figures' }[cat], shelvesOf(cat), nameOf, one);
       }
       if (small && tiles.isConnected) {
         // With a brush in hand that is not one of the pictures, the row still needs a way back to the shelf.
@@ -717,12 +778,30 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       el.append(b);
     }
   }
+  /** The themes to choose from. Shared by the Atmosphere sheet and the Prep page (ui/prepPages.ts). */
+  const themesOffered = (): GameTheme[] => {
+    const offered = [...gameThemes], mine = gameTheme();
+    if (mine && !offered.some((t) => t.id === mine.id)) offered.push(mine); // a theme the table brought with it
+    return offered;
+  };
+  /** Tapping a theme, wherever it is shown: take it up, or let go of the one the table has. */
+  function pickTheme(t: GameTheme): void {
+    if (!full()) return;
+    if (t.id === gameTheme()?.id) { store.set('set:theme', null); return; }
+    store.set('set:theme', t); // the whole theme, so the table carries it
+    for (const [k, v] of moodEdits(t)) store.set(k, v);
+    if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
+    if (t.pieces.props.length) thingShelf = MINE;
+    if (t.pieces.minis.length) miniShelf = MINE;
+  }
+  // Prep: the full-screen pages for getting a table ready (see ui/prep.ts).
+  registerBuiltinPrepPages();
+  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme });
   /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
     el.innerHTML = '';
-    const offered = [...gameThemes], mine = gameTheme();
-    if (mine && !offered.some((t) => t.id === mine.id)) offered.push(mine); // a theme the table brought with it
+    const offered = themesOffered();
     $('themeHint').hidden = el.hidden = !offered.length;
     for (const t of offered) {
       const b = document.createElement('button');
@@ -730,14 +809,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       b.classList.toggle('on', t.id === cur);
       b.setAttribute('aria-pressed', String(t.id === cur));
       b.disabled = !f;
-      b.onclick = () => {
-        if (t.id === cur) { store.set('set:theme', null); return; }
-        store.set('set:theme', t); // the whole theme, so the table carries it
-        for (const [k, v] of moodEdits(t)) store.set(k, v);
-        if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
-        if (t.pieces.props.length) thingShelf = MINE;
-        if (t.pieces.minis.length) miniShelf = MINE;
-      };
+      b.onclick = () => pickTheme(t);
       el.append(b);
     }
   }
@@ -793,6 +865,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     act('los').innerHTML = `${ico(l ? 'eye' : 'eyeoff')}Line of sight: ${l ? 'on' : 'off'}`;
     sound.scape(setting(store, 'amb', 'off'));
     renderAtmo();
+    prep.refresh();
     renderPlayers();
     renderInit();
     if (board.selected) showMiniPanel(board.selected);
@@ -1200,6 +1273,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   addEventListener('keydown', (e) => {
     if ((e.target as HTMLElement).matches('input, textarea')) return;
+    if (prep.isOpen) return; // the table is behind a page: its shortcuts are not for now
     const tools: Tool[] = ['move', 'build', 'mini', 'ruler', 'fog'];
     const allowed = (t: Tool) => t === 'move' || t === 'ruler' || (full() && (t !== 'fog' || gms(store).includes(meId)));
     if (e.key >= '1' && e.key <= '5') { if (allowed(tools[+e.key - 1])) setTool(tools[+e.key - 1]); }
@@ -1234,6 +1308,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     void net.pause();
   });
 
+  initSheets();
+  Object.assign((window as unknown as { __ct: object }).__ct, { ui: { prep, pushSheetPage, popSheetPage, setSheetHeight, sheetHeight } });
   setTool('move');
   renderHand();
   ui.ready = true;
