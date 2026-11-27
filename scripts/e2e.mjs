@@ -44,6 +44,20 @@ async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { wi
 }
 const count = (page, prefix) => page.evaluate((p) => [...window.__ct.store.keys(p)].length, prefix);
 
+/** A short WAV file (16-bit mono), made here: a tone that fades out. */
+function wavFile(seconds, rate = 8000, hz = 330) {
+  const n = Math.round(seconds * rate), b = Buffer.alloc(44 + n * 2);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + n * 2, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 9000 * (1 - i / n)), 44 + i * 2);
+  return b;
+}
+/** Choose a file as a finger would: tap the button, and answer the phone's file picker. */
+async function chooseFile(page, button, file, tap = false) {
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap ? page.tap(button) : page.click(button)]);
+  await chooser.setFiles(file);
+}
+
 const a = await join('Ada');
 const b = await join('Bo');
 await a.waitForFunction(() => window.__ct.net.peers.size === 1);
@@ -732,6 +746,66 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   bad.push(...await layout());
   assert(await p.evaluate(() => !window.__ct.ui.prep.isOpen && document.querySelector('#tools').offsetParent !== null && location.hash.includes('room=')) && !bad.length, `Back walks out of Prep a page at a time, by the button and by the phone's own, and the table is as it was ${bad.join('; ')}`);
 
+  // ---- Prep → Sound: the table's own sounds, made and played by touch (src/sounds.ts, ui/soundPage.ts) ----
+  await p.evaluate(() => window.__ct.store.set('set:blossom', [])); // no file servers here: files stay on the device
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="sound"]');
+  await p.waitForSelector('[data-mix="rain"]');
+  bad = await layout();
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound-empty.png` });
+  // The mixer: two layers, heard on this device, named and saved.
+  await p.tap('[data-mix="rain"]');
+  await p.tap('[data-mix="heart"]');
+  await p.fill('[data-layer="heart"] input[aria-label$="volume"]', '0.8');
+  await p.tap('[data-listen]');
+  await p.waitForFunction(() => window.__ct.sound.playing === 'trial');
+  await p.fill('#sndMixName', 'Storm');
+  bad.push(...await layout());
+  await p.evaluate(() => document.querySelector('[data-save]').scrollIntoView({ block: 'end' }));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound-mixer.png` });
+  await p.tap('[data-save]');
+  await p.waitForFunction(() => window.__ct.sounds.list().length === 1 && document.querySelector('.sndRow b')?.textContent === 'Storm' && window.__ct.sound.playing !== 'trial');
+  const storm = await p.evaluate(() => { const [id, s] = window.__ct.sounds.list()[0]; return { id, mix: s.mix.map((m) => m.id).join(), layers: s.scape.layers.length, patterns: s.scape.patterns.length }; });
+  assert(storm.mix === 'rain,heart' && storm.layers === 2 && storm.patterns === 1 && !bad.length, `a soundscape mixed on the phone is saved to the table as a recipe ${JSON.stringify(storm)} ${bad.join('; ')}`);
+  // An effect from a file: named, tried and added, with the file kept on this device (no server here).
+  await chooseFile(p, '[data-add="effect"]', { name: 'door_slam.wav', mimeType: 'audio/wav', buffer: wavFile(0.4) }, true);
+  await p.waitForSelector('[data-draft="effect"]');
+  bad = await layout();
+  const draft = await p.evaluate(() => ({ name: document.querySelector('#sndDraftName').value, meta: document.querySelector('[data-draft] small').textContent }));
+  await p.evaluate(() => document.querySelector('[data-done]').scrollIntoView({ block: 'end' }));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound-draft.png` });
+  await p.tap('[data-try]');
+  await p.tap('[data-done]');
+  await p.waitForFunction(() => window.__ct.sounds.board().length === 1 && !document.querySelector('[data-draft]'));
+  assert(draft.name === 'door slam' && /WAV · 0\.4 s · 6 KB/.test(draft.meta) && !bad.length && await p.evaluate(() => /no file servers/.test(document.querySelector('.sndPart .sndMsg')?.textContent ?? '')),
+    `an effect is added from a file by touch, and the page says where the file is ${JSON.stringify(draft)} ${bad.join('; ')}`);
+  // The list: a row opens to its options; "use here" plays it on this board; Back ends whatever was being tried.
+  await p.tap(`.sndRow[data-snd="${storm.id}"] .sndName`);
+  await p.waitForSelector('.sndRow.open [data-remove]');
+  bad = await layout();
+  await p.evaluate(() => document.querySelector('#prepBody').scrollTo(0, 0));
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-sound.png` });
+  await p.tap(`.sndRow[data-snd="${storm.id}"] .sndPlay`);
+  await p.waitForFunction(() => window.__ct.sound.playing === 'trial');
+  await p.tap(`[data-use="${storm.id}"]`);
+  await p.waitForFunction((id) => window.__ct.store.get('at:amb') === `t:${id}` && document.querySelector(`[data-use="${id}"]`).classList.contains('on'), storm.id);
+  await p.goBack();
+  await p.goBack();
+  await p.waitForFunction(() => document.querySelector('#prepPages').hidden);
+  assert(await ok(p, (id) => window.__ct.sound.playing === `t:${id}`, storm.id) && !bad.length, `the Sound page lists the table's sounds; one is put on this board, and leaving the page ends the trial ${bad.join('; ')}`);
+  // The soundboard: a row of full-size buttons in the Atmosphere sheet, next to the table's soundscape among the choices.
+  await p.tap('#menuBtn');
+  await p.tap('[data-act="atmo"]');
+  await p.evaluate(() => document.querySelector('#sfx').scrollIntoView({ block: 'end' }));
+  bad = await layout();
+  const sheetSounds = await p.evaluate(() => ({ scape: [...document.querySelectorAll('#scapes button')].some((b) => b.textContent === 'Storm' && b.classList.contains('on')), board: [...document.querySelectorAll('#sfx [data-sfx]')].map((b) => b.textContent), heard: window.__ct.sound.effects }));
+  await p.tap('#sfx [data-sfx]');
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-soundboard.png` });
+  assert(sheetSounds.scape && sheetSounds.board.join() === 'door slam' && await ok(p, (n) => window.__ct.sound.effects > n, sheetSounds.heard) && !bad.length,
+    `the soundboard is a row of buttons in the Atmosphere sheet, and a tap plays the effect ${JSON.stringify(sheetSounds)} ${bad.join('; ')}`);
+  await p.tap('#scapes button:has-text("Silence")');
+  await p.tap('#atmo [data-close]');
+
   await p.tap('#logToggle');
   bad = await layout();
   const sheet = await p.evaluate(() => { const r = document.querySelector('#log').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; });
@@ -843,6 +917,133 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return { n, revoked: await fetch(u).then(() => false, () => true) };
   }, one.ref);
   assert(url.n === 50_000 && url.revoked, 'objectUrl hands out the decrypted file and revokes it on release');
+  await a.context().close();
+  await b.context().close();
+}
+
+// ---- the table's own sounds (src/sounds.ts): a recording the GM adds plays on every device; the soundboard; the mixer ----
+{
+  const a = await join('Ivy', 'sounds-1234'), b = await join('Jo', 'sounds-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  const far = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 20000 * SLOW }).then(() => true, () => false);
+  await a.evaluate((s) => window.__ct.store.set('set:blossom', [s]), `http://localhost:${BLOSSOM}`);
+  await b.waitForFunction(() => window.__ct.blobs.servers().length === 1 && /localhost/.test(window.__ct.blobs.servers()[0]));
+  // Browsers only make sound after a tap: one on each table.
+  await a.mouse.click(640, 300);
+  await b.mouse.click(640, 300);
+  await a.click('#menuBtn');
+  await a.click('[data-act="gm"]');
+  await b.waitForFunction(() => document.body.classList.contains('player'));
+  const audio = await b.evaluate(() => window.__ct.sound.ctx?.state);
+  assert(audio === 'running', `this browser makes sound (the player's audio is ${audio})`);
+  // The player has sound switched off for now: nothing of the GM's may be fetched until it is on again.
+  await b.click('#menuBtn');
+  await b.click('[data-act="atmo"]');
+  await b.click('#soundOn');
+  assert(await b.evaluate(() => window.__ct.sound.enabled === false), 'the player switches sound off on their device');
+
+  await a.click('[data-mode="prep"]');
+  await a.click('.prepRow[data-page="sound"]');
+  await a.waitForSelector('[data-add="track"]');
+  // Over budget: an effect of eleven seconds is refused in words, on the page, before anything is uploaded.
+  await chooseFile(a, '[data-add="effect"]', { name: 'long.wav', mimeType: 'audio/wav', buffer: wavFile(11) });
+  await a.waitForSelector('.sndMsg.bad');
+  const refused = await a.evaluate(() => ({ msg: document.querySelector('.sndMsg.bad').textContent, draft: !!document.querySelector('[data-draft]'), n: window.__ct.sounds.list().length }));
+  assert(/11 s long.*up to 10 s/.test(refused.msg) && !refused.draft && refused.n === 0, `a file over its budget is refused with a plain message (${refused.msg})`);
+  await chooseFile(a, '[data-add="track"]', { name: 'notes.txt', mimeType: 'audio/mpeg', buffer: Buffer.from('this is not a sound at all, whatever it says') });
+  assert(await ok(a, () => /not a sound file/.test(document.querySelector('.sndMsg.bad')?.textContent ?? '')), 'and so is a file that is not a sound, whatever its name says');
+  // A WAV effect that is too heavy but short is made smaller on the device (one channel, a lower sample rate).
+  await chooseFile(a, '[data-add="effect"]', { name: 'thunder.wav', mimeType: 'audio/wav', buffer: wavFile(3, 44100, 90) });
+  await a.waitForSelector('[data-draft="effect"]');
+  const shrunk = await a.evaluate(() => ({ note: document.querySelector('[data-draft] .sndMsg')?.textContent ?? '', meta: document.querySelector('[data-draft] small').textContent }));
+  assert(/made smaller: one channel at 22 kHz, 129 KB/.test(shrunk.note) && /WAV · 3\.0 s · 129 KB/.test(shrunk.meta), `a short WAV effect over 150 KB is re-encoded to fit (${shrunk.meta})`);
+  await a.click('[data-draft] button:has-text("Cancel")');
+
+  // Ambience from a file: named, tried on this device only, then Done uploads it and says how the server answered.
+  await chooseFile(a, '[data-add="track"]', { name: 'harbour-night.wav', mimeType: 'audio/wav', buffer: wavFile(2) });
+  await a.waitForSelector('[data-draft="ambience"]');
+  await a.fill('#sndDraftName', 'Harbour');
+  await a.click('[data-try]');
+  assert(await far(a, () => window.__ct.sound.playing === 'trial' && window.__ct.sound.recording === 'playing') && await b.evaluate(() => window.__ct.sounds.list().length === 0),
+    'trying a recording plays it on this device only, before it is uploaded');
+  await a.click('[data-done]');
+  await a.waitForFunction(() => window.__ct.sounds.list().length === 1 && !document.querySelector('[data-draft]'));
+  const added = await a.evaluate(() => { const [id, s] = window.__ct.sounds.list()[0]; return { id, s, ref: JSON.parse(s.scape.file), msg: document.querySelector('.sndPart .sndMsg').textContent, row: document.querySelector('.sndRow small').textContent, trial: window.__ct.sound.playing }; });
+  assert(added.s.name === 'Harbour' && added.s.kind === 'ambience' && added.ref.m === 'audio/wav' && added.ref.n === 32072 && added.ref.s?.length === 1 && /localhost:\d+: took it/.test(added.msg) && /Ambience · 31 KB · WAV/.test(added.row) && added.trial !== 'trial',
+    `Done uploads the recording and says how each server answered (${added.msg})`);
+  const tid = `t:${added.id}`;
+  await a.click(`[data-use="${added.id}"]`);
+  // Everyone gets the choice at once; a device with sound off fetches nothing.
+  assert(await ok(b, (tid) => window.__ct.store.get('at:amb') === tid && [...document.querySelectorAll('#scapes button')].some((x) => x.textContent === 'Harbour' && x.classList.contains('on')), tid),
+    'the GM picks it for the board, and it is among the soundscapes by name for everyone');
+  assert(await far(a, (tid) => window.__ct.sound.playing === tid && window.__ct.sound.recording === 'playing', tid), 'it plays on the GM\'s device');
+  await b.waitForTimeout(400);
+  const quiet = await b.evaluate(async (h) => ({ playing: window.__ct.sound.playing, resolved: window.__ct.sounds.resolved, has: await window.__ct.blobs.has(h) }), added.ref.h);
+  assert(quiet.playing === 'off' && quiet.resolved === 0 && !quiet.has, `a device with sound off does not fetch the recording ${JSON.stringify(quiet)}`);
+  await b.click('#soundOn');
+  assert(await far(b, (tid) => window.__ct.sound.playing === tid && window.__ct.sound.recording === 'playing' && window.__ct.sounds.resolved === 1, tid)
+    && await b.evaluate((h) => window.__ct.blobs.source(h), added.ref.h) === 'server', 'switched on, the player\'s device fetches the GM\'s recording from the server and plays it');
+  // A recording that plays once is streamed, not decoded; switching to it fades over, and the first one's URL is given back.
+  await a.click(`.sndRow[data-snd="${added.id}"] .sndName`);
+  await a.click('.sndRow.open button:has-text("Loops: on")');
+  assert(await far(b, (id) => window.__ct.sounds.get(id)?.scape.loop === false && window.__ct.sound.recording === 'playing' && window.__ct.sound.els.some((e) => e.wanted && e.el.src.startsWith('blob:')), added.id)
+    && await b.evaluate(() => window.__ct.sounds.resolved === 2), 'set to play once, it is streamed through an audio element on the player\'s device');
+  // Nothing plays in a hidden tab.
+  await b.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+  assert(await ok(b, () => window.__ct.sound.ctx.state === 'suspended' && window.__ct.sound.els.every((e) => e.el.paused) && window.__ct.sound.playing === 'off'), 'a hidden tab falls silent');
+  await b.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+  assert(await far(b, (tid) => window.__ct.sound.playing === tid && window.__ct.sound.recording === 'playing', tid), 'and picks the soundscape up again when it is back');
+
+  // An effect for the soundboard: the GM taps it during play, and the player hears it (a live message, not a store write).
+  await chooseFile(a, '[data-add="effect"]', { name: 'gong.wav', mimeType: 'audio/wav', buffer: wavFile(0.3, 8000, 220) });
+  await a.waitForSelector('[data-draft="effect"]');
+  await a.click('[data-done]');
+  await a.waitForFunction(() => window.__ct.sounds.board().length === 1);
+  const gong = await a.evaluate(() => { const [id, s] = window.__ct.sounds.board()[0]; return { id, h: JSON.parse(s.fx.file).h }; });
+  assert(await far(b, (h) => window.__ct.blobs.has(h), gong.h), 'the player\'s device fetches the table\'s effects ahead of time (sound is on)');
+  await a.goBack();
+  await a.goBack();
+  await a.waitForFunction(() => document.querySelector('#prepPages').hidden);
+  await a.click('#menuBtn');
+  await a.click('[data-act="atmo"]');
+  await b.waitForTimeout(300 * SLOW);
+  const before = await b.evaluate(() => ({ heard: window.__ct.sound.effects, rows: window.__ct.store.entries.size, board: document.querySelector('#sfx').hidden }));
+  await a.click(`#sfx [data-sfx="${gong.id}"]`);
+  assert(before.board && await ok(b, (n) => window.__ct.sound.effects === n + 1, before.heard) && await b.evaluate((n) => window.__ct.store.entries.size === n, before.rows) && await a.evaluate(() => window.__ct.sound.effects >= 1),
+    'a soundboard effect tapped by the GM is heard by the player; players have no soundboard of their own');
+  // Re-voiced: the same effect now stands in for the ping, on every device, and leaves the soundboard.
+  await a.evaluate((id) => { const { sounds } = window.__ct; sounds.save(id, { ...sounds.get(id), as: 'ping' }); }, gong.id);
+  assert(await ok(b, (id) => window.__ct.sounds.bank().effects.ping?.file === window.__ct.sounds.get(id).fx.file && window.__ct.sounds.board().length === 0, gong.id)
+    && await ok(a, () => document.querySelector('#sfx').hidden), 'an effect can stand in for a built-in one (the ping) instead');
+  await a.click('#atmo [data-close]');
+
+  // The mixer: a soundscape built from presets, saved by the GM, listed and played for the player.
+  await a.click('[data-mode="prep"]');
+  await a.click('.prepRow[data-page="sound"]');
+  await a.click('[data-mix="wind"]');
+  await a.click('[data-mix="chimes"]');
+  await a.fill('[data-layer="wind"] input[aria-label$="low to high"]', '0.2');
+  await a.click('[data-listen]');
+  assert(await ok(a, () => window.__ct.sound.playing === 'trial' && window.__ct.sound.recording === 'none'), 'the mix is heard live on the GM\'s device');
+  await a.fill('#sndMixName', 'Moor');
+  await a.click('[data-save]');
+  await a.waitForFunction(() => window.__ct.sounds.list().some(([, s]) => s.name === 'Moor'));
+  const moor = await a.evaluate(() => window.__ct.sounds.list().find(([, s]) => s.name === 'Moor')[0]);
+  await a.click(`[data-use="${moor}"]`);
+  assert(await far(b, (id) => window.__ct.sound.playing === `t:${id}` && window.__ct.sound.recording === 'none' && window.__ct.sound.knows(`t:${id}`)
+    && [...document.querySelectorAll('#scapes button')].some((x) => x.textContent === 'Moor' && x.classList.contains('on')) && window.__ct.sound.els.every((e) => !e.wanted), moor),
+    'a mixer soundscape saved by the GM is listed and plays for the player, and the recording before it is let go');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/sound-desktop.png` });
+  // Rename and remove, in the page: no dialogs.
+  await a.click(`.sndRow[data-snd="${moor}"] .sndName`);
+  await a.fill('.sndRow.open input[aria-label="Name"]', 'High moor');
+  await a.press('.sndRow.open input[aria-label="Name"]', 'Enter');
+  assert(await ok(b, () => [...document.querySelectorAll('#scapes button')].some((x) => x.textContent === 'High moor')), 'renaming a sound reaches everyone');
+  await a.click(`[data-remove="${moor}"]`);
+  await a.click(`[data-yes="${moor}"]`);
+  assert(await ok(b, (id) => !window.__ct.sounds.get(id) && window.__ct.store.get('at:amb') === 'off' && window.__ct.sound.playing === 'off' && window.__ct.sounds.list().length === 2, moor),
+    'removing a sound (confirmed in the page) takes it from the table, and the board falls silent by choice');
   await a.context().close();
   await b.context().close();
 }

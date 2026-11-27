@@ -10,6 +10,8 @@ import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Star
 import { Blobs, deriveBlobKey, pickIce, pickServers } from './blob';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound, addSounds, loadSounds } from './sound';
+import { TableSounds, isTableSoundId } from './sounds';
+import { registerSoundPage, renderSoundboard } from './ui/soundPage';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
 import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type GameTheme, type Known } from './theme';
@@ -194,6 +196,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     ice: () => pickIce(ls.get('stun')),
   });
   Object.assign((window as unknown as { __ct: object }).__ct, { blobs });
+  // The table's own sounds (src/sounds.ts): recordings come out of the file store, and only on devices with sound on.
+  const tableSounds = new TableSounds({ store, sound, blobs, full, send: (m) => void net.send(m) });
+  Object.assign((window as unknown as { __ct: object }).__ct, { sounds: tableSounds });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
@@ -236,6 +241,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       }
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'sfx': if (ui.ready) tableSounds.heard(msg.id, fullPowers(store, pid(from))); break; // the GM's soundboard, heard on every board
     }
   }
 
@@ -448,7 +454,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // The table's theme (see theme.ts) puts a shelf of its own in front of the others and its
   // ground and building blocks first on theirs: more to choose from, and no more chrome.
   const MINE = '★';
-  const known: Known = { ...registry.known, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in PRESETS, edge: (id) => id in EDGES };
+  const known: Known = { ...registry.known, amb: (id) => id in SOUNDSCAPES || isTableSoundId(id), gen: (id) => id in PRESETS, edge: (id) => id in EDGES };
   /** The theme of the board in front of us (each board has its own atmosphere, see theme.ts). */
   const gameTheme = (): GameTheme | null => activeTheme(atmo(store, 'theme', null), known);
   // Pieces that arrive in a pack (see registry.ts) take their place on the shelves; a pack
@@ -795,7 +801,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     el.innerHTML = '';
     for (const [id, label] of Object.entries(items)) {
       const b = document.createElement('button');
-      b.textContent = label.replace(/^[^\p{L}]+/u, ''); // the names carry an emoji for the chat log; the buttons do without
+      b.textContent = label.replace(/^[^\p{L}\p{N}]+/u, ''); // the names carry an emoji for the chat log; the buttons do without
       b.classList.toggle('on', id === cur);
       b.disabled = !f;
       b.onclick = () => setAtmo(store, key, id);
@@ -826,6 +832,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // Prep: the full-screen pages for getting a table ready (see ui/prep.ts).
   registerBuiltinPrepPages();
   const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme });
+  registerSoundPage(tableSounds, { store, full, emotes: Object.keys(EMOTES), soundOn: () => { if (!sound.enabled) $('soundOn').click(); } });
   /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
@@ -847,7 +854,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     choices($('skies'), SKY_NAMES, 'sky', 'day');
     choices($('seasons'), SEASON_NAMES, 'season', 'summer');
     // The soundscapes this device has loaded, and the ones the table's theme brings, each by its own name.
-    choices($('scapes'), { ...SOUNDSCAPES, ...Object.fromEntries(Object.entries(gameTheme()?.sounds?.scapes ?? {}).map(([id, r]) => [id, r.name])) }, 'amb', 'off');
+    choices($('scapes'), { ...SOUNDSCAPES, ...Object.fromEntries(Object.entries(gameTheme()?.sounds?.scapes ?? {}).map(([id, r]) => [id, r.name])), ...tableSounds.scapeNames() }, 'amb', 'off');
+    renderSoundboard($('sfx'), tableSounds, full()); // the table's own effects, one tap each
     const glow = $<HTMLInputElement>('glow');
     if (document.activeElement !== glow) glow.value = String(atmo(store, 'glow', 1));
     glow.disabled = !full();
@@ -896,6 +904,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     act('gm').innerHTML = `${ico('crown')}${amGM ? 'Stop being the GM' : 'Become the GM'}`;
     act('los').innerHTML = `${ico(l ? 'eye' : 'eyeoff')}Line of sight: ${l ? 'on' : 'off'}`;
     sound.theme(gameTheme()?.sounds);
+    tableSounds.refresh(); // the table's own sounds come before the theme's
     sound.scape(atmo(store, 'amb', 'off'));
     renderAtmo();
     prep.refresh();

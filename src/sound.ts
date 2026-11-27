@@ -45,7 +45,8 @@ export interface Scape {
   echo?: { time: number; feedback: number; mix: number };
   file?: string; loop?: boolean; gain?: number;
 }
-export interface Effect { voices: Voice[] }
+/** A one-shot effect: voices, or a short recording (`file`, as in a soundscape, played once at `gain`), or both. */
+export interface Effect { voices: Voice[]; file?: string; gain?: number }
 export interface SoundBank { scapes?: Record<string, Scape>; effects?: Record<string, Effect> }
 
 /** The most a recipe may ask of a phone. */
@@ -54,6 +55,10 @@ const WAVES: readonly Wave[] = ['sine', 'triangle', 'square', 'sawtooth'], PASSE
 const ID = /^[a-z0-9][a-z0-9:_-]{0,23}$/;
 /** A recording this short is decoded whole, so it loops without a gap; anything longer is streamed. */
 const SHORT_LOOP = 30;
+/** The longest reference to a recording a recipe may carry. */
+export const MAX_FILE_REF = 512;
+/** An effect's recording is decoded whole: only so long, and only so many are kept decoded. */
+const MAX_SAMPLE = 12, MAX_SAMPLES = 8;
 /** The gains of a soundscape may add up to this much; past it the whole of it is turned down to fit. */
 const LOUD = 2;
 
@@ -71,6 +76,8 @@ function some<T extends object>(o: { [K in keyof T]: T[K] | undefined }): T {
   for (const k of Object.keys(o) as (keyof T)[]) if (o[k] === undefined) delete o[k];
   return o as T;
 }
+
+const fileRef = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 && v.length <= MAX_FILE_REF ? v : undefined);
 
 function parseVoice(raw: unknown, fx: boolean): Voice | null {
   const r = obj(raw), kind = r.kind === 'note' || r.kind === 'burst' ? r.kind : null;
@@ -132,7 +139,7 @@ export function parseRecipe(raw: unknown): Scape | null {
     patterns.push({ every, voices });
   }
   const e = obj(r.echo), echo = r.echo === undefined ? undefined : { time: num(e.time, 0.05, 1) ?? 0.34, feedback: num(e.feedback, 0, 0.7) ?? 0.38, mix: num(e.mix, 0, 1) ?? 0.5 };
-  const file = typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 256 ? r.file : undefined;
+  const file = fileRef(r.file);
   if (!layers.length && !drones.length && !patterns.length && !file) return null;
   return some<Scape>({
     name, layers: layers.length ? layers : undefined, drones: drones.length ? drones : undefined, patterns: patterns.length ? patterns : undefined, echo,
@@ -142,8 +149,9 @@ export function parseRecipe(raw: unknown): Scape | null {
 
 /** Read a one-shot effect (a dice clack, a ping, an emote's sting) somebody else wrote. Null if it is not one. */
 export function parseEffect(raw: unknown): Effect | null {
-  const voices = list(obj(raw).voices, SOUND_LIMITS.voices).map((v) => parseVoice(v, true)).filter((v): v is Voice => !!v);
-  return voices.length ? { voices } : null;
+  const r = obj(raw), file = fileRef(r.file);
+  const voices = list(r.voices, SOUND_LIMITS.voices).map((v) => parseVoice(v, true)).filter((v): v is Voice => !!v);
+  return voices.length || file ? some<Effect>({ voices, file, gain: file ? num(r.gain, 0, 1) : undefined }) : null;
 }
 
 /** Read a set of recipes (`{ scapes: { id: recipe }, effects: { name: recipe } }`), such as a theme brings. Undefined if there is nothing in it. */
@@ -195,8 +203,14 @@ export class Sound {
    * once it has a file store. Until then a soundscape's recording is silently left out.
    */
   resolver?: Resolver;
-  /** The soundscape now sounding ('off' when silent, whatever the table asked for). */
+  /** Told when the engine is done with a URL the resolver gave it, once for every URL it was given. */
+  release?: (ref: string) => void;
+  /** The soundscape now sounding ('off' when silent, whatever the table asked for; 'trial' while one is being tried out here). */
   playing = 'off';
+  /** How the recording of the soundscape now sounding is doing: there is none, it is being fetched, it plays, or it cannot be had (it is tried again). */
+  recording: 'none' | 'loading' | 'playing' | 'failed' = 'none';
+  /** Called when `playing` or `recording` changed. */
+  onState?: () => void;
   private ctx?: AudioContext;
   private master?: GainNode;
   private noise?: AudioBuffer;
@@ -204,13 +218,18 @@ export class Sound {
   private recipe?: Scape;
   private own: SoundBank = {};
   private ownKey = '';
+  private tab: SoundBank = {};
+  private trial?: Scape;
+  private hidden = false;
+  private samples = new Map<string, AudioBuffer | Promise<AudioBuffer | null>>();
+  private missed = new Map<string, number>();
   private stop: Stop = () => {};
   private live = 0;
-  // One audio element for recordings, made on the first tap (iOS only lets a tapped element play).
-  private el?: HTMLAudioElement;
-  private elNode?: MediaElementAudioSourceNode;
+  /** How many effects this device has sounded (for tests and the curious). */
+  effects = 0;
+  // Two audio elements for recordings, so one can fade out while the next fades in. Made on the first tap (iOS only lets a tapped element play).
+  private els: { el: HTMLAudioElement; node?: MediaElementAudioSourceNode; turn: number; wanted: boolean }[] = [];
   private elTurn = 0;
-  private elWanted = false;
 
   /** Browsers only allow audio after a tap: call this from the first one. */
   unlock(): void {
@@ -226,9 +245,12 @@ export class Sound {
       this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
       const d = this.noise.getChannelData(0);
       for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
-      if (typeof Audio !== 'undefined') { this.el = new Audio(); this.el.preload = 'auto'; this.el.load(); }
+      if (typeof Audio !== 'undefined') for (let i = 0; i < 2; i++) { const el = new Audio(); el.preload = 'auto'; el.load(); this.els.push({ el, turn: 0, wanted: false }); }
+      // The system may stop and restart audio on its own (a phone call, the lock screen): follow it.
+      this.ctx.onstatechange = () => this.apply();
     }
-    if (this.elWanted && this.el?.paused) void this.el.play().catch(() => {}); // a recording that was refused without a tap
+    if (this.hidden) return;
+    for (const e of this.els) if (e.wanted && e.el.paused) void e.el.play().catch(() => {}); // a recording that was refused without a tap
     void this.ctx.resume().then(() => this.apply());
   }
 
@@ -253,26 +275,48 @@ export class Sound {
     this.apply();
   }
 
+  /**
+   * The table's own recipes (the GM's recordings and mixes): they come before the theme's and the loaded ones.
+   * Compared by identity: hand in the same object until something in it changed.
+   */
+  table(bank: SoundBank | null | undefined): void {
+    if ((bank ?? this.tab) === this.tab) return;
+    this.tab = bank ?? {};
+    this.apply();
+  }
+
+  /** Try a soundscape out on this device only, whatever the table is playing; null goes back to the table's. */
+  audition(r: Scape | null): void {
+    this.trial = r ?? undefined;
+    this.apply();
+  }
+  /** Is this the soundscape being tried out? */
+  auditioning(r: Scape): boolean { return this.trial === r; }
+
   /** More recipes have loaded (`addSounds`): start what the table was waiting to hear. */
   refresh(): void { this.apply(); }
 
   /** Whether there is a recipe for this soundscape, the theme's or a loaded one. */
-  knows(id: string): boolean { return id === 'off' || !!(this.own.scapes?.[id] ?? SCAPES[id]); }
+  knows(id: string): boolean { return id === 'off' || !!this.find(id); }
+  private find(id: string): Scape | undefined { return this.tab.scapes?.[id] ?? this.own.scapes?.[id] ?? SCAPES[id]; }
 
   /** The phone went to sleep or the tab was hidden: stop making noise. */
   suspend(hidden: boolean): void {
     if (!this.ctx) return;
-    if (hidden) { void this.ctx.suspend(); this.el?.pause(); }
-    else if (this.enabled) { void this.ctx.resume(); if (this.elWanted) void this.el?.play().catch(() => {}); }
+    this.hidden = hidden;
+    if (hidden) { void this.ctx.suspend(); for (const e of this.els) e.el.pause(); }
+    else if (this.enabled) { void this.ctx.resume().then(() => this.apply()); for (const e of this.els) if (e.wanted) void e.el.play().catch(() => {}); }
   }
 
   private apply(): void {
-    const recipe = this.enabled && this.ctx?.state === 'running' && this.want !== 'off' ? this.own.scapes?.[this.want] ?? SCAPES[this.want] : undefined;
+    const recipe = this.ready() ? this.trial ?? (this.want !== 'off' ? this.find(this.want) : undefined) : undefined;
+    if (this.ready()) this.warm();
     if (recipe === this.recipe) return;
     this.stop();
     this.stop = () => {};
     this.recipe = recipe;
-    this.playing = recipe ? this.want : 'off';
+    this.playing = recipe ? (recipe === this.trial ? 'trial' : this.want) : 'off';
+    this.recording = recipe?.file && this.resolver ? 'loading' : 'none';
     // A soundscape the GM started is the game's own audio: an iPhone's silent switch should not mute it.
     // (Without one, the odd clack stays "ambient": muted by the switch, and no interruption to the owner's music.)
     try {
@@ -280,6 +324,12 @@ export class Sound {
       if (session) session.type = recipe ? 'playback' : 'auto';
     } catch { /* not every browser has it, or lets it be set */ }
     if (recipe) this.stop = this.start(recipe);
+    this.onState?.();
+  }
+  private state(s: Sound['recording']): void {
+    if (s === this.recording) return;
+    this.recording = s;
+    this.onState?.();
   }
 
   // ---- building blocks ----
@@ -416,48 +466,80 @@ export class Sound {
 
   /**
    * Play a soundscape's recording into `bus`. A short loop is decoded whole so it repeats without a gap;
-   * anything longer is streamed through the audio element, never decoded into memory.
+   * anything longer is streamed through an audio element, never decoded into memory. Until the file is
+   * here there is silence; it fades in when it starts, and one that cannot be had yet is asked for again.
    */
   private record(r: Scape, bus: AudioNode): Stop {
-    const c = this.ctx!, el = this.el, out = this.gain(r.gain ?? 1), loop = r.loop !== false, turn = ++this.elTurn;
-    let dead = false, decoded: AudioBufferSourceNode | undefined;
+    const c = this.ctx!, out = this.gain(0), loop = r.loop !== false, turn = ++this.elTurn, file = r.file!;
+    let dead = false, held = 0, decoded: AudioBufferSourceNode | undefined, slot: Sound['els'][number] | undefined, again: ReturnType<typeof setTimeout> | undefined;
     out.connect(bus);
-    void (async () => {
-      const url = await this.resolver!(r.file!);
-      if (!url || !el || dead || turn !== this.elTurn) return;
+    const mine = () => !dead && this.recipe === r;
+    const sounding = () => {
+      out.gain.setValueAtTime(0, c.currentTime);
+      out.gain.linearRampToValueAtTime(r.gain ?? 1, c.currentTime + 1.2);
+      if (mine()) this.state('playing');
+    };
+    const letGo = () => { for (; held > 0; held--) this.release?.(file); };
+    const attempt = async (n: number): Promise<void> => {
+      const url = await this.resolver!(file).catch(() => null);
+      if (url) held++;
+      if (dead) { letGo(); return; }
+      if (!url) {
+        // Not to be had right now (the GM's phone is asleep, a server is slow): keep the silence and ask again.
+        this.state('failed');
+        again = setTimeout(() => { if (mine()) this.state('loading'); void attempt(n + 1); }, Math.min(60, 4 * 2 ** n) * 1000);
+        return;
+      }
+      // The element that is free, else the one that has been playing longest (it is fading out by now).
+      const s = this.els.find((e) => !e.wanted) ?? [...this.els].sort((x, y) => x.turn - y.turn)[0];
+      if (!s) return;
+      const el = s.el;
+      s.turn = turn;
+      s.wanted = true;
+      slot = s;
       el.loop = loop;
       el.src = url;
       await new Promise<void>((ok, no) => { el.onloadedmetadata = () => ok(); el.onerror = () => no(new Error('unreadable')); });
-      if (dead || turn !== this.elTurn) return;
+      if (dead || s.turn !== turn) return;
       if (loop && el.duration <= SHORT_LOOP) {
         try {
           const buffer = await c.decodeAudioData(await (await fetch(url)).arrayBuffer());
           if (dead) return;
+          s.wanted = false; // the element is not needed after all
+          slot = undefined;
+          el.removeAttribute('src');
+          el.load();
           decoded = c.createBufferSource();
           decoded.buffer = buffer;
           decoded.loop = true;
           decoded.connect(out);
           decoded.start();
+          sounding();
           return;
         } catch { /* stream it instead */ }
       }
-      if (dead || turn !== this.elTurn) return;
-      this.elNode ??= c.createMediaElementSource(el);
-      this.elNode.disconnect();
-      this.elNode.connect(out);
-      this.elWanted = true;
-      await el.play(); // refused without a tap on some phones: the next tap starts it (see unlock)
-    })().catch(() => {});
+      if (dead || s.turn !== turn) return;
+      s.node ??= c.createMediaElementSource(el);
+      s.node.disconnect();
+      s.node.connect(out);
+      el.onplaying = () => { el.onplaying = null; if (!dead && s.turn === turn) sounding(); };
+      if (!this.hidden) await el.play(); // refused without a tap on some phones: the next tap starts it (see unlock)
+    };
+    void attempt(0).catch(() => { if (mine()) this.state('failed'); });
     return () => {
       dead = true;
+      clearTimeout(again);
       setTimeout(() => {
-        decoded?.stop();
+        try { decoded?.stop(); } catch { /* never started */ }
         out.disconnect();
-        if (turn !== this.elTurn || !el) return; // another recording has the element now
-        this.elWanted = false;
-        el.pause();
-        el.removeAttribute('src');
-        el.load();
+        if (slot && slot.turn === turn) { // (else another recording has the element now)
+          slot.wanted = false;
+          slot.el.onplaying = null;
+          slot.el.pause();
+          slot.el.removeAttribute('src');
+          slot.el.load();
+        }
+        letGo();
       }, 1000);
     };
   }
@@ -465,17 +547,62 @@ export class Sound {
   // ---- one-shot effects ----
 
   private ready(): boolean { return this.enabled && this.ctx?.state === 'running'; }
-  /** Play a named effect's recipe (the theme's, else a loaded one). `strength` 0..1 is how hard the knock was. True if there is one. */
+  /** Play a named effect's recipe (the table's, else the theme's, else a loaded one). `strength` 0..1 is how hard the knock was. True if there is one. */
   effect(name: string, strength = 0): boolean {
-    const fx = this.own.effects?.[name] ?? EFFECTS[name];
+    const fx = this.tab.effects?.[name] ?? this.own.effects?.[name] ?? EFFECTS[name];
     if (!fx) return false;
-    if (!this.ready()) return true;
+    this.tryEffect(fx, strength);
+    return true;
+  }
+  /** Play an effect's recipe on this device, whether or not it has a name. */
+  tryEffect(fx: Effect, strength = 0): void {
+    if (!this.ready()) return;
+    if (fx.file) {
+      const at = Date.now(), had = this.samples.get(fx.file);
+      const play = (b: AudioBuffer | null) => {
+        if (!b || !this.ready() || Date.now() - at > 2500) return; // an effect that arrives late is not played late
+        const s = this.ctx!.createBufferSource();
+        if (!this.room(s)) return;
+        s.buffer = b;
+        this.chain(s, this.gain((fx.gain ?? 1) * (strength > 0 ? 0.4 + 0.6 * Math.min(1, strength) : 1)), this.master!);
+        s.start();
+        this.effects++;
+      };
+      if (had instanceof AudioBuffer) play(had); else void this.sample(fx.file, true).then(play);
+    }
+    if (!fx.voices.length) return;
+    this.effects++;
     const sum = fx.voices.reduce((n, v) => n + top(v.gain) + (v.vel ?? 0), 0), level = Math.min(1, LOUD / Math.max(sum, 0.001));
     for (const v of fx.voices) {
       if (v.at) setTimeout(() => this.ready() && this.voice(this.master!, v, strength, level), v.at);
       else this.voice(this.master!, v, strength, level);
     }
-    return true;
+  }
+  /** An effect's recording, decoded (they are short). Asked for once; one that cannot be had is asked for again later. */
+  private sample(file: string, now = false): Promise<AudioBuffer | null> {
+    const had = this.samples.get(file);
+    if (had) return Promise.resolve(had);
+    if (!this.resolver || (!now && Date.now() - (this.missed.get(file) ?? -Infinity) < 30_000)) return Promise.resolve(null);
+    const job = (async () => {
+      const url = await this.resolver!(file).catch(() => null);
+      if (!url) return null;
+      try {
+        const b = await this.ctx!.decodeAudioData(await (await fetch(url)).arrayBuffer());
+        return b.duration <= MAX_SAMPLE ? b : null;
+      } catch { return null; } finally { this.release?.(file); }
+    })();
+    this.samples.set(file, job);
+    return job.then((b) => {
+      if (this.samples.get(file) === job) { if (b) this.samples.set(file, b); else this.samples.delete(file); }
+      if (b) this.missed.delete(file); else this.missed.set(file, Date.now());
+      while (this.samples.size > MAX_SAMPLES) this.samples.delete(this.samples.keys().next().value!);
+      return b;
+    });
+  }
+  /** Fetch the recordings of the table's and the theme's effects ahead of time, so the first clack is on time. Only ever with sound on. */
+  private warm(): void {
+    let n = 0;
+    for (const bank of [this.tab, this.own]) for (const fx of Object.values(bank.effects ?? {})) if (fx.file && n++ < MAX_SAMPLES) void this.sample(fx.file);
   }
   /** A die knocking on the table. */
   clack(strength: number): void { this.effect('clack', strength); }
