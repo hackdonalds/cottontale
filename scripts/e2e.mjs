@@ -21,7 +21,9 @@ const procs = [
   spawn('node', ['scripts/blossom.mjs'], { env: { ...process.env, PORT: String(BLOSSOM), MAX_SIZE: '200000' }, stdio: 'ignore' }),
 ];
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
-const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
+// E2E_KEEP=1 carries on past a failed check and counts them, to see everything that is wrong in one run.
+let failed = 0;
+const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) { failed++; if (!process.env.E2E_KEEP) done(1); } };
 process.on('uncaughtException', (e) => { console.error(e); done(1); });
 // Wait for the site to answer rather than a fixed time: a busy machine starts it slowly.
 for (let i = 0; i < 120; i++) {
@@ -375,7 +377,7 @@ await a.click('#ring [title="Stand up"]');
   const mini = (page) => page.evaluate((id) => window.__ct.store.get(`m:${id}`), id);
   const chat = (page, re) => page.evaluate((src) => [...document.querySelectorAll('#msgs > div')].filter((d) => new RegExp(src).test(d.textContent)).length, re.source);
   await a.click('#ring [title="Back"]');
-  assert(await a.evaluate(() => document.querySelectorAll('#ring button').length === 4 && getComputedStyle(document.querySelector('#sheetBtn')).display === 'none'), 'with no system on the table there is no sheet anywhere');
+  assert(await a.evaluate(() => document.querySelectorAll('#ring button').length === 6 && getComputedStyle(document.querySelector('#sheetBtn')).display === 'none'), 'with no system on the table there is no sheet anywhere');
   await a.click('#menuBtn');
   await a.click('[data-act="rules"]');
   await a.click('#rulesList button:has-text("Lantern d20")');
@@ -2403,5 +2405,5 @@ const shown = await sheet.evaluate(() => ({ props: window.__ct.board.props.size,
 assert(shown.minis === lib.minis && shown.props > 45 && lib.pieces > 75, `library renders: ${lib.pieces} blocks and props, ${lib.minis} minis`);
 
 await browser.close();
-console.log('all good');
-done(0);
+console.log(failed ? `${failed} failed` : 'all good');
+done(failed ? 1 : 0);

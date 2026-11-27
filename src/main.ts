@@ -1263,9 +1263,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         button('Shove', '💨', () => { if (board.aimShove(board.selected)) to('shove')(); }),
       ] : [more];
       // Two to each side of the piece and two below: its name and hit points float above it and must stay readable.
-      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25, 122, 58];
+      // With a game system there is a seventh, the character sheet, straight below: the others close up to make room.
+      const sheet = !!rules?.system();
+      const at = items.length === 1 ? [-25] : sheet ? [-155, 167, -25, 13, 128, 52] : [-155, 155, -25, 25, 122, 58];
       items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
-      if (rules?.system()) { const b = button('Character sheet', ico('sheet'), () => rules!.open(board.selected)); b.dataset.a = '90'; el.append(b); }
+      if (sheet) { const b = button('Character sheet', ico('sheet'), () => rules!.open(board.selected)); b.dataset.a = '90'; el.append(b); }
     } else {
       const pop = document.createElement('div');
       pop.className = 'pop';
@@ -1313,7 +1315,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const seen = !!spot && spot.x >= 0 && spot.x <= innerWidth && spot.y >= 0 && spot.y <= innerHeight;
     el.style.visibility = seen ? '' : 'hidden';
     if (!spot || !seen) return;
-    const pop = el.querySelector<HTMLElement>('.pop'), r = Math.max(60, Math.min(104, spot.size * 0.7 + 40));
+    const pop = el.querySelector<HTMLElement>('.pop'), crowd = el.querySelectorAll(':scope > button').length > 6;
+    const r = Math.max(crowd ? 76 : 60, Math.min(104, spot.size * 0.7 + 40)); // seven buttons need a wider ring to stay apart
     // Never let it slide under the top bar or off an edge: the ring shifts, the piece stays put.
     const roof = $('top').getBoundingClientRect().bottom + 12, half = pop ? pop.offsetWidth / 2 + 8 : r + 26;
     const x = Math.max(half, Math.min(innerWidth - half, spot.x));
