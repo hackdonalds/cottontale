@@ -10,9 +10,11 @@ let pw, channel;
 try { pw = require('playwright'); } catch { pw = require('playwright-core'); channel = 'chrome'; }
 const { chromium, devices } = pw;
 
+// Ports can be moved (E2E_WEB, E2E_RELAY) so several checkouts can run their checks at once.
+const WEB = process.env.E2E_WEB ?? '4188', RELAY = process.env.E2E_RELAY ?? '7788';
 const procs = [
-  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: '7788' }, stdio: 'ignore' }),
-  spawn('npx', ['vite', 'preview', '--port', '4188', '--strictPort'], { stdio: 'ignore' }),
+  spawn('node', ['scripts/relay.mjs'], { env: { ...process.env, PORT: RELAY }, stdio: 'ignore' }),
+  spawn('npx', ['vite', 'preview', '--port', WEB, '--strictPort'], { stdio: 'ignore' }),
 ];
 const done = (code) => { procs.forEach((p) => p.kill()); process.exit(code); };
 const assert = (ok, what) => { console.log(ok ? '  ok  ' : ' FAIL ', what); if (!ok) done(1); };
@@ -20,10 +22,10 @@ process.on('uncaughtException', (e) => { console.error(e); done(1); });
 await new Promise((r) => setTimeout(r, 2500));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const url = (room) => `http://localhost:4188/#room=${room}&relays=ws://localhost:7788`;
+const url = (room) => `http://localhost:${WEB}/#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
-  page.on('pageerror', (e) => { console.log('pageerror', name, e.message); done(1); });
+  page.on('pageerror', (e) => { console.log('pageerror', name, e.stack ?? e.message); done(1); });
   await page.goto(url(room));
   await page.fill('#name', name);
   await page.click('#join');
@@ -98,10 +100,62 @@ await a.press('#chatIn', 'Enter');
 await a.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /rolled 3d7/.test(document.querySelector('#msgs').textContent));
 await b.waitForFunction(() => /rolled 4d6\+2/.test(document.querySelector('#msgs').textContent) && /rolled 2d100\+1d8/.test(document.querySelector('#msgs').textContent) && /Ada: hello table/.test(document.querySelector('#msgs').textContent));
 await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/dice-desktop.png` });
+
+// Dice bounce off the pieces on the table, and a piece that is hit rocks, settles, and stays where it was.
+const knock = await a.evaluate(async () => {
+  const { board, store } = window.__ct;
+  const [id, m] = [...board.minis][0], v = m.val, before = JSON.stringify(store.get(`m:${id}`));
+  const solid = board.solidsNear([v.x + 0.5, v.y, v.z + 0.5], 1).some((s) => s.round && s.p[0] === v.x + 0.5 && s.p[2] === v.z + 0.5);
+  const at = m.group.position.clone().set(v.x + 0.9, v.y + 0.4, v.z + 0.5);
+  board.dice.onBump(at, at.clone().set(-6, 0, 0));
+  await new Promise((r) => setTimeout(r, 150));
+  const lean = Math.abs(m.group.children[0].rotation.z) + Math.abs(m.group.children[0].rotation.x);
+  for (let i = 0; i < 80 && board.wobbles.has(id); i++) await new Promise((r) => setTimeout(r, 100)); // (frames can be slow here)
+  const body = board.minis.get(id).group.children[0];
+  return { solid, lean, rocking: board.wobbles.has(id), upright: Math.abs(body.rotation.x) + Math.abs(body.rotation.z) < 1e-6, same: before === JSON.stringify(store.get(`m:${id}`)) };
+});
+assert(knock.solid && knock.lean > 0.02 && !knock.rocking && knock.upright && knock.same, `a mini is solid to dice; knocked, it rocks and settles without changing the table ${JSON.stringify(knock)}`);
 assert(true, 'mixed hands, percentile, /r and chat delivered');
 
+// Feel: a moved mini hops over in an arc and lands squashed; a knocked-down one falls rather than snaps.
+// All for show: it ends exactly on the resting pose and writes nothing of its own to the table.
+const feel = await a.evaluate(async () => {
+  const { board, store } = window.__ct;
+  const [id, m] = [...board.minis][0], orig = { ...m.val }, body = () => board.minis.get(id).group.children[0];
+  // Watch the mini every frame until `until` says it is over (or time runs out).
+  const watch = (until, ms = 20000) => new Promise((res) => {
+    const seen = { top: -Infinity, squashed: 1, part: false }, t0 = performance.now();
+    const tick = () => {
+      const g = board.minis.get(id).group, rx = body().rotation.x;
+      seen.top = Math.max(seen.top, g.position.y);
+      seen.squashed = Math.min(seen.squashed, body().scale.y / (orig.s || 1));
+      if (rx < -0.05 && rx > -Math.PI / 2 + 0.05) seen.part = true;
+      if (until() || performance.now() - t0 > ms) res(seen); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const calm = () => { const x = board.minis.get(id); return !x.hop && !x.fall && x.squash === undefined && !board.wobbles.has(id); };
+  store.set(`m:${id}`, { ...orig, x: orig.x + 2 });
+  const hopping = !!board.minis.get(id).hop;
+  const hop = await watch(calm);
+  const g = board.minis.get(id).group, b = body();
+  const landed = g.position.x === orig.x + 2.5 && g.position.y === orig.y && b.scale.y === (orig.s || 1) && b.scale.x === (orig.s || 1) && Math.abs(b.rotation.x) + Math.abs(b.rotation.z) < 1e-6;
+  store.set(`m:${id}`, { ...orig, x: orig.x + 2, d: true });
+  const fall = await watch(calm);
+  const flat = body().rotation.x === -Math.PI / 2;
+  store.set(`m:${id}`, { ...orig, x: orig.x + 2 });
+  const rise = await watch(calm);
+  const up = body().rotation.x === 0;
+  store.set(`m:${id}`, orig);
+  await watch(calm);
+  return { hopping, top: hop.top - orig.y, squashed: hop.squashed, landed, fell: fall.part, flat, rose: rise.part, up, back: JSON.stringify(store.get(`m:${id}`)) === JSON.stringify(orig), calm: calm() };
+});
+assert(feel.hopping && feel.top > 0.15 && feel.squashed < 0.99 && feel.landed, `a moved mini hops in an arc, lands with a squash and settles exactly on its cell (${JSON.stringify(feel)})`);
+assert(feel.fell && feel.flat && feel.rose && feel.up && feel.back && feel.calm, 'a knocked-down mini topples into the lying pose and stands back up, and the table goes quiet again');
+
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
-const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 }).then(() => true, () => false);
+// (Frames are slow in a browser without a GPU, and animations run on frames: be patient.)
+const ok = (page, fn, arg, timeout = 20000) => page.waitForFunction(fn, arg, { timeout }).then(() => true, () => false);
 const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
 await a.keyboard.press('1');
 await a.click('#menuBtn');
@@ -110,7 +164,7 @@ assert(await ok(b, (id) => document.body.classList.contains('player') && getComp
   && !window.__ct.board.hooks.canMove(id) && !!document.querySelector('#players svg'), id), 'with a GM, players lose the build tools and cannot move the GM\'s minis');
 
 await a.evaluate((id) => window.__ct.board.select(id), id);
-assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 4), 'selecting a piece shows a ring of actions on it, not a panel');
+assert(await a.evaluate(() => document.querySelector('#minipanel').hidden && document.querySelectorAll('#ring button').length === 6), 'selecting a piece shows a ring of actions on it, not a panel');
 { // Pan the piece out of view: its ring goes too, and comes back with it.
   const pan = (dx) => a.evaluate((dx) => { const { board } = window.__ct; board.controls.target.x += dx; board.camera.position.x += dx; board.controls.update(); board.hooks.onView(); }, dx);
   const ringShown = () => a.evaluate(() => getComputedStyle(document.querySelector('#ring')).visibility !== 'hidden');
@@ -183,6 +237,42 @@ await fling(a);
 assert(await ok(b, () => /Ada rolled in secret/.test(document.querySelector('#msgs').textContent) && window.__ct.board.dice.playing.some((p) => p.blank))
   && await ok(a, () => /rolled 1d6: \d/.test(document.querySelector('#msgs').textContent)), 'a secret GM roll shows players blank dice and no result');
 
+// The boulder trap: rolled on the GM's device, replayed for the player, who never sees it under fog.
+// The figures in its way go down and are shoved on (the hidden one too, still unseen); one undo puts them back.
+await b.evaluate(() => {
+  const { board } = window.__ct, seen = (window.__seen = { fog: 0, clear: 0, leak: 0, rocked: false });
+  const watch = () => {
+    for (const r of board.boulder.rolling) {
+      const fog = Math.floor(r.mesh.position.x) === 26;
+      if (fog && r.mesh.visible) seen.leak++;
+      else if (fog) seen.fog++;
+      else if (r.mesh.visible) seen.clear++;
+    }
+    if (board.wobbles.has('near')) seen.rocked = true;
+    requestAnimationFrame(watch);
+  };
+  watch();
+});
+await a.evaluate(() => {
+  const { store, board } = window.__ct, fig = (x, z, more) => ({ x, y: 0, z, k: 'knight', c: '#ffffff', n: '', r: 0, s: 1, ...more });
+  store.set('m:pin', fig(24, 20));
+  store.set('m:near', fig(23, 21)); // beside the path: rocks, but stays standing
+  store.set('m:sly', fig(28, 20, { h: true }));
+  store.set('f:26,20', true);
+  board.hooks.onBoulder([20.5, 1.5, 20.5], [9, 0, 0]);
+});
+assert(await ok(b, () => window.__ct.board.boulder.rolling.length === 1), 'the GM\'s boulder rolls on the player\'s table too');
+const down = (page) => ok(page, () => { const s = window.__ct.store, p = s.get('m:pin'), y = s.get('m:sly'), n = s.get('m:near'); return p.d && p.x === 25 && y.d && y.x === 29 && !n.d && n.x === 23; });
+assert(await down(a) && await down(b), 'figures in the boulder\'s way are knocked down and pushed a cell on; one beside it is not');
+const gone = (page) => page.waitForFunction(() => window.__ct.board.boulder.rolling.length === 0, null, { timeout: 120000 }).then(() => true, () => false);
+assert(await gone(b) && await gone(a), 'the boulder goes once it has stopped');
+const seen = await b.evaluate(() => ({ ...window.__seen, sly: window.__ct.board.minis.get('sly').group.visible }));
+assert(seen.clear > 0 && seen.fog > 0 && !seen.leak && !seen.sly && seen.rocked, `the player sees it roll, but not under fog, and the hidden figure stays hidden ${JSON.stringify(seen)}`);
+await a.evaluate(() => window.__ct.board.undo());
+assert(await ok(b, () => { const s = window.__ct.store, p = s.get('m:pin'), y = s.get('m:sly'); return !p.d && p.x === 24 && !y.d && y.x === 28; }), 'one undo stands them all back up');
+await a.evaluate(() => { for (const k of ['m:pin', 'm:near', 'm:sly', 'f:26,20']) window.__ct.store.set(k, null); });
+assert(await ok(b, () => !window.__ct.store.get('m:pin') && !window.__ct.store.get('f:26,20')), 'trap cleared away');
+
 // Emotes and stats on a mini.
 await a.evaluate((id) => window.__ct.board.select(id), id);
 await a.click('#ring [title="Emote"]');
@@ -197,6 +287,75 @@ await a.press('#stats .st', 'Tab');
 assert(await ok(b, (id) => { const v = window.__ct.store.get(`m:${id}`); return v.d === true && v.st?.[0] === 'AC 15'; }, id), 'knocked-down state and extra stats sync');
 await a.click('#ring [title="Emote"]');
 await a.click('#ring [title="Stand up"]');
+
+// Breaking: the GM smashes a statue. It is one edit (rubble is left, undo restores it), and the
+// debris and the rocking are worked out on each device; under fog a player gets none of it.
+const smash = (page, key) => page.evaluate((key) => { const { board } = window.__ct; board.offer(key); board.breakOffered(); }, key);
+const chunks = (page) => page.evaluate(() => window.__ct.board.debris.count);
+await a.evaluate(() => { const { store } = window.__ct; store.set('b:9,0,9', { i: 'statue' }); store.set('b:10,0,9', { i: 'table' }); store.set('w:30,0,30,n', { i: 'wall' }); store.set('f:30,30', true); });
+const stood = () => window.__ct.store.get('w:30,0,30,n') && window.__ct.store.get('b:9,0,9') && window.__ct.board.props.get('b:10,0,9')?.userData.pending === undefined;
+assert(await ok(b, stood) && await ok(a, stood), 'pieces to break reach the player');
+await b.evaluate(() => { window.__ct.board.offer('b:9,0,9'); window.__ct.board.breakOffered(); });
+assert(await b.evaluate(() => window.__ct.store.get('b:9,0,9').i === 'statue' && window.__ct.board.offered === null), 'a player cannot break anything');
+await smash(a, 'b:9,0,9');
+const flew = await chunks(a);
+assert(flew >= 12 && flew <= 24 && await a.evaluate(() => window.__ct.store.get('b:9,0,9').i === 'rock' && window.__ct.board.wobbles.has('b:10,0,9')), `a broken statue leaves a rock, ${flew} chunks fly as one mesh, and the table beside it rocks`);
+assert(await ok(b, () => window.__ct.store.get('b:9,0,9').i === 'rock' && window.__ct.board.debris.count >= 12 && window.__ct.board.wobbles.size > 0), 'the player sees it burst too');
+assert(await ok(a, () => window.__ct.board.debris.count === 0 && !window.__ct.board.wobbles.size && !window.__ct.board.wasBusy)
+  && await ok(b, () => window.__ct.board.debris.count === 0), 'the debris is gone in a moment and the table is idle again');
+await a.evaluate(() => window.__ct.board.undo());
+assert(await ok(b, () => window.__ct.store.get('b:9,0,9').i === 'statue') && (await chunks(a)) === 0 && (await chunks(b)) === 0, 'undo stands the statue up again, with no debris');
+await smash(a, 'w:30,0,30,n');
+assert(await ok(b, () => !window.__ct.store.get('w:30,0,30,n')) && (await chunks(a)) >= 12, 'a wall under fog breaks for the GM');
+await b.waitForTimeout(400);
+assert((await chunks(b)) === 0 && await b.evaluate(() => !window.__ct.board.breaking.size), 'and the player sees no debris from under the fog');
+await a.evaluate(() => { const { store } = window.__ct; for (const k of ['b:9,0,9', 'b:10,0,9', 'f:30,30']) store.set(k, null); });
+assert(await ok(b, () => !window.__ct.store.get('b:9,0,9') && !window.__ct.store.get('f:30,30')), 'cleared up after the breaking');
+// Shots: an arrow from one mini to another flies on every table, rocks the target, and changes nothing.
+await a.click('#ring [title="Back"]');
+await a.evaluate((id) => {
+  const { store } = window.__ct, v = store.get(`m:${id}`);
+  // Stand it a couple of cells off, on whichever side has nothing built in between.
+  const open = (dx) => [1, 2].every((i) => !store.get(`b:${v.x + dx * i},${v.y},${v.z}`) && !store.get(`b:${v.x + dx * i},${v.y + 1},${v.z}`));
+  store.set('m:target', { ...v, x: v.x + (open(1) ? 2 : -2), n: 'Target', o: undefined });
+}, id);
+assert(await ok(b, () => window.__ct.board.minis.get('target')?.group.visible), 'a second mini to shoot at');
+await b.evaluate(() => { const { shots } = window.__ct.board, fire = shots.fire.bind(shots); window.__fired = 0; shots.fire = (...args) => { window.__fired++; fire(...args); }; });
+const shootAt = async (kind) => {
+  if (await a.$('#ring [title="Shoot"]')) await a.click('#ring [title="Shoot"]'); // (after a shot the picker stays open)
+  await a.click(`#ring [title="${kind}"]`);
+  const spot = await a.evaluate(() => window.__ct.board.spotOf('target'));
+  await a.mouse.click(spot.x, spot.y);
+};
+const tableBefore = await a.evaluate(() => JSON.stringify(window.__ct.store.dump()));
+await shootAt('Arrow');
+assert(await a.evaluate((id) => window.__ct.board.selected === id && window.__ct.board.aimed === null, id), 'tapping the target fires, and leaves the shooter selected');
+assert(await ok(b, () => window.__ct.board.shots.live > 0) && await ok(b, () => window.__ct.board.wobbles.has('target'))
+  && await ok(b, () => window.__ct.board.shots.live === 0 && window.__ct.board.wobbles.size === 0), 'a shot flies on the other table, rocks the mini it hits, and is gone');
+assert(await a.evaluate((t) => JSON.stringify(window.__ct.store.dump()) === t, tableBefore) && await b.evaluate(() => window.__fired === 1), 'and nothing on the table changed');
+// A hidden mini must not give itself away: players see no shot at it, and it does not flinch.
+await a.evaluate(() => { const { store } = window.__ct; store.set('m:target', { ...store.get('m:target'), h: true }); });
+assert(await ok(b, () => window.__ct.board.minis.get('target').group.visible === false), 'the GM hides the target');
+await shootAt('Fire bolt');
+assert(await ok(a, () => window.__ct.board.wobbles.has('target')) && await ok(a, () => window.__ct.board.shots.live === 0), 'the GM sees the shot at a hidden mini land');
+await b.waitForTimeout(300);
+assert(await b.evaluate(() => window.__fired === 1 && window.__ct.board.shots.live === 0 && window.__ct.board.wobbles.size === 0), 'players see nothing of a shot at a hidden mini');
+await a.evaluate(() => window.__ct.store.set('m:target', null));
+await a.click('#ring [title="Back"]');
+// Shoved off a tower, a mini falls: it lands knocked down and the log says so, but never about a hidden one.
+await a.evaluate(() => {
+  const { store } = window.__ct, mini = { k: 'knight', c: '#fff', r: 0, s: 1, o: '*', x: 30, y: 3, z: 30 };
+  for (let y = 0; y < 3; y++) for (const x of [30, 40]) store.set(`b:${x},${y},30`, { i: 'stone' });
+  store.set('m:tower', { ...mini, n: 'Goblin' });
+  store.set('m:lurker', { ...mini, n: 'Lurker', x: 40, h: true });
+});
+await b.waitForFunction(() => window.__ct.store.get('m:tower') && window.__ct.store.get('m:lurker')); // (the pieces first: a fall is only announced for a mini the device knows)
+await a.evaluate(() => { const { board } = window.__ct; board.hooks.onShove('lurker', 1, 0); board.hooks.onShove('tower', 1, 0); });
+assert(await ok(b, () => { const v = window.__ct.store.get('m:tower'), l = window.__ct.store.get('m:lurker'); return !!v && !!l && v.x === 31 && v.y === 0 && v.d === true && l.x === 41 && l.y === 0 && /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent); })
+  && await a.evaluate(() => /Goblin fell 15 ft/.test(document.querySelector('#msgs').textContent) && /Lurker fell 15 ft/.test(document.querySelector('#msgs').textContent))
+  && await b.evaluate(() => !/Lurker/.test(document.querySelector('#msgs').textContent)), `a mini shoved off a tower falls, lands knocked down, and the log tells everyone; a hidden one falls unannounced ${JSON.stringify([await b.evaluate(() => [window.__ct.store.get('m:tower'), window.__ct.store.get('m:lurker'), document.querySelector('#msgs').textContent.slice(-200), window.__ct.board.minis.get('tower')?.group.visible]), await a.evaluate(() => document.querySelector('#msgs').textContent.slice(-200))])}`);
+await a.evaluate(() => { const { store } = window.__ct; for (const k of ['m:tower', 'm:lurker']) store.set(k, null); for (let y = 0; y < 3; y++) for (const x of [30, 40]) store.set(`b:${x},${y},30`, null); });
+await b.waitForFunction(() => !window.__ct.store.get('b:40,2,30'));
 
 // Boards: the GM prepares a second map alone, then brings everyone over.
 await a.click('#menuBtn');
@@ -278,6 +437,69 @@ await b.close();
 const c = await join('Cy');
 await c.waitForFunction((n) => [...window.__ct.store.keys('b:')].length === n, total);
 assert((await count(c, 'm:')) === figures && (await count(c, 'w:')) === walls, 'late joiner restored the whole table from snapshots');
+
+// ---- scatter: loose pieces poured out by one player fall, and come to rest, the same for everyone ----
+{
+  const sa = await join('Sy', 'scatter-1234'), sb = await join('Sol', 'scatter-1234');
+  await sa.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await sb.waitForFunction(() => window.__ct.net.peers.size === 1);
+  const DRAWN = () => [...window.__ct.board.loose.swarms.values()].reduce((n, s) => n + s.swarm.mesh.count, 0);
+  const lying = (page) => page.evaluate(() => [...window.__ct.store.keys('l:')].sort().map((k) => JSON.stringify(window.__ct.store.get(k))));
+  // The peer keeps watch: did it see the fall, and how many pieces did it ever draw at once?
+  await sb.evaluate(`window.__watch = { most: 0, fell: false }; setInterval(() => { const w = window.__watch; w.fell ||= window.__ct.board.loose.playing.length > 0; w.most = Math.max(w.most, (${DRAWN})()); }, 16)`);
+  await sa.click('[data-mode="build"]');
+  await sa.click('[data-cat="things"]');
+  await sa.click('#palette [aria-label^="Scatter"]');
+  await sa.mouse.click(640, 380);
+  const settled = await ok(sb, () => [...window.__ct.store.keys('l:')].length === 6 && window.__ct.board.loose.playing.length === 0 && window.__ct.board.loose.pieces.size === 6, undefined, 120000);
+  const [la, lb] = [await lying(sa), await lying(sb)];
+  const watch = await sb.evaluate(() => window.__watch);
+  const whole = lb.every((v) => { const o = JSON.parse(v); return [...o.p, ...o.q].every(Number.isInteger) && o.p[1] >= 0 && o.p[1] < 100; });
+  assert(settled && la.join() === lb.join() && whole, `six pieces poured by a click lie in the same whole-number poses for both players (${settled}, ${lb.length})`);
+  assert(watch.fell && watch.most === 6 && await sb.evaluate(`(${DRAWN})() === 6`), `the peer watched them fall, and never drew a piece twice (most ${watch.most})`);
+  await sa.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/scatter-desktop.png` });
+  const still = await sa.evaluate(async () => { // an idle table with loose pieces on it draws nothing
+    const { board } = window.__ct;
+    await new Promise((r) => setTimeout(r, 600));
+    const before = board.renderer.info.render.frame;
+    await new Promise((r) => setTimeout(r, 400));
+    return board.renderer.info.render.frame - before;
+  });
+  const solid = await sa.evaluate(() => { const { board } = window.__ct, p = [...board.loose.pieces.values()][0].p; return board.solidsNear(p, 1).filter((s) => s.q).length; });
+  assert(still === 0 && solid >= 1, `resting pieces cost no frames (${still}) and are solid to dice (${solid} near)`);
+  // Under the GM's fog a piece is neither drawn nor solid for a player.
+  await sa.click('#menuBtn');
+  await sa.click('[data-act="gm"]');
+  const fogged = await sa.evaluate(() => {
+    const { board, store } = window.__ct, p = [...board.loose.pieces.values()][0].p, cell = [Math.floor(p[0]), Math.floor(p[2])];
+    store.set(`f:${cell[0]},${cell[1]}`, true);
+    return { cell, n: [...board.loose.pieces.values()].filter((v) => Math.floor(v.p[0]) === cell[0] && Math.floor(v.p[2]) === cell[1]).length };
+  });
+  const hid = await ok(sb, `(${DRAWN})() === ${6 - fogged.n} && !window.__ct.board.solidsNear([${fogged.cell[0] + 0.5}, 0, ${fogged.cell[1] + 0.5}], 0.5).some((s) => s.q)`);
+  assert(hid && fogged.n >= 1 && await sa.evaluate(`(${DRAWN})() === 6`), `fog hides the ${fogged.n} piece(s) under it from the player, not from the GM`);
+  // A player cannot pour, and a pour sent by one is not played.
+  await sb.evaluate(() => window.__ct.net.send({ y: 'pour', bd: '', t: { o: [0, 0, 0], i: 'coin', ids: ['zz'], n: 1, q: [[0, 500, 0, 0, 0, 0, 1000]] } }));
+  await sb.waitForTimeout(600);
+  assert((await lying(sb)).length === 6 && await sa.evaluate(() => window.__ct.board.loose.playing.length === 0 && window.__ct.board.loose.count === 6)
+    && await sb.evaluate(() => document.body.classList.contains('player')), 'only the GM pours');
+  await sa.evaluate(() => { const { store } = window.__ct; for (const k of [...store.keys('f:')]) store.set(k, null); });
+  // The eraser takes the pieces under the pointer; undo puts them back, and a pour is one undo step.
+  await sa.click('#erase');
+  const at = await sa.evaluate(() => {
+    const { board } = window.__ct, p = [...board.loose.pieces.values()][0].p;
+    const v = board.ground.position.clone().set(p[0], p[1], p[2]).project(board.camera);
+    return [(v.x + 1) * 640, (1 - v.y) * 400];
+  });
+  await sa.mouse.click(at[0], at[1]);
+  const erased = await ok(sb, () => { const n = [...window.__ct.store.keys('l:')].length; return n >= 1 && n < 6; });
+  await sa.keyboard.press('Control+z');
+  const back = await ok(sb, () => [...window.__ct.store.keys('l:')].length === 6);
+  await sa.keyboard.press('Control+z');
+  const gone = await ok(sb, `[...window.__ct.store.keys('l:')].length === 0 && (${DRAWN})() === 0`);
+  assert(erased && back && gone, `the eraser removes loose pieces, undo returns them, and a whole pour undoes as one (${erased}, ${back}, ${gone})`);
+  await sa.context().close();
+  await sb.context().close();
+}
 
 // ---- phones: the primary target. Real touch events, both orientations. ----
 for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }]]) {
@@ -378,7 +600,20 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return { panel: !document.querySelector('#minipanel').hidden, free: Math.round(((dock - top) / innerHeight) * 100),
       buttons: [...document.querySelectorAll('#ring button')].map((b) => b.getBoundingClientRect()).filter((r) => r.left >= 0 && r.top >= top && r.right <= innerWidth && r.bottom <= innerHeight).length };
   });
-  assert(!ring.panel && ring.buttons === 4 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
+  assert(!ring.panel && ring.buttons === 6 && ring.free >= 60 && !bad.length, `a selected piece leaves the table clear (${ring.free}% of the height free) ${bad.join('; ')}`);
+  // Shooting, by touch alone: the ring offers it, a picker of full-size kinds opens, a tap on the table lets fly.
+  await p.tap('#ring [title="Shoot"]');
+  const picker = await p.evaluate(() => [...document.querySelectorAll('#ring .pop button')].map((b) => b.getBoundingClientRect())
+    .filter((r) => r.width >= 44 && r.height >= 44 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight).length);
+  await p.tap('#ring [title="Fire bolt"]');
+  const aim = await p.evaluate(() => { const { board, store } = window.__ct, s = board.spotOf(board.selected); return { x: s.x + (s.x > innerWidth / 2 ? -110 : 110), y: s.y + 30, table: JSON.stringify(store.dump()), armed: !!board.aimed }; });
+  await touch('touchStart', [[aim.x, aim.y]]);
+  await touch('touchEnd', []);
+  const flew = await p.waitForFunction(() => window.__ct.board.shots.live > 0, null, { timeout: 5000 }).then(() => true, () => false);
+  const landed = await p.waitForFunction(() => window.__ct.board.shots.live === 0, null, { timeout: 5000 }).then(() => true, () => false);
+  const after = await p.evaluate(() => ({ table: JSON.stringify(window.__ct.store.dump()), armed: !!window.__ct.board.aimed, picker: !!document.querySelector('#ring [title="Arrow"]') }));
+  assert(picker === 6 && aim.armed && flew && landed && !after.armed && after.picker && after.table === aim.table, `a shot is picked and fired by touch, and changes nothing (${picker} full-size choices) ${JSON.stringify({ flew, landed, armed: after.armed })}`);
+  await p.tap('#ring [title="Back"]');
   // Hit points from the ring, then the full editor on request, with the piece still in view above it.
   await p.tap('#ring [title="Hit points"]');
   await p.tap('#ring [title="Gain a hit point"]');
@@ -445,6 +680,49 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(room.length > 8 && room.filter((i) => i === 'walldoor').length === 1, `dragging the room brush builds a room with one doorway (${room.length - 1} walls)`);
   await p.tap('#undo');
   await settle();
+  // Scatter: brush, kind and count are all chosen by touch; a tap pours, a drag strews, a second finger pours nothing.
+  await p.tap('[data-cat="things"]');
+  await p.tap('#palette [aria-label^="Scatter"]');
+  bad = await layout();
+  const pourUi = await p.evaluate(() => ({ kinds: document.querySelectorAll('#palette .tile').length, count: [...document.querySelectorAll('#palette .chip')].filter((c) => /^× \d+$/.test(c.textContent)).map((c) => c.getBoundingClientRect().height)[0] }));
+  assert(pourUi.kinds === 5 && pourUi.count >= 44 && !bad.length, `the scatter brush offers its kinds and a count within reach ${JSON.stringify(pourUi)} ${bad.join('; ')}`);
+  await p.tap('#palette [title="Coins"]');
+  const loose = () => p.evaluate(() => [...window.__ct.store.keys('l:')].map((k) => window.__ct.store.get(k).p));
+  const poured = (n) => p.waitForFunction((m) => [...window.__ct.store.keys('l:')].length === m && window.__ct.board.loose.playing.length === 0, n, { timeout: 15000 }).then(() => true, () => false);
+  await touch('touchStart', [[cx, cy - h * 0.1]]);
+  await touch('touchStart', [[cx, cy - h * 0.1], [cx + 80, cy - h * 0.1]]);
+  await touch('touchEnd', []);
+  await p.waitForTimeout(400);
+  assert(await p.evaluate(() => window.__ct.board.loose.count === 0), 'a second finger pours nothing');
+  await touch('touchStart', [[cx, cy - h * 0.1]]);
+  await touch('touchEnd', []);
+  const tapped = await poured(6);
+  const span = (ps) => Math.hypot(Math.max(...ps.map((q) => q[0])) - Math.min(...ps.map((q) => q[0])), Math.max(...ps.map((q) => q[2])) - Math.min(...ps.map((q) => q[2]))) / 100;
+  const heap = span(await loose());
+  await drag(cx - 130, cy - h * 0.14, cx + 110, cy - h * 0.06);
+  const strewn = await poured(12);
+  assert(tapped && strewn && (await cells()).length === 1, `a tap pours six coins in a heap (${heap.toFixed(1)} across), a drag strews six more (${span(await loose()).toFixed(1)} across), and nothing else is edited`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-scatter.png` });
+  await p.tap('#erase');
+  const coin = await p.evaluate(() => { // a coin on screen, clear of the bars
+    const { board } = window.__ct, c = document.querySelector('#c');
+    for (const v of board.loose.pieces.values()) {
+      const s = board.ground.position.clone().set(...v.p).project(board.camera), x = ((s.x + 1) / 2) * c.clientWidth, y = ((1 - s.y) / 2) * c.clientHeight;
+      if (document.elementFromPoint(x, y) === c) return [x, y];
+    }
+    return null;
+  });
+  await touch('touchStart', [coin]);
+  await touch('touchEnd', []);
+  await settle();
+  const left = (await loose()).length;
+  await p.tap('#undo');
+  await settle();
+  const again = (await loose()).length;
+  await p.tap('#undo');
+  await p.tap('#undo');
+  await settle();
+  assert(left < 12 && again === 12 && (await loose()).length === 0 && (await cells()).length === 1 && (await keys('w:')).length === 1, `a tap with the eraser picks loose pieces up (${12 - left}); undo returns them, then takes back each pour whole`);
   // Scenes: generate a dungeon from the sheet; its rooms are listed, and one can be refurnished alone.
   await p.tap('[data-cat="scenes"]');
   await p.tap('#palette [title="Generate a scene"]');
@@ -481,6 +759,95 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await touch('touchEnd', []);
   const pg = await p.evaluate(() => ({ pings: window.__ct.board.pings.length, rulers: window.__ct.board.rulers.size, sel: window.__ct.board.selected, tool: window.__ct.board.tool }));
   assert(pg.pings === 1 && !pg.rulers, `press and hold pings; leaving the ruler tool puts the ruler away ${JSON.stringify(pg)}`);
+
+  // Breaking by touch: tap a wall in play, a Break button comes up over it; tapping that brings the wall down.
+  const wall = await p.evaluate(() => {
+    const { board, store } = window.__ct, c = document.querySelector('#c'), t = board.controls.target;
+    const roof = document.querySelector('#top').getBoundingClientRect().bottom + 70, floor = document.querySelector('#tools').getBoundingClientRect().top - 30;
+    board.select(null);
+    const minis = [...store.keys('m:')].map((k) => store.get(k)), blocks = [...store.keys('b:')].map((k) => k.slice(2).split(',').map(Number));
+    for (let r = 0; r < 8; r++) for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+      const x = Math.floor(t.x) + dx, z = Math.floor(t.z) + dz;
+      if ([...minis, ...blocks.map(([bx, , bz]) => ({ x: bx, z: bz }))].some((m) => Math.hypot(m.x - x, m.z - z) < 3)) continue;
+      const s = board.ground.position.clone().set(x + 0.5, 0.5, z).project(board.camera), sx = ((s.x + 1) / 2) * c.clientWidth, sy = ((1 - s.y) / 2) * c.clientHeight;
+      if (sx < 60 || sx > c.clientWidth - 60 || sy < roof || sy > floor) continue;
+      const key = `w:${x},0,${z},n`;
+      store.set(key, { i: 'wall' });
+      return { key, sx, sy };
+    }
+    return null;
+  });
+  assert(!!wall, 'found a clear spot on screen for a wall');
+  await settle();
+  await touch('touchStart', [[wall.sx, wall.sy]]);
+  await touch('touchEnd', []);
+  await settle();
+  bad = await layout();
+  const offer = await p.evaluate(() => {
+    const b = document.querySelector('#break'), r = b.getBoundingClientRect(), top = document.querySelector('#top').getBoundingClientRect().bottom;
+    return { key: window.__ct.board.offered, shown: !b.hidden, w: Math.round(r.width), h: Math.round(r.height), on: r.left >= 0 && r.top >= top && r.right <= innerWidth && r.bottom <= document.querySelector('#tools').getBoundingClientRect().top };
+  });
+  assert(offer.key === wall.key && offer.shown && offer.w >= 44 && offer.h >= 44 && offer.on && !bad.length, `tapping a wall in play offers to break it, with a full-size button on screen ${JSON.stringify(offer)} ${bad.join('; ')}`);
+  await touch('touchStart', [[wall.sx, wall.sy]]);
+  await touch('touchStart', [[wall.sx, wall.sy], [wall.sx + 50, wall.sy + 40]]);
+  await touch('touchEnd', [[wall.sx + 50, wall.sy + 40]]);
+  await touch('touchEnd', []);
+  await settle();
+  assert(await p.evaluate((k) => !!window.__ct.store.get(k), wall.key), 'a second finger never breaks anything');
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-break.png` });
+  await p.tap('#break');
+  const burst = await p.evaluate((k) => ({ gone: !window.__ct.store.get(k), chunks: window.__ct.board.debris.count, hidden: document.querySelector('#break').hidden }), wall.key);
+  assert(burst.gone && burst.chunks >= 12 && burst.chunks <= 24 && burst.hidden, `the Break button brings the wall down in a burst of debris ${JSON.stringify(burst)}`);
+  await p.waitForFunction(() => window.__ct.board.debris.count === 0 && !window.__ct.board.wasBusy, null, { timeout: 8000 });
+  await p.evaluate(() => window.__ct.board.undo());
+  assert(await p.evaluate((k) => window.__ct.store.get(k)?.i === 'wall' && window.__ct.board.debris.count === 0, wall.key), 'undo puts the wall back, and the table went idle after the debris');
+  await p.evaluate((k) => window.__ct.store.set(k, null), wall.key);
+  // Shove: the ring arms it, the next tap on the table says which way, and the mini goes one cell.
+  // The spots to touch: a clear run of cells through the mini, as screen points.
+  const lane = () => p.evaluate(() => {
+    const { board, store } = window.__ct, id = [...store.keys('m:')][0].slice(2), v = store.get(`m:${id}`), c = document.querySelector('#c');
+    const top = document.querySelector('#top').getBoundingClientRect().bottom + 8, dock = document.querySelector('#tools').getBoundingClientRect().top - 60;
+    const at = (x, z) => { const s = board.ground.position.clone().set(x + 0.5, v.y, z + 0.5).project(board.camera); return [((s.x + 1) / 2) * c.clientWidth, ((1 - s.y) / 2) * c.clientHeight]; };
+    const free = (x, z) => ![...store.keys(`b:${x},`)].some((k) => +k.split(',')[2] === z && +k.split(',')[1] >= v.y);
+    for (const [sx, sz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const pts = [-1, 0, 1, 2, 3].map((i) => [v.x + sx * i, v.z + sz * i]);
+      if (pts.every(([x, z]) => free(x, z)) && pts.map(([x, z]) => at(x, z)).every(([x, y]) => x > 30 && x < innerWidth - 30 && y > top && y < dock)) return { id, v, sx, sz, pts: pts.map(([x, z]) => at(x, z)) };
+    }
+    return null;
+  });
+  const tapAt = async ([x, y]) => { await touch('touchStart', [[x, y]]); await touch('touchEnd', []); await settle(); };
+  let ln = await lane();
+  assert(!!ln, 'there is room on screen to push the mini about');
+  await p.evaluate((id) => window.__ct.board.select(id), ln.id);
+  await p.tap('#ring [title="Shove"]');
+  bad = await layout();
+  assert(await p.evaluate((id) => window.__ct.board.shoving === id && /Tap which way/.test(document.querySelector('#ring').textContent), ln.id) && !bad.length, `Shove on the ring waits for a direction ${bad.join('; ')}`);
+  await tapAt(ln.pts[4]);
+  const shoved = await p.evaluate((id) => ({ v: window.__ct.store.get(`m:${id}`), armed: window.__ct.board.shoving, sel: window.__ct.board.selected, ring: document.querySelectorAll('#ring > button').length }), ln.id);
+  assert(shoved.v.x === ln.v.x + ln.sx && shoved.v.z === ln.v.z + ln.sz && !shoved.armed && shoved.sel === ln.id && shoved.ring === 6, `a tap on the table shoves the mini one cell that way ${JSON.stringify(shoved)}`);
+
+  // Blast: the circle template in Measure, then the Blast chip. Next to the centre, the mini is thrown and floored; one undo.
+  ln = await lane();
+  assert(!!ln, 'and still room for a blast');
+  await p.tap('[data-tool="ruler"]');
+  await p.tap('#palette [title="Radius"]');
+  assert(await p.evaluate(() => document.querySelector('#palette [title^="Blast"]').disabled), 'Blast waits for a circle to be drawn');
+  const [from, , to] = ln.pts; // centre one cell behind the mini, two cells of radius
+  await touch('touchStart', [from]);
+  for (let i = 1; i <= 6; i++) await touch('touchMove', [[from[0] + ((to[0] - from[0]) * i) / 6, from[1] + ((to[1] - from[1]) * i) / 6]]);
+  await touch('touchEnd', []);
+  await settle();
+  bad = await layout();
+  await p.tap('#palette [title^="Blast"]');
+  await settle();
+  const blown = await p.evaluate((id) => window.__ct.store.get(`m:${id}`), ln.id);
+  const went = (blown.x - ln.v.x) * ln.sx + (blown.z - ln.v.z) * ln.sz;
+  assert(went >= 1 && went <= 4 && blown.d === true && [blown.x, blown.y, blown.z].every(Number.isInteger) && !bad.length, `the GM's blast throws the mini outward and floors it (${went} cells) ${bad.join('; ')}`);
+  await p.tap('#palette [title="Undo the last edit"]');
+  await settle();
+  const back = await p.evaluate((id) => window.__ct.store.get(`m:${id}`), ln.id);
+  assert(back.x === ln.v.x && back.z === ln.v.z && !back.d, 'one undo takes the whole blast back');
+  await p.tap('[data-tool="move"]');
 
   for (const sheet of ['boards', 'atmo']) {
     await p.tap('#menuBtn');
@@ -521,6 +888,158 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   });
   assert(onScreen && (await cells()).length === 1, 'flung dice come to rest in view, and the throw edits nothing');
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
+
+  // Phone extras: a coin in the picker, shake to throw, and the throw is felt.
+  await p.context().grantPermissions(['accelerometer', 'gyroscope']).catch(() => {}); // a headless browser cannot show the prompt
+  await p.evaluate(() => { window.__vib = []; navigator.vibrate = (x) => (window.__vib.push(x), true); });
+  const shakeIt = () => p.evaluate(() => {
+    for (const y of [22, 22, 22, -22, -22, -22]) dispatchEvent(new DeviceMotionEvent('devicemotion', { acceleration: { x: 0, y, z: 0 }, interval: 16 }));
+  });
+  await shakeIt();
+  await settle();
+  assert(await p.evaluate(() => !window.__ct.board.dice.held), 'shaking with an empty hand throws nothing');
+  await p.tap('#logToggle');
+  const small = await p.evaluate(() => ['#shake', '#dice [data-d="2"]'].filter((q) => { const r = document.querySelector(q).getBoundingClientRect(); return r.width < 44 || r.height < 44; }));
+  assert(!small.length, `coin and shake buttons are finger-sized ${small.join(' ')}`);
+  // Where the browser wants asking before it shares its motion sensor, shaking starts off: switch it on by touch.
+  if (!(await p.evaluate(() => document.querySelector('#shake').classList.contains('on')))) await p.tap('#shake');
+  await p.tap('#dice [data-d="2"]');
+  await p.waitForFunction(() => /shake/.test(document.querySelector('#hand').textContent));
+  assert(await p.evaluate(() => /1d2 in hand.*shake/.test(document.querySelector('#hand').textContent) && document.querySelector('#shake').classList.contains('on')), 'a coin goes in the hand, and the hint offers a shake');
+  await shakeIt();
+  await p.waitForFunction(() => /rolled 1d2: (Heads|Tails)/.test(document.querySelector('#msgs').textContent));
+  const tossed = await p.evaluate(() => {
+    const { board } = window.__ct, mine = board.dice.playing[board.dice.playing.length - 1];
+    const v = mine.meshes[0].position.clone().project(board.camera);
+    return { kind: mine.kinds.join(), seen: Math.abs(v.x) < 1 && Math.abs(v.y) < 1, hand: board.hand.length, sheet: document.querySelector('#log').classList.contains('closed'), vib: window.__vib.length };
+  });
+  assert(tossed.kind === 'd2' && tossed.seen && !tossed.hand && tossed.sheet && (await cells()).length === 1, 'a shake flips the coin into view, once, and edits nothing');
+  assert(tossed.vib > 0, `the thrower feels the throw (${tossed.vib} buzzes)`);
+  // Switched off, a shake does nothing; the touch throw is untouched by all this.
+  await p.tap('#logToggle');
+  await p.tap('#shake');
+  await p.tap('#dice [data-d="2"]');
+  await shakeIt();
+  await settle();
+  assert(await p.evaluate(() => window.__ct.board.hand.length === 1 && !window.__ct.board.dice.held && !/shake/.test(document.querySelector('#hand').textContent)), 'with shaking switched off the coin stays in the hand');
+  await p.tap('#diceClear');
+  // Ambient life: a tree and a fire stir a few frames a second; switched off, an idle table draws nothing.
+  await p.evaluate(() => {
+    const { board, store } = window.__ct;
+    for (const d of board.dice.playing) d.t = 1e9; // put the dice away now, not in the middle of the count
+    store.set('b:3,0,3', { i: 'tree' });
+    store.set('b:-3,0,3', { i: 'campfire' });
+  });
+  await p.waitForFunction(() => { const { board } = window.__ct; return !board.dice.playing.length && [...board.props.values()].every((g) => !g.userData.pending); });
+  const frames = (ms) => p.evaluate(async (ms) => {
+    const { board } = window.__ct, f = board.frames, t = performance.now();
+    await new Promise((r) => setTimeout(r, ms));
+    return { n: board.frames - f, rate: (board.frames - f) / ((performance.now() - t) / 1000) };
+  }, ms);
+  const flip = async (act) => {
+    await p.tap('#menuBtn');
+    await p.tap(`[data-act="${act}"]`);
+    const b = await p.evaluate((act) => { const el = document.querySelector(`[data-act="${act}"]`), r = el.getBoundingClientRect(); return { text: el.textContent, h: r.height, w: r.width }; }, act);
+    await p.tap('#menuBtn');
+    return b;
+  };
+  const off = await flip('ambient');
+  assert(/Ambient motion: off/.test(off.text) && off.h >= 44 && off.w >= 44 && (await p.evaluate(() => document.querySelector('#menu').hidden)), `ambient motion has a thumb-sized switch in the menu (${off.text})`);
+  await p.waitForFunction(async () => { const { board } = window.__ct, f = board.frames; await new Promise((r) => setTimeout(r, 400)); return board.frames === f; });
+  const still = await frames(1000);
+  assert(still.n === 0, `with ambient motion off an idle table draws no frames (${still.n})`);
+  // The software renderer here is slow enough to switch ambience off by itself: pretend it is not.
+  await p.evaluate(() => { window.__ct.board.slowed = false; window.__ct.board.stirSlow = -1e9; });
+  const on = await flip('ambient');
+  await p.waitForTimeout(300);
+  const stir = await frames(3000);
+  const fire = await p.evaluate(() => { const { board } = window.__ct; return { lit: board.lamps.some((l) => l.visible && l.intensity !== l.userData.base), shadows: board.renderer.shadowMap.enabled && board.renderer.shadowMap.needsUpdate /* (with shadows switched off for speed, nothing ever clears the flag) */, alive: board.alive }; });
+  assert(/: on/.test(on.text) && fire.alive && stir.n >= 1 && stir.rate < 20 && fire.lit && !fire.shadows, `with it on, leaves and firelight stir at a throttled rate, shadows left alone (${stir.rate.toFixed(1)} frames/s) ${JSON.stringify([on.text, fire, stir, await p.evaluate(() => { const b = window.__ct.board; return { lamps: b.lamps.map((l) => [l.visible, l.intensity, l.userData.base]), target: b.controls.target.toArray(), glow: b.glow, wob: b.wobbles.size, dice: b.dice.playing.length, loose: b.loose.playing.length }; })])}`);
+  await p.evaluate(() => { window.__ct.board.slowed = true; });
+  const tired = await frames(700);
+  assert(tired.n <= 1, `a device that has had to lower quality gets no ambient frames (${tired.n})`);
+  await flip('ambient');
+
+  // Camera: the turn passing to a mini out of view glides the camera to it; a finger on the table stops that.
+  const target = () => p.evaluate(() => window.__ct.board.controls.target.toArray());
+  await p.evaluate(() => {
+    const { store } = window.__ct, mini = (x) => ({ x, y: 0, z: 0, k: 'knight', c: '#3e63dd', n: '', r: 0, s: 1, ini: 5 });
+    store.set('m:far1', mini(40));
+    store.set('m:far2', mini(-40));
+  });
+  await p.waitForFunction(() => window.__ct.board.minis.has('far1') && window.__ct.board.minis.has('far2'));
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 1 }));
+  await p.waitForFunction(() => { const t = window.__ct.board.controls.target; return Math.hypot(t.x - 40.5, t.z - 0.5) < 0.05 && !window.__ct.board.glide; });
+  assert(true, 'the camera glides to the mini whose turn it is when it is out of view');
+  // A finger already on the table (somewhere clear of the turn strip and the dock): the camera stays put.
+  const bare = await p.evaluate(() => {
+    for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if (document.elementFromPoint(x, y)?.id === 'c') return [x, y];
+    return null;
+  });
+  await touch('touchStart', [bare]);
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 1 }));
+  await p.waitForFunction(() => window.__ct.board.turnId === 'far2');
+  await p.waitForTimeout(200);
+  const held = await target();
+  await touch('touchEnd', []);
+  assert(Math.abs(held[0] - 40.5) < 0.05 && (await p.evaluate(() => !window.__ct.board.glide)), 'the camera does not move while a finger is on the table');
+  // A glide under way (frames held still so it cannot finish first) is dropped the moment a finger lands.
+  await p.evaluate(() => window.__ct.board.renderer.setAnimationLoop(null));
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 2 })); // (in view already: no move)
+  await p.waitForFunction(() => window.__ct.board.turnId === 'far1');
+  // (Stand the other one somewhere that is off this screen for certain: a wide screen sees a long way.)
+  await p.evaluate(() => {
+    const { board, store } = window.__ct, v = store.get('m:far2'), t = board.controls.target;
+    const off = [[-40, 0], [0, 40], [0, -40], [-80, 0]].map(([x, z]) => [Math.round(t.x) + x, Math.round(t.z) + z]).find(([x, z]) => {
+      const q = board.ground.position.clone().set(x + 0.5, 0.5, z + 0.5).project(board.camera);
+      return Math.abs(q.x) > 1.2 || Math.abs(q.y) > 1.2 || q.z > 1;
+    });
+    if (off) store.set('m:far2', { ...v, x: off[0], z: off[1] });
+  });
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 2 }));
+  await p.waitForFunction(() => !!window.__ct.board.glide);
+  await touch('touchStart', [bare]);
+  const dropped = await p.evaluate(() => !window.__ct.board.glide);
+  await touch('touchEnd', []);
+  await p.evaluate(() => { const { board } = window.__ct; board.renderer.setAnimationLoop(() => board.frame()); });
+  assert(dropped, 'a touch on the table cancels a camera glide at once');
+  // Switched off, turns no longer move the camera.
+  const follow = await flip('follow');
+  const camBefore = await target();
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 3 }));
+  await p.waitForFunction(() => window.__ct.board.turnId === 'far1');
+  await p.waitForTimeout(200);
+  const camAfter = await target();
+  assert(/Follow turns: off/.test(follow.text) && follow.h >= 44 && camBefore[0] === camAfter[0] && camBefore[2] === camAfter[2], 'with "Follow turns" off the camera stays where it is');
+  // The GM's boulder trap, by touch alone: tap Boulder, press on the table, flick the way it should roll.
+  if (!(await p.evaluate(() => document.body.classList.contains('gm')))) { // (an earlier check may have taken the GM's seat already)
+    await p.tap('#menuBtn');
+    await p.tap('[data-act="gm"]');
+  }
+  if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn');
+  if (await p.evaluate(() => document.querySelector('#log').classList.contains('closed'))) await p.tap('#logToggle'); // (it may be open still)
+  bad = await layout();
+  await p.tap('#boulder');
+  assert(await p.evaluate(() => window.__ct.board.boulderArmed && document.querySelector('#log').classList.contains('closed')) && !bad.length, `the GM picks up a boulder from the dice sheet ${bad.join('; ')}`);
+  await touch('touchStart', [[cx, cy - 80]]);
+  await touch('touchStart', [[cx, cy - 80], [cx + 80, cy - 80]]);
+  await touch('touchEnd', []);
+  await settle();
+  assert(await p.evaluate(() => { const { board } = window.__ct; return !board.boulder.held && board.boulder.rolling.length === 0 && board.boulderArmed; }), 'a second finger cancels the boulder without rolling it');
+  const builtBefore = (await cells()).length;
+  // (Press where the table shows: by now a turn strip and other chrome may lie over the usual spot.)
+  const [bx, by] = await p.evaluate(() => {
+    for (let y = Math.round(innerHeight / 2); y > 60; y -= 20) for (const x of [innerWidth / 2 - 60, innerWidth / 4, (innerWidth * 3) / 4 - 80]) if (document.elementFromPoint(x, y)?.id === 'c' && document.elementFromPoint(x + 72, y - 24)?.id === 'c') return [x, y];
+    return [innerWidth / 2 - 60, innerHeight / 2 - 40];
+  });
+  await touch('touchStart', [[bx, by]]);
+  await p.waitForFunction(() => window.__ct.board.boulder.held);
+  for (let i = 1; i <= 6; i++) { await touch('touchMove', [[bx + i * 12, by - i * 4]]); await p.waitForTimeout(16); }
+  await touch('touchEnd', []);
+  await p.waitForFunction(() => { const { board } = window.__ct; return board.boulder.rolling.length === 1 && !board.boulder.held && !board.boulderArmed; });
+  await p.waitForTimeout(400);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-boulder.png` });
+  assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === builtBefore, `a flick sends the boulder rolling, and edits no terrain ${JSON.stringify(await p.evaluate(() => { const b = window.__ct.board, r = b.boulder.rolling[0]; return r && { n: r.n, from: r.pos[0].toArray().map((v) => +v.toFixed(1)), to: r.pos[r.n - 1].toArray().map((v) => +v.toFixed(1)), target: b.controls.target.toArray().map((v) => +v.toFixed(1)) }; }))} ${(await cells()).length}`);
   await p.context().close();
 }
 

@@ -2,13 +2,23 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
-import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
+import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, setWind, withDetail, type Season } from './kit';
+import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, safeArea, type Ambience } from './glide';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
-import { DiceView, type Kind, type Start } from './dice';
+import { BoulderView } from './boulder';
+import { DiceView, type Solid, type Kind, type Start } from './dice';
+import { Debris } from './debris';
+import { BREAK_KEY, broken, debrisOf, seedOf, shatter } from './breaking';
+import { SHOTS, ShotsView, shotPath, type Shot } from './shots';
+import { buzz } from './haptics';
 import { LIGHT_LEVELS, nextLight } from './rules';
+import { RISE, SQUASH, TOPPLE, hopAt, hopPlan, nearestDir, riseAt, squashAt, toppleAt } from './feel';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
+import { heading, land } from './forces';
 import { Look } from './look';
+import { LooseView } from './looseview';
+import { decodeLoose } from './loose';
 import { TABLE_SPAN, tableTexture } from './table';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
@@ -35,16 +45,24 @@ export interface BoardHooks {
   onGrab(): void;
   /** The dice left the hand at these poses with this velocity (units/s). */
   onThrow(starts: Start[], vel: Vec): void;
+  /** The GM let a boulder go here with this velocity (units/s). */
+  onBoulder(start: Vec, vel: Vec): void;
   /** The local ruler changed (null = put away). Called often while measuring. */
   onRuler(r: Ruler | null): void;
   /** An area was copied with the copy brush. */
   onSlab(slab: Slab): void;
+  /** The scatter brush was tapped at a spot (`a` = `b`) or dragged from `a` to `b`: pour loose pieces out there. */
+  onPour?(a: Vec, b: Vec): void;
   /** A light was stepped to another strength with the light brush. */
   onLight(name: string): void;
   /** A carried mini touched down (`mine`: this player put it there). */
   onLand(mine: boolean): void;
   /** The picture was just redrawn: anything pinned to a spot on the table should follow. */
   onView(): void;
+  /** A mini set down by hand had nothing under it and fell this many cells. */
+  onFall(id: string, cells: number): void;
+  /** The player pointed which way to shove a mini (`sx`, `sz` each -1, 0 or 1; both 0 = never mind). */
+  onShove(id: string, sx: number, sz: number): void;
 }
 
 const LIMIT = 96;
@@ -70,7 +88,7 @@ function noise(x: number, y: number, z: number): number {
 }
 
 /** Many copies of one shape as a single draw call, refilled from scratch whenever its contents change. */
-class Swarm {
+export class Swarm {
   mesh: THREE.InstancedMesh;
   /** What each copy stands for (a cell key), by instance number. */
   keys: string[] = [];
@@ -190,6 +208,9 @@ interface Gesture {
   /** Touch editing: what the first contact pointed at, and the flat layer a drag paints on. */
   first: Vec | null;
   stroke: { level: number; plane: number } | null;
+  /** Scattering: where on the table the finger came down. Wiping: the stroke began on loose pieces, and clears only those. */
+  from?: Vec | null;
+  wipe?: boolean;
   /** Shaping the land: the columns this stroke has already touched (each changes once a stroke). */
   shaped?: Set<string>;
   /** Drawing a wall: the edge the finger started on. The run stays in line with it. */
@@ -199,10 +220,71 @@ interface Gesture {
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
 const LONG_PRESS = 550;
 
-interface Mini {
-  group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string;
-  /** How the piece handles: its lean (and how fast that is changing) as it is carried, and the settle after it is put down. */
-  lean: THREE.Vector2; leanV: THREE.Vector2; air: boolean; land: number;
+/** A piece rocking after a knock: how far it leans (radians, toward +x and +z) and how fast that is changing. */
+interface Wobble { x: number; z: number; vx: number; vz: number; base?: THREE.Quaternion; obj?: THREE.Object3D }
+const DIE = 0.45; // about the radius of a die
+const BAND = 0.5;
+
+/**
+ * Rough solid shape of a prop for dice to bounce off: one box per half-cell of height, each as
+ * wide as the model is there (so a tree is a trunk under a canopy, not one big block).
+ */
+/** Where a wall edge or a cell is, from its key (`side` is empty for a cell). */
+const pieceAt = (key: string): [x: number, y: number, z: number, side: Side | ''] => (key.startsWith('w:') ? parseEdge(key) : [...parse(key), '']);
+function propSolids(g: THREE.Group): Solid[] {
+  g.updateMatrixWorld(true);
+  const y0 = g.position.y, bands: number[][] = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), p = new THREE.Vector3();
+  const put = (v: THREE.Vector3, i: number) => {
+    if (i < 0 || i > 7) return;
+    const m = (bands[i] ??= [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]);
+    m[0] = Math.min(m[0], v.x); m[1] = Math.max(m[1], v.x);
+    m[2] = Math.min(m[2], v.y); m[3] = Math.max(m[3], v.y);
+    m[4] = Math.min(m[4], v.z); m[5] = Math.max(m[5], v.z);
+  };
+  // An edge reaches into every band it passes through, at the points where it crosses between them.
+  const edge = (u: THREE.Vector3, v: THREE.Vector3) => {
+    const lo = Math.floor((Math.min(u.y, v.y) - y0) / BAND), hi = Math.floor((Math.max(u.y, v.y) - y0) / BAND);
+    put(u, Math.floor((u.y - y0) / BAND));
+    for (let i = lo + 1; i <= hi; i++) {
+      p.lerpVectors(u, v, (y0 + i * BAND - u.y) / (v.y - u.y));
+      put(p, i - 1);
+      put(p, i);
+    }
+  };
+  g.traverse((o) => {
+    const mesh = o as THREE.Mesh, pos = mesh.geometry?.getAttribute('position'), mat = mesh.material as THREE.Material | undefined;
+    if (!mesh.isMesh || !pos || (o as THREE.InstancedMesh).isInstancedMesh || mat?.transparent) return;
+    const idx = mesh.geometry.index, n = idx ? idx.count : pos.count;
+    const at = (v: THREE.Vector3, i: number) => v.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(mesh.matrixWorld);
+    for (let i = 0; i + 2 < n; i += 3) {
+      at(a, i); at(b, i + 1); at(c, i + 2);
+      edge(a, b); edge(b, c); edge(c, a);
+    }
+  });
+  const out: Solid[] = [];
+  bands.forEach((m, i) => {
+    const under = bands[i - 1];
+    if (m[3] - m[2] < 0.12) { // a sliver: part of what it sits on, or (rugs, petals) nothing to bounce off
+      if (under && out.length) { const b = out[out.length - 1]; b.p[1] += (m[3] - m[2]) / 2; b.h[1] += (m[3] - m[2]) / 2; }
+      return;
+    }
+    out.push({ p: [(m[0] + m[1]) / 2, (m[2] + m[3]) / 2, (m[4] + m[5]) / 2], h: [(m[1] - m[0]) / 2, (m[3] - m[2]) / 2, (m[5] - m[4]) / 2] });
+  });
+  return out;
+}
+
+interface Mini extends Feel { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string }
+/** What a mini is in the middle of, for show only (see `src/feel.ts`): each is gone again once it has played out. */
+interface Feel {
+  /** Falling over, or (`up`) getting back up: seconds in. */
+  fall?: { t: number; up: boolean };
+  /** Seconds since it landed. */
+  squash?: number;
+  /** In the air between two spots: where it left from, the arc, and which way it is going. */
+  hop?: { from: THREE.Vector3; t: number; dur: number; h: number; dx: number; dz: number };
+  /** How fast it was being carried last frame, to feel the pull when that changes. */
+  vel?: [x: number, z: number];
 }
 
 // Shared by every mini: one base shape, one material per base colour, one invisible hit area.
@@ -291,9 +373,15 @@ export class Board {
   fogHide = true;
   selected: string | null = null;
   readonly dice: DiceView;
+  readonly shots: ShotsView;
+  /** Set while a shot is being aimed: the next tap in play names its target (a mini, or a spot in half cells) instead of selecting. */
+  aimed: ((target: string | Vec) => void) | null = null;
   /** Dice picked up and waiting to be thrown: while set, a drag on the table throws them. */
   hand: Kind[] = [];
   diceColor = '#ffffff';
+  readonly boulder: BoulderView;
+  /** The GM has a boulder ready: while set, a drag on the table lets it go (as with dice in hand). */
+  boulderArmed = false;
   /** Cutaway: blocks, props and minis at this height or above are not drawn (Infinity = show all). */
   cut = Infinity;
 
@@ -328,6 +416,8 @@ export class Board {
   /** How far the land brushes reach around the cell touched, in cells (0 = just that cell). */
   reach = 0;
   private minis = new Map<string, Mini>();
+  /** Small things lying where they fell (loose.ts), one swarm for each kind. */
+  readonly loose: LooseView;
   private rulers = new Map<string, THREE.Group>();
   private fog: THREE.InstancedMesh | null = null;
   private fogDirty = false;
@@ -338,6 +428,8 @@ export class Board {
   private turnRing: THREE.Mesh;
   private pings: { mesh: THREE.Mesh; t: number }[] = [];
   private anims: { id: string; kind: string; t: number; bubble: THREE.Sprite }[] = [];
+  /** Pieces rocking after a knock, by mini id or prop cell. Not shared: every device works them out alike. */
+  private wobbles = new Map<string, Wobble>();
   private marquee: THREE.Mesh;
   private pointers = new Map<number, { x: number; y: number }>();
   private gesture: Gesture | null = null;
@@ -368,6 +460,23 @@ export class Board {
   private redoStack: Undo[][] = [];
   private batch: Undo[] | null = null;
   private dirty = true;
+  /** Frames drawn so far (for the checks: an idle table must not add to it). */
+  frames = 0;
+  /** Leaves sway and fires flicker, a few frames a second, while nothing else is going on. Local, not shared. */
+  ambient = false;
+  /** Glide to the mini whose turn it has become, if it is out of view. Local, not shared. */
+  followTurns = true;
+  private glide: Glide | null = null;
+  /** Is there anything on the table that sways or flickers? Looked up again only once the table is at rest. */
+  private alive = false;
+  private lifeDirty = true;
+  /** adapt() has had to give up quality: this device has nothing to spare for ambience. */
+  private slowed = false;
+  /** Was the last frame an ambient one, and how many of those have run long (see frame). */
+  private stirred = false;
+  private stirSlow = 0;
+  private drawn = 0;
+  private calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
   private coarse = matchMedia('(pointer: coarse)').matches;
   private last = performance.now();
 
@@ -482,6 +591,12 @@ export class Board {
     };
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
     this.dice = new DiceView(this.scene);
+    this.loose = new LooseView((geo, mat) => new Swarm(geo, mat, this.scene, true), hidden);
+    this.dice.onBump = (at, dv) => this.bump(at, dv);
+    this.debris = new Debris(this.scene);
+    this.shots = new ShotsView(this.scene);
+    this.boulder = new BoulderView(this.scene, (x, z) => !this.full && fogged(this.store, x, z));
+    this.boulder.onPass = (at, dir) => this.shake(at, dir);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
     onKitPack(() => {
       for (const [key, g] of this.props) {
@@ -493,6 +608,7 @@ export class Board {
         this.applyMini(id, m.val);
       }
       this.coverDirty = this.edgesDirty = true;
+      this.loose.kitChanged();
       this.touched();
     });
 
@@ -510,6 +626,7 @@ export class Board {
       e.preventDefault();
       e.stopPropagation();
       const px = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY;
+      this.glide = null;
       const from = this.zoomGoal ?? this.camera.position.distanceTo(this.controls.target);
       this.zoomGoal = Math.min(this.controls.maxDistance, Math.max(this.controls.minDistance, from * Math.exp(px * (e.ctrlKey ? 0.012 : 0.0016))));
     }, { capture: true, passive: false });
@@ -524,6 +641,7 @@ export class Board {
   setRole(me: string, full: boolean): void {
     this.me = me;
     this.full = full;
+    if (!full) this.offer(null);
     this.refresh();
   }
 
@@ -534,6 +652,7 @@ export class Board {
     for (const [key, g] of this.props) g.visible = !this.cellHidden(...parse(key));
     for (const [id, m] of this.minis) this.applyMini(id, m.val); // ghosting depends on the role
     this.fogDirty = this.visDirty = true;
+    this.loose.refresh();
     this.touched();
   }
 
@@ -583,6 +702,7 @@ export class Board {
 
   setTurn(id: string | null): void {
     if (this.turnId) this.minis.get(this.turnId)?.group.remove(this.turnRing);
+    if (id && id !== this.turnId) this.follow(id);
     this.turnId = id;
     const m = id ? this.minis.get(id) : null;
     if (m) {
@@ -646,8 +766,15 @@ export class Board {
     this.edges.clear();
     this.edgesDirty = true;
     this.minis.clear();
+    this.loose.clear();
     this.rulers.clear();
     this.pings.length = this.anims.length = 0;
+    this.wobbles.clear();
+    this.debris.clear();
+    this.breaking.clear();
+    this.offer(null);
+    this.shots.clear();
+    this.boulder.clear();
     this.undoStack.length = this.redoStack.length = 0;
     this.fogDirty = this.visDirty = true;
     this.touched();
@@ -678,7 +805,7 @@ export class Board {
     let moved = false;
     this.lamps.forEach((lamp, i) => {
       const n = near[i];
-      lamp.intensity = n ? n.glow[1] * this.glow : 0;
+      lamp.intensity = lamp.userData.base = n ? n.glow[1] * this.glow : 0; // (breathe() flickers around the base)
       lamp.visible = !!n && this.glow > 0; // a lamp with nothing to light costs nothing
       if (!n) return;
       const y = n.p.y + n.glow[2];
@@ -693,7 +820,7 @@ export class Board {
   /** Ask for a redraw. The board only renders when something changed. */
   invalidate(): void { this.dirty = true; }
   /** The table itself changed (not just the camera): shadows need redrawing too. */
-  private touched(): void { this.dirty = this.shadowDirty = true; }
+  private touched(): void { this.dirty = this.shadowDirty = this.lifeDirty = true; }
   private hideGhost(): void {
     if (this.ghost.visible) this.invalidate();
     this.ghost.visible = false;
@@ -701,6 +828,7 @@ export class Board {
 
   apply(key: string, value: unknown, prev: unknown): void {
     this.touched();
+    if (this.breaking.size || this.offered) this.applyBreak(key, value, prev);
     if (key.startsWith('b:')) {
       this.applyCell(key, value as CellVal | null, prev as CellVal | null);
       this.visDirty = this.fogDirty = true; // walls change sight lines and fog heights
@@ -712,6 +840,8 @@ export class Board {
       if (v && EDGES[v.i]) this.edges.set(key, v.i);
       else this.edges.delete(key);
       this.edgesDirty = this.visDirty = this.terrainDirty = this.coverDirty = true;
+    } else if (key.startsWith('l:')) {
+      this.loose.set(key.slice(2), value);
     } else if (key.startsWith('f:')) {
       this.fogDirty = this.visDirty = true;
       if (!this.full) this.refresh();
@@ -976,6 +1106,7 @@ export class Board {
       }
       return;
     }
+    const was = m?.val ?? v; // before a rebuild forgets it
     const ghost = this.full && !!v.h;
     const fly = Math.max(0, Math.min(12, v.e || 0));
     const sig = [v.k, v.c, v.n, v.s, v.hp, v.mhp, fly, ghost, !!v.d].join('|');
@@ -1016,7 +1147,7 @@ export class Board {
       group.position.copy(m ? m.group.position : pos);
       group.visible = m ? m.group.visible : false; // decided by refreshMinis before the next frame
       if (m) this.scene.remove(m.group);
-      m = { group, target: pos, val: v, sig, lean: m?.lean ?? new THREE.Vector2(), leanV: m?.leanV ?? new THREE.Vector2(), air: m?.air ?? false, land: m?.land ?? -1 };
+      m = { group, target: pos, val: v, sig, fall: m?.fall, squash: m?.squash, hop: m?.hop, vel: m?.vel }; // a rebuilt figure carries on with what it was doing
       this.minis.set(id, m);
       this.scene.add(group);
       if (this.selected === id) this.attachRing(m);
@@ -1024,7 +1155,11 @@ export class Board {
       this.visDirty = true;
     }
     m.val = v;
-    if (this.gesture?.mini !== id) m.target.copy(pos);
+    if (!!was.d !== !!v.d) m.fall = { t: 0, up: !v.d }; // knocked down, or helped up
+    if (this.gesture?.mini !== id) {
+      m.target.copy(pos);
+      if (was.x !== v.x || was.y !== v.y || was.z !== v.z) this.hop(m, v.x - was.x, v.z - was.z);
+    }
     this.pose(m);
   }
 
@@ -1033,6 +1168,7 @@ export class Board {
     const body = m.group.children[0], v = m.val;
     body.rotation.set(v.d ? -Math.PI / 2 : 0, ((v.r || 0) * Math.PI) / 4, 0, 'YXZ');
     body.position.set(0, Math.max(0, Math.min(12, v.e || 0)) + (v.d ? 0.22 * (v.s || 1) : 0), 0);
+    this.posture(m);
   }
 
   /** Play a short emote on a mini: a little movement and an emoji popping up over its head. */
@@ -1062,8 +1198,8 @@ export class Board {
       const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + MINIS[m.val.k].height * s;
       const w = Math.sin(Math.min(1, u * 2) * Math.PI); // one swell over the first half
       if (!m.val.d) switch (a.kind) {
-        case 'attack': body.translateZ(w * 0.45); body.rotateX(w * 0.35); break;
-        case 'hurt': body.position.x += Math.sin(a.t * 55) * 0.07 * (1 - u); body.rotateX(-w * 0.3); break;
+        case 'attack': this.lunge(a.id, m, w * 0.45, w * 0.35) || (body.translateZ(w * 0.45), body.rotateX(w * 0.35)); break;
+        case 'hurt': body.position.x += Math.sin(a.t * 55) * 0.07 * (1 - u); this.lunge(a.id, m, -w * 0.25, -w * 0.3) || body.rotateX(-w * 0.3); break;
         case 'cheer': body.position.y += Math.abs(Math.sin(u * Math.PI * 2)) * 0.4; body.rotateY(u * Math.PI * 2); break;
         case 'sleep': body.rotateZ(w * 0.35); break;
         default: body.rotateZ(Math.sin(u * Math.PI * 4) * 0.22 * (1 - u));
@@ -1074,10 +1210,359 @@ export class Board {
     return this.anims.length > 0;
   }
 
+  // ---- knocks ----------------------------------------------------------------
+  // Dice bounce off the pieces on the table, and a piece that is hit rocks and settles. The
+  // rocking is for show: it is worked out on each device from what everyone already shares
+  // (the recorded throw, the moves), so nothing extra is sent and nothing on the table changes.
+
+  /** What thrown dice can run into around a spot: the minis, props and walls this player can see. */
+  solidsNear(c: Vec, reach: number, minis = true): Solid[] {
+    const out: Solid[] = [], near = (x: number, z: number) => Math.abs(x - c[0]) <= reach && Math.abs(z - c[2]) <= reach;
+    for (const m of minis ? this.minis.values() : []) {
+      const v = m.val, s = v.s || 1, h = MINIS[v.k].height * s, y = v.y + Math.max(0, Math.min(12, v.e || 0));
+      if (!m.group.visible || v.h || !near(v.x + 0.5, v.z + 0.5)) continue; // a hidden mini must not give itself away
+      out.push(v.d ? { p: [v.x + 0.5, y + 0.2 * s, v.z + 0.5], h: [0.5 * s, 0.2 * s, 0], round: true } : { p: [v.x + 0.5, y + h / 2, v.z + 0.5], h: [0.36 * s, h / 2, 0], round: true });
+    }
+    for (const [key, g] of this.props) {
+      const [x, , z] = parse(key);
+      if (!g.visible || g.userData.pending || !near(x + 0.5, z + 0.5) || this.wobbles.has(key)) continue;
+      out.push(...((g.userData.solids as Solid[] | undefined) ?? (g.userData.solids = propSolids(g))));
+    }
+    for (const [key, piece] of this.edges) {
+      const [x, y, z, side] = parseEdge(key);
+      if (piece === 'walldoor' || !near(x + 0.5, z + 0.5) || this.cellHidden(x, y, z)) continue; // doorways stand open
+      out.push(side === 'n' ? { p: [x + 0.5, y + 0.5, z], h: [0.5, 0.5, 0.1] } : { p: [x, y + 0.5, z + 0.5], h: [0.1, 0.5, 0.5] });
+    }
+    out.push(...this.loose.solids(c, reach));
+    return out;
+  }
+
+  /** A die was knocked sideways here: whatever it ran into is pushed the other way. */
+  private bump(at: THREE.Vector3, dv: THREE.Vector3): void {
+    const push = Math.min(4, Math.hypot(dv.x, dv.z) * 0.8) / Math.hypot(dv.x, dv.z);
+    for (const [id, m] of this.minis) {
+      const v = m.val, s = v.s || 1, y = v.y + (v.e || 0);
+      if (!m.group.visible || v.d || at.y < y - DIE || at.y > y + MINIS[v.k].height * s + DIE) continue;
+      if (Math.hypot(at.x - v.x - 0.5, at.z - v.z - 0.5) < 0.36 * s + DIE + 0.12) this.kick(id, -dv.x * push, -dv.z * push);
+    }
+    for (const [key, g] of this.props) {
+      if (!g.visible || Math.abs(at.x - g.position.x) > 1.5 || Math.abs(at.z - g.position.z) > 1.5) continue;
+      const hit = ((g.userData.solids as Solid[] | undefined) ?? (this.wobbles.has(key) ? [] : (g.userData.solids = propSolids(g))))
+        .some((b) => Math.abs(at.x - b.p[0]) < b.h[0] + DIE + 0.12 && Math.abs(at.y - b.p[1]) < b.h[1] + DIE + 0.12 && Math.abs(at.z - b.p[2]) < b.h[2] + DIE + 0.12);
+      if (hit) this.kick(key, -dv.x * push * 0.35, -dv.z * push * 0.35); // furniture is heavier than a figure
+    }
+  }
+
+  /** A boulder is rolling past here: the figures it brushes are set rocking, the way it is going. */
+  private shake(at: THREE.Vector3, dir: THREE.Vector3): void {
+    const k = 2.4 / Math.hypot(dir.x, dir.z);
+    for (const [id, m] of this.minis) {
+      const v = m.val, y = v.y + (v.e || 0);
+      if (!m.group.visible || v.d || this.wobbles.has(id) || at.y < y - 1 || at.y > y + MINIS[v.k].height * (v.s || 1) + 1) continue;
+      if (Math.hypot(at.x - v.x - 0.5, at.z - v.z - 0.5) < 1.6) this.kick(id, dir.x * k, dir.z * k);
+    }
+  }
+
+  /** Set a mini (by id) or a prop (by cell) rocking: `vx`, `vz` is how fast it starts to lean, and which way. */
+  private kick(key: string, vx: number, vz: number): void {
+    const w = this.wobbles.get(key) ?? { x: 0, z: 0, vx: 0, vz: 0 };
+    w.vx += vx;
+    w.vz += vz;
+    this.wobbles.set(key, w);
+    this.invalidate();
+  }
+
+  /** Rock a mini (by id) or a prop (by cell key) from outside the board, e.g. one that was shoved and would not budge. */
+  nudge(key: string, vx: number, vz: number): void { if (this.minis.has(key) || this.props.has(key)) this.kick(key, vx, vz); }
+
+  /** A blast went off here: the furniture in range rocks away from it, hardest close by. For show only. */
+  rock(c: Vec, radius: number): void {
+    for (const [key, g] of this.props) {
+      const [x, y, z] = parse(key), dx = x - c[0], dz = z - c[2], far = Math.hypot(dx, dz);
+      if (!g.visible || g.userData.pending || far > radius + 0.5 || Math.abs(y - c[1]) > radius) continue;
+      const push = 1.6 - far / (radius + 1);
+      this.kick(key, far ? (dx / far) * push : push, far ? (dz / far) * push : 0);
+    }
+  }
+
+  /** Several edits as one step of undo (a blast moves many minis at once). */
+  editAll(edits: [string, unknown][]): void {
+    if (!this.full || !edits.length) return;
+    this.batch = [];
+    this.undoStack.push(this.batch);
+    for (const [k, v] of edits) this.edit(k, v);
+    this.batch = null;
+  }
+
+  /** The mini waiting to be shoved: the next tap on the table says which way. */
+  shoving: string | null = null;
+  /** Wait for that tap (null calls it off). False if this player may not move the mini. */
+  aimShove(id: string | null): boolean {
+    this.shoving = id && this.hooks.canMove(id) ? id : null;
+    return !!this.shoving;
+  }
+  /** The tap came. On another mini it means "shoved by this one", so away from it; anywhere else, towards the tap. */
+  private pointShove(): void {
+    const id = this.shoving!, v = this.minis.get(id)?.val;
+    this.shoving = null;
+    const other = this.pickMini(), o = other && other !== id ? this.minis.get(other)!.val : null, s = this.pickSurface();
+    const back = v && o && heading(o.x, o.z, v.x + 0.5, v.z + 0.5);
+    const way = !v || other === id || !this.hooks.canMove(id) ? null : o ? back : s && heading(v.x, v.z, s.point.x, s.point.z);
+    this.hooks.onShove(id, way?.[0] ?? 0, way?.[1] ?? 0);
+  }
+
+  private tilt = new THREE.Quaternion();
+  private axis = new THREE.Vector3();
+  /** Rock the knocked pieces: each is a damped spring pulling it back upright. */
+  private wobble(dt: number): boolean {
+    for (const [key, w] of this.wobbles) {
+      const mini = this.minis.get(key), obj = mini ? mini.group.children[0] : this.props.get(key);
+      if (!obj || (w.obj && w.obj !== obj && !mini)) { this.wobbles.delete(key); continue; }
+      if (!w.base && !mini) w.base = obj.quaternion.clone();
+      w.obj = obj;
+      for (let t = dt; t > 0; t -= 1 / 120) { // small steps: the spring is stiff
+        const h = Math.min(t, 1 / 120);
+        w.vx += (-190 * w.x - 6.5 * w.vx) * h;
+        w.vz += (-190 * w.z - 6.5 * w.vz) * h;
+        w.x += w.vx * h;
+        w.z += w.vz * h;
+      }
+      const lean = Math.hypot(w.x, w.z), done = lean < 0.004 && Math.hypot(w.vx, w.vz) < 0.05;
+      if (mini && !this.anims.some((a) => a.id === key)) this.pose(mini);
+      else if (w.base) obj.quaternion.copy(w.base);
+      if (done) { this.wobbles.delete(key); continue; }
+      const angle = Math.min(lean, 0.45);
+      obj.quaternion.premultiply(this.tilt.setFromAxisAngle(this.axis.set(w.z, 0, -w.x).normalize(), angle));
+    }
+    return this.wobbles.size > 0;
+  }
+
+  // ---- breaking ---------------------------------------------------------------
+  // In play, whoever runs the table can tap a wall, a door or a thing and break it. The break
+  // is one ordinary edit, so it syncs and can be undone. The debris is for show, and a removal
+  // alone cannot tell a break from an eraser stroke, an undo or a new scene: so the breaker
+  // also says "this broke" in a live message, and each device bursts the piece when it sees it go.
+
+  /** The piece on offer to be broken (a `b:` or `w:` key), marked on the table. */
+  offered: string | null = null;
+  /** The offer changed, or the view of it moved: the UI shows, moves or hides its Break button. */
+  onOffer: (key: string | null) => void = () => {};
+  /** This device broke a piece: tell the others which, so they see it burst too. */
+  onBreak: (key: string, id: string) => void = () => {};
+  /** A piece burst where this player can see it (`wood` cracks, stone crumbles). */
+  onCrumble: (wood: boolean) => void = () => {};
+  debris!: Debris;
+  /** Pieces said to be breaking whose removal has not reached this device yet, and until when we wait for it. */
+  private breaking = new Map<string, { id: string; until: number }>();
+
+  /** What a tap in play would break: the wall, thing or built block under the pointer. */
+  private breakTarget(): string | null {
+    if (!this.full) return null;
+    const key = this.eraseTarget(), v = key && this.store.get<CellVal>(key);
+    return key && v && broken(key, v.i) !== undefined ? key : null;
+  }
+  private offer(key: string | null): void {
+    if (key === this.offered) return;
+    this.offered = key;
+    if (!key) this.hideGhost();
+    this.onOffer(key);
+  }
+  /** Show which piece the Break button is about. */
+  private markOffer(): void {
+    const key = this.offered;
+    if (!key) return;
+    if (key.startsWith('w:')) { this.edgeGhost(parseEdge(key), '#ff5a5a'); return; }
+    const [x, y, z] = parse(key);
+    (this.ghost.material as THREE.MeshBasicMaterial).color.set('#ff5a5a');
+    this.ghost.scale.setScalar(1.04);
+    this.ghost.position.set(x + 0.5, y - 0.02, z + 0.5);
+    this.ghost.visible = true;
+    this.invalidate();
+  }
+  /** Where the Break button goes, in CSS pixels: just above the piece on offer. */
+  offerSpot(): { x: number; y: number } | null {
+    const key = this.offered;
+    if (!key) return null;
+    const [x, y, z, side] = pieceAt(key);
+    const p = new THREE.Vector3(side === 'w' ? x : x + 0.5, y + 1.05, side === 'n' ? z : z + 0.5).project(this.camera);
+    if (p.z > 1) return null; // behind the camera
+    return { x: ((p.x + 1) / 2) * this.canvas.clientWidth, y: ((1 - p.y) / 2) * this.canvas.clientHeight };
+  }
+  /** Break the piece on offer: one edit, and word to the table that it was a break. */
+  breakOffered(): void {
+    const key = this.offered, v = key && this.store.get<CellVal>(key), next = key && v ? broken(key, v.i) : undefined;
+    this.offer(null);
+    if (!key || !v || next === undefined || !this.full) return;
+    this.breaking.set(key, { id: v.i, until: performance.now() + 3000 });
+    this.edit(key, next);
+    this.onBreak(key, v.i);
+  }
+  /** Someone broke the piece `id` at `key`. Their edit may arrive before or after this does. */
+  broke(key: string, id: string): void {
+    if (!BREAK_KEY.test(key) || broken(key, id) === undefined) return;
+    if (this.store.get<CellVal>(key)?.i === id) this.breaking.set(key, { id, until: performance.now() + 3000 }); // still standing: wait for the edit
+    else this.crumble(key, id);
+  }
+  /** A cell or edge changed while a break is on offer or expected. */
+  private applyBreak(key: string, value: unknown, prev: unknown): void {
+    if (key === this.offered) this.offer(null); // it changed under the button
+    const due = this.breaking.get(key), now = performance.now();
+    for (const [k, b] of this.breaking) if (k === key || now > b.until) this.breaking.delete(k); // this one, and word of breaks that never came
+    if (due && now < due.until && (prev as CellVal | null)?.i === due.id && (value as CellVal | null)?.i !== due.id) this.crumble(key, due.id);
+  }
+  private box = new THREE.Box3();
+  /** Burst a piece into debris and rock what stands near, if this player can see the spot at all. */
+  private crumble(key: string, id: string): void {
+    const [x, y, z, side] = pieceAt(key);
+    if (![x, y, z].every(Number.isInteger) || this.cellHidden(x, y, z)) return; // under fog or above the cutaway: not a sound, not a speck
+    let at: Vec = [x + 0.5, y + 0.5, z + 0.5], half: Vec = [0.42, 0.45, 0.42];
+    if (side === 'n') { at = [x + 0.5, y + 0.5, z]; half = [0.48, 0.48, 0.08]; }
+    else if (side === 'w') { at = [x, y + 0.5, z + 0.5]; half = [0.08, 0.48, 0.48]; }
+    else if (PROPS[id]) {
+      // As big as the thing was, if it is still standing here to be measured.
+      const g = this.props.get(key), b = g && !g.userData.pending && g.children.length ? this.box.setFromObject(g) : null;
+      half = [0.3, 0.35, 0.3];
+      if (b && !b.isEmpty()) half = [Math.min(0.5, (b.max.x - b.min.x) / 2), Math.min(1, (b.max.y - y) / 2), Math.min(0.5, (b.max.z - b.min.z) / 2)];
+      at[1] = y + half[1];
+    }
+    // Chunks land on what is really there, but a fogged column must not show its height through them.
+    const top = (cx: number, cz: number) => (!this.full && fogged(this.store, cx, cz) ? y : Math.min(this.cut, (columnTop(this.store, cx, cz)?.y ?? -1) + 1));
+    const kind = debrisOf(key, id);
+    this.debris.burst(shatter(seedOf(key) + this.debris.count, at, half, top), kind.tones);
+    for (const [mid, m] of this.minis) {
+      const dx = m.val.x + 0.5 - at[0], dz = m.val.z + 0.5 - at[2], d = Math.hypot(dx, dz);
+      if (!m.group.visible || m.val.d || d > 1.6 || Math.abs(m.val.y - y) > 1.5) continue;
+      const push = (3.4 * (1 - d / 2.2)) / (d || 1);
+      this.kick(mid, d ? dx * push : 2, dz * push);
+    }
+    for (const [pk, g] of this.props) {
+      const dx = g.position.x - at[0], dz = g.position.z - at[2], d = Math.hypot(dx, dz);
+      if (pk === key || !g.visible || g.userData.pending || d > 1.6 || d < 0.01 || Math.abs(g.position.y - y) > 1.5) continue;
+      const push = (1.3 * (1 - d / 2.2)) / d; // furniture is heavier than a figure
+      this.kick(pk, dx * push, dz * push);
+    }
+    this.onCrumble(kind.wood);
+    this.invalidate();
+  }
+
+  /**
+   * Fly a shot from a mini to another mini or a spot, and rock the mini it lands on. Only between
+   * minis this player is shown: a hidden one neither shoots, nor is shot at, nor flinches. False if not drawn.
+   */
+  shoot(shot: Shot): boolean {
+    if (this.visDirty) this.refreshMinis();
+    const seen = (id: string) => { const m = this.minis.get(id); return m?.group.visible ? m.val : null; };
+    const from = seen(shot.a), at = shot.b, to = typeof at === 'string' ? seen(at) : at;
+    if (!from || !to || !SHOTS[shot.k]) return false;
+    const path = shotPath(this.store, from, to);
+    this.shots.fire(shot.k, path.a, path.b, (vx, vz) => {
+      const push = SHOTS[shot.k].push;
+      if (path.hit && typeof at === 'string' && seen(at) && !seen(at)!.d) this.kick(at, vx * push, vz * push);
+    });
+    this.invalidate();
+    return true;
+  }
+
   /** Another player is dragging a mini: show it moving before they drop it. */
   liveMove(id: string, p: Vec): void {
     const m = this.minis.get(id);
-    if (m && this.gesture?.mini !== id && p.every(Number.isFinite)) m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5);
+    if (m && this.gesture?.mini !== id && p.every(Number.isFinite)) { m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5); m.hop = undefined; }
+  }
+
+  // ---- feel ------------------------------------------------------------------
+  // Minis hop from cell to cell, swing in the hand, land with a squash and fall over when knocked
+  // down. Like the knocks above it is for show, worked out here from the moves everyone already
+  // shares, and it always ends on the resting pose.
+
+  /** The passing part of a mini's pose: part-way through falling or getting up, squashed from a landing. */
+  private posture(m: Mini): void {
+    const body = m.group.children[0], v = m.val, s = v.s || 1;
+    if (m.fall) {
+      const a = m.fall.up ? riseAt(m.fall.t) : toppleAt(m.fall.t);
+      body.rotation.x = (-Math.PI / 2) * a;
+      body.position.y = Math.max(0, Math.min(12, v.e || 0)) + 0.22 * s * Math.max(0, Math.min(1, a));
+    }
+    const q = m.squash === undefined || v.d ? 1 : squashAt(m.squash);
+    body.scale.set(s / Math.sqrt(q), s * q, s / Math.sqrt(q));
+  }
+
+  /** Send a mini to its target in an arc from wherever it is now. `dx`, `dz` is the way it is travelling. */
+  private hop(m: Mini, dx: number, dz: number): void {
+    const from = m.group.position.clone(), dist = Math.hypot(m.target.x - from.x, m.target.z - from.z);
+    m.hop = { from, t: 0, ...hopPlan(dist, m.target.y - from.y), dx, dz };
+    m.vel = undefined;
+    this.invalidate();
+  }
+
+  /** A mini has come down: it squashes and rocks the way it was going, and the ones standing next to it shiver. */
+  private land(id: string, m: Mini, dx: number, dz: number): void {
+    const v = m.val, far = Math.hypot(dx, dz);
+    if (v.d) return;
+    m.squash = 0;
+    if (far) this.kick(id, (dx / far) * 2.4, (dz / far) * 2.4);
+    if (!m.group.visible) return; // a mini this player cannot see must not give itself away
+    this.hooks.onLand(this.landing === id); // heard by all who see it, felt by whoever set it down
+    if (this.landing === id) this.landing = null;
+    for (const [oid, o] of this.minis) {
+      const ox = o.val.x - v.x, oz = o.val.z - v.z, d = Math.hypot(ox, oz);
+      if (oid !== id && d && d < 1.6 && Math.abs(o.val.y - v.y) <= 1 && o.group.visible && !o.val.d) this.kick(oid, (ox / d) * 0.5, (oz / d) * 0.5);
+    }
+  }
+
+  /**
+   * Lean and step a mini toward the nearest other mini within about two cells (away from it, if
+   * negative). False if nobody is that close. Hidden minis do not count, so the GM's table shows
+   * the same move as everyone else's.
+   */
+  private lunge(id: string, m: Mini, step: number, lean: number): boolean {
+    const v = m.val, near: [number, number][] = [];
+    for (const [oid, o] of this.minis) if (oid !== id && o.group.visible && !o.val.h && Math.abs(o.val.y - v.y) <= 2) near.push([o.val.x, o.val.z]);
+    const dir = nearestDir(v.x, v.z, near, 2.5), body = m.group.children[0];
+    if (!dir) return false;
+    body.position.x += dir[0] * step;
+    body.position.z += dir[1] * step;
+    body.quaternion.premultiply(this.tilt.setFromAxisAngle(this.axis.set(dir[1], 0, -dir[0]), lean));
+    return true;
+  }
+
+  /** Play out the falls, getting-ups and landings. True while any is still going. */
+  private feel(dt: number): boolean {
+    let busy = false;
+    for (const m of this.minis.values()) {
+      if (!m.fall && m.squash === undefined) continue;
+      if (m.fall && (m.fall.t += dt) >= (m.fall.up ? RISE : TOPPLE)) m.fall = undefined;
+      if (m.squash !== undefined && (m.squash += dt) >= SQUASH) m.squash = undefined;
+      this.pose(m);
+      busy = true;
+    }
+    return busy;
+  }
+
+  /** Move each mini toward where it should be: along its arc if it is hopping, else carried there. True while any moves. */
+  private travel(dt: number): boolean {
+    let moving = false;
+    const k = 1 - Math.exp(-dt * 14);
+    for (const [id, m] of this.minis) {
+      if (this.gesture?.mini === id) m.hop = undefined; // picked up in mid-air
+      const at = m.group.position, h = m.hop;
+      if (h) {
+        h.t += dt;
+        at.set(...hopAt(h.from.toArray(), m.target.toArray(), h.h, h.t / h.dur));
+        if (h.t >= h.dur) { m.hop = undefined; this.land(id, m, h.dx, h.dz); }
+        moving = true;
+        continue;
+      }
+      if (at.distanceToSquared(m.target) < 1e-6) { m.vel = undefined; continue; }
+      const x = at.x, z = at.z;
+      at.lerp(m.target, k);
+      moving = true;
+      if (dt < 1e-4 || m.val.d) continue;
+      // Carried, it hangs like a pendulum from the hand: it leans against every change of speed.
+      const vx = (at.x - x) / dt, vz = (at.z - z) / dt, [px, pz] = m.vel ?? [0, 0];
+      this.kick(id, (px - vx) * 0.18, (pz - vz) * 0.18);
+      m.vel = [vx, vz];
+    }
+    return moving;
   }
 
   ping(p: Vec, color: string): void {
@@ -1152,8 +1637,10 @@ export class Board {
   // ---- selection / editing -------------------------------------------------
 
   select(id: string | null): void {
+    if (id !== this.shoving) this.shoving = null;
     if (this.selected) this.minis.get(this.selected)?.group.remove(this.ring);
     this.selected = id && this.minis.has(id) ? id : null;
+    if (this.selected) this.offer(null);
     if (this.selected) this.attachRing(this.minis.get(this.selected)!);
     this.invalidate();
     this.hooks.onSelect(this.selected);
@@ -1171,6 +1658,29 @@ export class Board {
   private get rooming(): boolean { return this.tool === 'build' && this.brush === 'room'; }
   /** The brush that steps a torch, fire or crystal through its strengths. */
   private get lighting(): boolean { return this.tool === 'build' && this.brush === 'light'; }
+  /** The brush that pours loose pieces out where the table is touched. */
+  private get pouring(): boolean { return this.tool === 'build' && this.brush === 'pour'; }
+  /** A spot on the table for the scatter brush: where the pointer meets the ground or a block. */
+  private pourSpot(): Vec | null {
+    const p = this.pickSurface()?.point;
+    return p && this.full && p.y < Math.min(MAX_Y, this.cut) ? [+p.x.toFixed(2), +Math.max(0, p.y).toFixed(2), +p.z.toFixed(2)] : null;
+  }
+  /** The loose pieces under the pointer: a fingertip covers more than one coin, so all that it covers. */
+  private looseAt(): string[] {
+    const s = this.pickSurface(), far = s ? s.point.distanceTo(this.ray.ray.origin) + 0.2 : Infinity;
+    return this.loose.near(this.ray.ray, this.coarse ? 0.34 : 0.24, far).map((id) => `l:${id}`);
+  }
+  /** Dragging the eraser over loose pieces sweeps them up, as one undo step. */
+  private wipe(g: Gesture): void {
+    const keys = this.looseAt();
+    if (!keys.length) return;
+    if (!g.stroke) {
+      g.stroke = { level: 0, plane: 0 };
+      this.batch = [];
+      this.undoStack.push(this.batch);
+    }
+    for (const k of keys) this.edit(k, null);
+  }
   private stepLight(): void {
     const p = this.pickProp(), v = p && this.store.get<CellVal>(p.key);
     if (!p || !v || !GLOWS[v.i]) return;
@@ -1331,6 +1841,7 @@ export class Board {
 
   setTool(t: Tool): void {
     this.tool = t;
+    this.offer(null);
     this.hideGhost();
     if (t !== 'move') this.select(null);
     if (t !== 'ruler' && this.rulers.has('me')) {
@@ -1358,6 +1869,10 @@ export class Board {
       if (scene.has(k)) continue;
       const [x, , z] = k.slice(2).split(',').map(Number);
       if (old.has(k) || (x >= x0 && x <= x1 + 1 && z >= z0 && z <= z1 + 1)) this.edit(k, null);
+    }
+    for (const k of [...this.store.keys('l:')]) { // loose pieces would be left buried in the new ground, or hanging over it
+      const p = decodeLoose(this.store.get(k))?.p;
+      if (!p || (p[0] >= x0 && p[0] <= x1 + 1 && p[2] >= z0 && p[2] <= z1 + 1)) this.edit(k, null);
     }
     for (const [k, v] of edits) if (JSON.stringify(this.store.get(k)) !== JSON.stringify(v)) this.edit(k, v);
     this.batch = null;
@@ -1394,6 +1909,20 @@ export class Board {
     }
     to.push(inverse);
   }
+  /**
+   * Edits made by something on the table rather than a brush (a trap going off). They join one
+   * undo step: pass back the step this returned to add later edits to it.
+   */
+  commit(edits: [key: string, value: unknown][], step: Undo[] = []): Undo[] {
+    if (!this.full || !edits.length) return step;
+    if (!this.undoStack.includes(step)) this.undoStack.push(step);
+    this.redoStack.length = 0;
+    for (const [k, v] of edits) {
+      step.push({ k, prev: this.store.get(k) });
+      this.store.set(k, v);
+    }
+    return step;
+  }
   private edit(k: string, v: unknown): void {
     if (!this.full) return; // building and fog are the GM's once a table has one
     const u = { k, prev: this.store.get(k) };
@@ -1402,7 +1931,16 @@ export class Board {
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack.length = 0;
     this.store.set(k, v);
-    if (this.gesture?.touch) navigator.vibrate?.(6);
+    if (this.gesture?.touch) buzz(6);
+  }
+
+  /** Throw the dice in hand with no finger on the table (a shake of the phone): they appear over `at` and leave at `vel`. */
+  toss(at: Vec, vel: Vec): void {
+    if (!this.hand.length || this.gesture?.throwing) return; // a finger holding them has the say
+    this.dice.hold(this.hand, this.diceColor, new THREE.Vector3(...at));
+    this.dice.update(0); // puts them in place, so the throw starts from there
+    this.hooks.onThrow(this.dice.holdStarts(), vel);
+    this.invalidate();
   }
 
   /** Where thrown dice should land (the middle of the view) and where the thrower stands. */
@@ -1456,6 +1994,109 @@ export class Board {
     this.controls.target.add(d);
     this.camera.position.add(d);
     this.invalidate();
+  }
+
+  // ---- camera moves and ambient life ---------------------------------------------
+  // Both are this device's own business (see glide.ts): nothing is stored or sent.
+
+  /** Where a point on the table is on the screen, in CSS pixels (it may be off it), or null behind the camera. */
+  private screen(p: THREE.Vector3): { x: number; y: number } | null {
+    this.camera.updateMatrixWorld();
+    const v = p.clone().project(this.camera);
+    return v.z > 1 ? null : { x: ((v.x + 1) / 2) * this.canvas.clientWidth, y: ((1 - v.y) / 2) * this.canvas.clientHeight };
+  }
+  /** Is the player busy with the table (a finger down, dice in hand)? Then the camera is theirs alone. */
+  private handsOn(): boolean { return this.pointers.size > 0 || this.hand.length > 0; }
+  /** Slide the whole view by `d`, smoothly. Any touch on the table stops it where it is (see onDown). */
+  private glideBy(d: THREE.Vector3): void {
+    if (d.lengthSq() < 1e-4 || d.length() > 2 * LIMIT) return;
+    this.glide = new Glide([d.x, d.y, d.z], this.calm ? 0 : 0.5);
+    this.invalidate();
+  }
+  /** The turn has passed to a mini: go to it, but only if it is out of view and the player is not busy. */
+  private follow(id: string): void {
+    const m = this.minis.get(id);
+    if (!this.followTurns || !m || !m.group.visible || this.handsOn()) return;
+    if (!outOfView(this.screen(m.target), safeArea(this.canvas.clientWidth, this.canvas.clientHeight))) return;
+    this.glideBy(m.target.clone().sub(this.controls.target));
+  }
+  /**
+   * This player's own dice have come to rest at these spots: if some lie outside the view (the
+   * camera was turned during the roll), slide it just far enough to show them. Other players'
+   * throws never move the camera.
+   */
+  revealDice(at: THREE.Vector3[]): void {
+    if (!at.length || this.handsOn()) return;
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, pad = 24;
+    const box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }, mid = new THREE.Vector3();
+    let lost = false;
+    for (const p of at) {
+      const s = this.screen(p);
+      mid.addScaledVector(p, 1 / at.length);
+      if (!s) { lost = true; continue; }
+      box.x0 = Math.min(box.x0, s.x - pad); box.x1 = Math.max(box.x1, s.x + pad);
+      box.y0 = Math.min(box.y0, s.y - pad); box.y1 = Math.max(box.y1, s.y + pad);
+    }
+    const [dx, dy] = lost ? [1, 1] : nudge(box, safeArea(w, h));
+    if (!dx && !dy) return;
+    // Which spot on the dice's own level should come to the middle of the screen? Slide by the difference.
+    const level = new THREE.Plane(THREE.Object3D.DEFAULT_UP, -mid.y);
+    const under = (x: number, y: number) => {
+      this.ray.setFromCamera(new THREE.Vector2((x / w) * 2 - 1, 1 - (y / h) * 2), this.camera);
+      return this.ray.ray.intersectPlane(level, new THREE.Vector3());
+    };
+    const now = under(w / 2, h / 2), then = lost ? null : under(w / 2 - dx, h / 2 - dy);
+    // Behind the camera or over the horizon there is no "just enough": go and look at them.
+    if (now && then && now.distanceTo(then) < 40) this.glideBy(then.sub(now));
+    else this.glideBy(mid.sub(this.controls.target).setY(0));
+  }
+  /** Hand out this frame's share of a camera move. True while one is under way. */
+  private slide(dt: number): boolean {
+    const s = this.glide?.step(dt);
+    if (!s) { this.glide = null; return false; }
+    this.controls.target.x += s[0]; this.controls.target.y += s[1]; this.controls.target.z += s[2];
+    this.camera.position.x += s[0]; this.camera.position.y += s[1]; this.camera.position.z += s[2];
+    return true;
+  }
+
+  /** Switch ambient motion on or off. Off, everything comes to rest and an idle table draws nothing. */
+  setAmbient(on: boolean): void {
+    this.ambient = on;
+    this.invalidate();
+  }
+  /** What decides whether the table stirs. `fresh` looks the table over again if it has changed (only done at rest). */
+  private ambience(fresh = false): Ambience {
+    if (fresh && this.lifeDirty && this.ambient) {
+      this.lifeDirty = false;
+      this.alive = this.lamps.some((l) => l.visible) || this.stirs();
+    }
+    return { on: this.ambient, hidden: document.hidden, slowed: this.slowed, alive: this.alive };
+  }
+  /** Is there a piece in sight with leaves, needles or flame on it? (Each model is looked through once.) */
+  private stirs(): boolean {
+    for (const g of this.props.values()) {
+      if (!g.visible) continue;
+      let found = false;
+      g.traverse((o) => {
+        const geo = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined, kind = geo?.getAttribute('kind');
+        if (!geo || !kind || (o as THREE.InstancedMesh).isInstancedMesh) return;
+        if (geo.userData.stirs === undefined) {
+          geo.userData.stirs = false;
+          for (let i = 0; i < kind.count && !geo.userData.stirs; i++) { const k = kind.getX(i); geo.userData.stirs = k === 3 || k === 4 || k === 7; }
+        }
+        found ||= geo.userData.stirs;
+      });
+      if (found) return true;
+    }
+    return false;
+  }
+  /** Set the breeze and the firelight for the frame about to be drawn (still, if ambience is not live). */
+  private breathe(now: number): void {
+    const live = ambientLive(this.ambience()), s = now / 1000;
+    setWind(live ? s : 0, live ? 1 : 0);
+    this.lamps.forEach((lamp, i) => { lamp.intensity = (lamp.userData.base ?? 0) * (live ? flicker(s, i) : 1); });
+    this.drawn = now;
+    this.frames++;
   }
 
   // ---- picking ---------------------------------------------------------------
@@ -1537,7 +2178,7 @@ export class Board {
 
   private onDown(e: PointerEvent): void {
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    this.zoomGoal = null;
+    this.zoomGoal = this.glide = null; // a finger on the table always wins over a camera move
     if (this.pointers.size > 1) {
       // A second finger means a camera gesture, never an edit.
       const claimed = !this.controls.enabled;
@@ -1557,21 +2198,22 @@ export class Board {
     };
     this.gesture = g;
     if (e.button !== 0) return;
-    if (this.hand.length) {
-      // Dice in hand: this finger holds them over the table until it lets go.
+    if (this.hand.length || this.boulderArmed) {
+      // Dice in hand (or a boulder ready): this finger holds them over the table until it lets go.
       g.throwing = [];
       this.controls.enabled = false;
       this.canvas.setPointerCapture(e.pointerId);
       this.hooks.onGrab();
       const at = this.holdPoint(e, g);
-      if (at) this.dice.hold(this.hand, this.diceColor, at);
+      if (at && this.boulderArmed) this.boulder.hold(at);
+      else if (at) this.dice.hold(this.hand, this.diceColor, at);
       return;
     }
     this.aim(e);
     switch (this.tool) {
       case 'move': {
-        const id = this.pickMini();
-        if (id && this.hooks.canMove(id)) {
+        const id = this.shoving ? null : this.pickMini(); // waiting for a direction: this touch points, it does not pick up
+        if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
           g.mini = id;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
@@ -1585,7 +2227,7 @@ export class Board {
             const s = this.pickSurface();
             if (!s) return;
             g.done = true;
-            navigator.vibrate?.(15);
+            buzz(15);
             this.hooks.onPing([+s.point.x.toFixed(2), +s.point.y.toFixed(2), +s.point.z.toFixed(2)]);
           }, LONG_PRESS);
         }
@@ -1612,13 +2254,14 @@ export class Board {
           this.canvas.setPointerCapture(e.pointerId);
           break;
         }
+        if (this.pouring) g.from = this.pourSpot();
         if (!touch) break;
         // No hover on touch: show where the edit will land as soon as the finger is down.
         this.updateGhost();
-        if (this.pasting) break;
+        if (this.pasting || this.pouring) break;
         if (this.edging) { g.edge = this.pickEdge(); break; }
         if (this.shaping || this.lighting) break;
-        if (this.erasing) { const t = this.eraseTarget(); g.first = t && !t.startsWith('w:') ? parse(t) : null; }
+        if (this.erasing) { const t = this.eraseTarget(); g.wipe = !!t?.startsWith('l:'); g.first = t && !/^[wl]:/.test(t) ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
   }
@@ -1664,7 +2307,7 @@ export class Board {
     if (g.done) return;
     if (g.throwing) {
       const at = this.holdPoint(e, g);
-      if (at) this.dice.moveHold(at);
+      if (at) { this.dice.moveHold(at); this.boulder.moveHold(at); }
       return;
     }
     if (g.mini) {
@@ -1689,7 +2332,8 @@ export class Board {
     else if (this.rooming) this.stretchRoom(g, false);
     else if (this.edging) { if (g.moved) this.paintEdges(g); }
     else if (this.shaping) { if (g.moved) { this.shape(g); this.updateGhost(); } }
-    else if (this.tool === 'mini' || this.pasting) this.updateGhost();
+    else if (this.tool === 'mini' || this.pasting || this.pouring) this.updateGhost();
+    else if (g.wipe) { if (g.moved) this.wipe(g); }
     else if (this.tool === 'build' && g.moved) this.paint(g);
   }
 
@@ -1749,6 +2393,7 @@ export class Board {
 
   private updateGhost(): void {
     this.hideGhost();
+    if (this.offered) { this.markOffer(); return; }
     if ((this.tool !== 'build' && this.tool !== 'mini') || this.copying || this.rooming || this.lighting) return;
     if (this.edging) {
       const e = this.pickEdge();
@@ -1778,9 +2423,10 @@ export class Board {
       const t = this.eraseTarget();
       if (!t) return;
       if (t.startsWith('w:')) { this.edgeGhost(parseEdge(t), '#ff5a5a'); return; }
-      const [x, y, z] = parse(t);
+      const lp = t.startsWith('l:') ? this.loose.pieces.get(t.slice(2))?.p : null;
+      const [x, y, z] = lp ? [lp[0] - 0.5, lp[1] - 0.25, lp[2] - 0.5] : parse(t);
       mat.color.set('#ff5a5a');
-      this.ghost.scale.setScalar(1.04);
+      this.ghost.scale.setScalar(lp ? 0.5 : 1.04);
       this.ghost.position.set(x + 0.5, y - 0.02, z + 0.5);
     } else {
       const p = this.tool === 'mini' ? this.standing() : this.pickSurface()?.place;
@@ -1798,6 +2444,8 @@ export class Board {
     const p = this.pickProp(), w = this.pickWall();
     if (w && w.dist <= far && (!p || w.dist <= p.dist)) return w.key;
     if (p && p.dist <= far) return p.key;
+    const l = this.looseAt()[0]; // lying on the ground or on a block: they go before what they lie on
+    if (l) return l;
     return s?.cell ? ck(...s.cell) : null;
   }
 
@@ -1816,6 +2464,14 @@ export class Board {
       const from = s.find((x) => last.t - x.t <= 120) ?? last;
       const dt = Math.max((last?.t - from?.t) / 1000, 0.03);
       const vel: Vec = last && from !== last ? [(last.p.x - from.p.x) / dt, 0, (last.p.z - from.p.z) / dt] : [0, 0, 0];
+      const rock = this.boulder.holdAt();
+      if (rock && this.boulderArmed && last) {
+        // A slow, deliberate drag counts as well as a flick (and is all a struggling phone can measure):
+        // the push is then along the drag, harder the longer it was.
+        const drag = last.p.clone().sub(s[0].p).setY(0).multiplyScalar(2);
+        this.hooks.onBoulder(rock, Math.hypot(vel[0], vel[2]) >= drag.length() ? vel : [drag.x, 0, drag.z]);
+        return;
+      }
       const starts = this.dice.holdStarts();
       if (starts.length) this.hooks.onThrow(starts, vel);
       return;
@@ -1825,7 +2481,13 @@ export class Board {
       const m = this.minis.get(g.mini);
       const p = this.dragPos;
       this.dragPos = null;
-      if (m && g.moved && p) { this.landing = g.mini; this.store.set(`m:${g.mini}`, { ...m.val, x: p[0], y: p[1], z: p[2] }); }
+      if (m && g.moved && p) {
+        this.landing = g.mini;
+        // Set down over a drop, it falls.
+        const l = land(this.store, { ...m.val, x: p[0], y: p[1], z: p[2] });
+        this.store.set(`m:${g.mini}`, l.v);
+        if (l.fell) this.hooks.onFall(g.mini, l.fell);
+      }
       else if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
       this.select(g.mini);
       return;
@@ -1851,12 +2513,21 @@ export class Board {
       return;
     }
     // A moved pointer was a camera drag, except a finger sliding a mini's landing spot.
-    if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting))) { this.hideGhost(); return; }
+    if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting || this.pouring))) { this.hideGhost(); return; }
     this.gesture = g; // so edit() knows whether to give haptic feedback
     switch (this.tool) {
-      case 'move':
-        this.select(g.tapMini);
+      case 'move': {
+        if (this.shoving) { this.pointShove(); break; }
+        if (!this.aimed) {
+          this.select(g.tapMini);
+          this.offer(g.tapMini ? null : this.breakTarget()); // a tap on a wall or a thing offers to break it
+          break;
+        }
+        const at = g.tapMini ? null : this.pickSurface()?.point;
+        const target: string | Vec | null = g.tapMini ?? (at ? [Math.round(at.x * 2) / 2, Math.round(at.y * 2) / 2, Math.round(at.z * 2) / 2] : null);
+        if (target) this.aimed(target);
         break;
+      }
       case 'build': {
         if (this.pasting) {
           const at = this.pickSurface()?.place;
@@ -1864,6 +2535,11 @@ export class Board {
           break;
         }
         if (this.brush === 'paste') break;
+        if (this.pouring) {
+          const to = this.pourSpot(), from = g.touch && g.moved ? g.from ?? to : to;
+          if (from && to) this.hooks.onPour?.(from, to);
+          break;
+        }
         if (this.edging) {
           const edge = this.pickEdge();
           if (edge) this.setEdge(edge);
@@ -1877,7 +2553,8 @@ export class Board {
         if (this.lighting) { this.stepLight(); break; }
         if (this.erasing) {
           const t = this.eraseTarget();
-          if (t) this.edit(t, null);
+          if (t?.startsWith('l:')) this.commit(this.looseAt().map((k) => [k, null]));
+          else if (t) this.edit(t, null);
           break;
         }
         const p = this.pickSurface()?.place;
@@ -1895,6 +2572,7 @@ export class Board {
     this.gesture = null;
     if (g.touch) this.hideGhost();
     else this.updateGhost();
+    this.markOffer();
   }
 
   /** Drop whatever the current pointer was doing (second finger landed, or the OS took over). */
@@ -1909,7 +2587,7 @@ export class Board {
     clearTimeout(g?.press);
     const m = g?.mini ? this.minis.get(g.mini) : null;
     if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
-    if (g?.throwing) this.dice.endHold(); // back in the hand
+    if (g?.throwing) { this.dice.endHold(); this.boulder.endHold(); } // back in the hand
   }
 
   /** Where held dice hover for this pointer: above the surface under it (and above the fingertip). */
@@ -1944,6 +2622,7 @@ export class Board {
     this.slow = frameMs > 34 ? this.slow + 1 : Math.max(0, this.slow - 2);
     if (this.slow < 24 || this.quality >= 3) return;
     this.slow = 0;
+    this.slowed = true;
     if (this.look) { // the finished look goes first: it is the most work for the least loss
       if (++this.lookLevel >= 2) this.look = null;
       else this.look.setLevel(this.lookLevel);
@@ -1963,7 +2642,14 @@ export class Board {
     const elapsed = now - this.last;
     const dt = Math.min(elapsed / 1000, 0.1);
     this.last = now;
-    let moving = this.controls.update();
+    // An ambient frame that holds up the next one is more than this device can spare: after a few, stop.
+    if (this.stirred) {
+      this.stirSlow = elapsed > 40 ? this.stirSlow + 1 : Math.max(0, this.stirSlow - 1);
+      if (this.stirSlow >= 6) this.slowed = true;
+      this.stirred = false;
+    }
+    const slid = this.slide(dt);
+    let moving = this.controls.update() || slid;
     if (this.zoomGoal !== null) {
       const t = this.controls.target, dist = this.camera.position.distanceTo(t);
       const next = Math.abs(this.zoomGoal - dist) < 0.01 ? this.zoomGoal : dist + (this.zoomGoal - dist) * (1 - Math.exp(-dt * 16));
@@ -1974,7 +2660,12 @@ export class Board {
     // Things that change the table (and so its shadows), as opposed to the view of it.
     let changed = this.shadowDirty;
     if (this.dice.update(dt)) changed = true;
+    if (this.boulder.update(dt)) changed = true;
+    if (this.feel(dt)) changed = true;
     if (this.animate(dt)) changed = true;
+    if (this.wobble(dt)) changed = true;
+    if (this.debris.update(dt)) this.dirty = true; // drawn, but it casts no shadow to redraw
+    if (this.loose.update(dt)) changed = true;
     if (this.fogDirty) { this.rebuildFog(); changed = true; }
     if (this.visDirty) { this.refreshMinis(); changed = true; }
     if (this.terrainDirty) { this.rebuildTerrain(); changed = true; }
@@ -1982,40 +2673,9 @@ export class Board {
     if (this.edgesDirty) { this.rebuildEdges(); changed = true; }
     if (this.coverDirty) { this.rebuildCover(); changed = true; }
     if ((changed || this.controls.target.distanceToSquared(this.litAt) > 4) && this.relight()) changed = true;
-    const k = 1 - Math.exp(-dt * 14);
-    for (const m of this.minis.values()) {
-      const p = m.group.position, far = p.distanceToSquared(m.target) >= 1e-6;
-      const still = !far && m.land < 0 && m.lean.lengthSq() + m.leanV.lengthSq() < 1e-6;
-      if (still) continue;
-      // A carried piece is held, not slid: it swings behind the hand, and rocks upright when it stops.
-      const vx = far ? (m.target.x - p.x) * 14 : 0, vz = far ? (m.target.z - p.z) * 14 : 0;
-      const gx = Math.max(-0.3, Math.min(0.3, vx * 0.035)), gz = Math.max(-0.3, Math.min(0.3, vz * 0.035));
-      // In small fixed steps: a spring worked out over one long frame on a slow phone would fly apart.
-      for (let left = dt; left > 1e-5; left -= 1 / 120) {
-        const h = Math.min(left, 1 / 120);
-        m.leanV.x += ((gx - m.lean.x) * 260 - m.leanV.x * 13) * h;
-        m.leanV.y += ((gz - m.lean.y) * 260 - m.leanV.y * 13) * h;
-        m.lean.addScaledVector(m.leanV, h);
-      }
-      if (far) {
-        // Coming down is quicker than being carried: a piece is put down, it does not float down.
-        const fall = m.target.y < p.y ? 1 - Math.exp(-dt * 30) : k;
-        p.set(p.x + (m.target.x - p.x) * k, p.y + (m.target.y - p.y) * fall, p.z + (m.target.z - p.z) * k);
-      } else p.copy(m.target);
-      const rest = m.target.y === m.val.y, up = p.y - m.val.y > 0.06;
-      if (m.air && !up && rest) { m.land = 0; this.hooks.onLand(this.landing === m.group.userData.mini); this.landing = null; }
-      m.air = up;
-      let squash = 0;
-      if (m.land >= 0) {
-        m.land += dt;
-        squash = 0.1 * Math.exp(-m.land * 11) * Math.cos(m.land * 26);
-        if (m.land > 0.45) { m.land = -1; squash = 0; }
-      }
-      m.group.scale.set(1 + squash * 0.5, 1 - squash, 1 + squash * 0.5);
-      m.group.rotation.set(-m.lean.y, 0, m.lean.x);
-      changed = true;
-    }
+    if (this.travel(dt)) changed = true;
     let busy = moving || changed || this.dirty;
+    if (this.shots.update(dt)) busy = true; // in the air, they cast no shadow: the table itself is unchanged
     for (let i = this.pings.length - 1; i >= 0; i--) {
       const p = this.pings[i];
       p.t += dt;
@@ -2028,10 +2688,14 @@ export class Board {
       }
       busy = true;
     }
-    // Idle tables cost no GPU time (and no battery).
-    if (!busy) { this.wasBusy = false; return; }
-    if (this.wasBusy) this.adapt(elapsed); // only judge frames that follow another drawn frame
-    this.wasBusy = true;
+    // Idle tables cost no GPU time (and no battery) — unless ambience is on and there are leaves
+    // or flames to stir, and then only a few frames a second, with no shadows or labels redone.
+    const stir = !busy;
+    if (stir && !ambientDue(this.ambience(true), now, this.drawn)) { this.wasBusy = false; return; }
+    if (this.wasBusy && !stir) this.adapt(elapsed); // only judge frames that follow another drawn frame
+    this.wasBusy = !stir; // (an ambient frame is late on purpose: it must not count as a slow one)
+    this.stirred = stir;
+    this.breathe(now);
     this.dirty = false;
     // The sun follows the camera target in coarse steps, so panning rarely moves the shadows.
     const t = this.controls.target, sx = Math.round(t.x / 6) * 6, sz = Math.round(t.z / 6) * 6;
@@ -2060,7 +2724,8 @@ export class Board {
     this.camera.layers.enable(0);
     this.camera.layers.enable(OVERLAY);
     if (!this.look) this.renderer.render(this.scene, this.camera);
-    this.hooks.onView();
+    if (!stir) this.hooks.onView();
+    if (this.offered) this.onOffer(this.offered); // its button follows the piece across the screen
   }
   private wasBusy = false;
 }

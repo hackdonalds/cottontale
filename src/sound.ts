@@ -199,14 +199,67 @@ export class Sound {
   clack(strength: number): void {
     if (this.ready()) this.burst(this.master!, 2200 + Math.random() * 1500, 0.1 + strength * 0.35, 0.035, 'bandpass');
   }
+  private roll?: { g: GainNode; s: AudioBufferSourceNode };
+  /** A boulder rolling: a low growl that follows how fast it goes (0 lets it die away). */
+  rumble(level: number): void {
+    if (!this.roll && (!level || !this.ready())) return;
+    const t = this.ctx!.currentTime;
+    if (!this.ready()) level = 0; // sound was switched off mid-roll
+    if (!this.roll) {
+      const s = this.src(), g = this.gain(0);
+      this.chain(s, this.filter('lowpass', 110, 1.2), g, this.master!);
+      s.start(0, Math.random());
+      this.roll = { g, s };
+    }
+    this.roll.g.gain.setTargetAtTime(level * 1.6, t, 0.08);
+    if (!level) { this.roll.s.stop(t + 0.6); this.roll = undefined; }
+  }
+  /** Something heavy coming down. */
+  thud(strength: number): void {
+    if (!this.ready()) return;
+    this.note(this.master!, 'sine', 90, 0.25 + strength * 0.5, 0.28, 0.004, 34);
+    this.burst(this.master!, 240, 0.2 + strength * 0.4, 0.12, 'lowpass');
+  }
   /** A mini set down on the table: a soft knock of plastic on wood. */
-  thud(): void {
+  knock(): void {
     if (!this.ready()) return;
     this.note(this.master!, 'sine', 150 + Math.random() * 30, 0.3, 0.09, 0.002, 70);
     this.burst(this.master!, 900 + Math.random() * 500, 0.12, 0.03, 'bandpass');
   }
   ping(): void {
     if (this.ready()) this.note(this.master!, 'sine', 880, 0.18, 0.5, 0.005, 1320);
+  }
+  /** Something on the table breaks: wood cracks and splinters, stone thuds and rattles down. */
+  crumble(wood: boolean): void {
+    if (!this.ready()) return;
+    const m = this.master!;
+    this.note(m, 'sine', wood ? 190 : 110, 0.5, wood ? 0.12 : 0.28, 0.004, wood ? 70 : 38);
+    this.burst(m, wood ? 1900 : 420, 0.4, wood ? 0.09 : 0.3, wood ? 'bandpass' : 'lowpass');
+    // The pieces coming down after it, each a little quieter.
+    for (let i = 1; i <= (wood ? 3 : 6); i++) {
+      setTimeout(() => this.ready() && this.burst(m, (wood ? 2400 : 900) + Math.random() * 1600, 0.2 / i + 0.03, 0.04 + Math.random() * 0.05, 'bandpass'), 60 + i * (wood ? 55 : 85) + Math.random() * 40);
+    }
+  }
+  /** Something let fly (a whoosh, a twang, a hum), or landing (`hit`: a thud, a crackle, a chime). */
+  shot(kind: string, hit: boolean): void {
+    if (!this.ready()) return;
+    const m = this.master!;
+    if (kind === 'fire') {
+      this.burst(m, hit ? 500 : 900, hit ? 0.4 : 0.22, hit ? 0.35 : 0.3, 'lowpass');
+      if (hit) this.note(m, 'sine', 110, 0.3, 0.25, 0.004, 45);
+    } else if (kind === 'missile') {
+      if (hit) [988, 1319].forEach((f) => this.note(m, 'triangle', f, 0.1, 0.3));
+      else this.note(m, 'sine', 420, 0.1, 0.4, 0.05, 1260);
+    } else if (kind === 'frost') {
+      if (hit) { this.burst(m, 5200, 0.2, 0.12); this.note(m, 'sine', 2100, 0.08, 0.3, 0.004, 1500); }
+      else this.note(m, 'sine', 1900, 0.07, 0.25, 0.02, 950);
+    } else if (hit) { // arrows and rocks: a knock, lower the heavier it is
+      this.note(m, 'sine', kind === 'rock' ? 120 : 190, kind === 'rock' ? 0.45 : 0.3, 0.14, 0.004, 48);
+      this.burst(m, kind === 'rock' ? 500 : 1500, 0.2, 0.06, 'bandpass');
+    } else {
+      this.burst(m, kind === 'rock' ? 500 : 1700, 0.14, kind === 'rock' ? 0.3 : 0.16, 'bandpass');
+      if (kind === 'arrow') this.note(m, 'triangle', 240, 0.12, 0.09, 0.003, 150); // the string
+    }
   }
   /** A little sting for an emote. */
   emote(kind: string): void {

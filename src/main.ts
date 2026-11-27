@@ -1,15 +1,25 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { BOULDER_REACH, boulderHits, simulateBoulder } from './boulder';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
 import { loadKit, type Season } from './kit';
 import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
 import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
-import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
+import { MAX_DICE, decode, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
+import { buzz, canBuzz, hapticsOn, rollBuzz, setHaptics, ticker } from './haptics';
+import { askShake, canShake, shakeNeedsAsking, watchShake, type Shake } from './shake';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
 import { SOUNDSCAPES, Sound } from './sound';
+import { breakButton } from './breakui';
+import { SHOTS, readShot } from './shots';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
+import { LOOSE, MAX_LOOSE, POUR_COUNTS } from './loose';
+import { pour } from './pour';
+import { MAX_BLAST, blast, fellLine, shove, type Fall } from './forces';
+import { eyesOf, miniShown } from './rules';
+import type { Ruler } from './board';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -124,11 +134,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // Minis placed with the mini tool use these.
   let miniKind = 'knight';
   let miniColor = myColor;
+  /** The ruler this player has out, if any: a circle is also where the GM's blast goes off. */
+  let myRuler: Ruler | null = null;
+  const ringOut = () => !!myRuler && myRuler.m === 'circle';
 
   const board = new Board($<HTMLCanvasElement>('c'), store, {
     onSelect: showMiniPanel,
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
-    onLand: (mine) => { sound.thud(); if (mine) navigator.vibrate?.(8); },
+    onLand: (mine) => { sound.knock(); if (mine) buzz(8); },
     onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
     canMove: (id) => {
@@ -138,7 +151,25 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const turn = store.get<Turn>('turn');
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
     },
-    onRuler: (r) => void send({ y: 'ruler', r }),
+    onRuler: (r) => {
+      const had = ringOut();
+      myRuler = r;
+      if (had !== ringOut() && ui.ready) renderPalette(); // the Blast chip follows the circle
+      void send({ y: 'ruler', r });
+    },
+    onFall: (id, cells) => fell([{ id, cells }]),
+    onShove: (id, sx, sz) => {
+      ringMode = 'main';
+      const out = sx || sz ? shove(store, id, sx, sz, full()) : null;
+      if (out) {
+        for (const [k, v] of out.edits) store.set(k, v);
+        fell(out.falls);
+      } else if (sx || sz) { // something is in the way: it leans and stays
+        board.nudge(id, sx * 2, sz * 2);
+        navigator.vibrate?.(20);
+      }
+      renderRing();
+    },
     onView: () => placeRing(),
     onLight: (name) => say(`<span class="sys">Light: ${name}.</span>`),
     onSlab: (slab) => {
@@ -149,7 +180,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     },
     onGrab: () => { if (phoneSheet()) closeSheet(); },
     onThrow: (starts, vel) => void throwHand(starts, vel),
+    onPour: (a, b) => void pourOut(a, b),
+    onBoulder: (start, vel) => void rollBoulder(start, vel),
   });
+
+  // The scatter brush: which loose pieces it pours out, and how many at a time.
+  let pourKind = 'stone', pourCount = 6;
+  async function pourOut(a: Vec, b: Vec): Promise<void> {
+    if (!full()) return;
+    if (board.loose.count >= MAX_LOOSE) return say(`<span class="sys">This board holds no more than ${MAX_LOOSE} loose pieces. Erase some first.</span>`);
+    void pour({
+      store, here: () => here, count: () => board.loose.count, solidsNear: (c, r) => board.solidsNear(c, r),
+      send: (t) => void send({ y: 'pour', t }), play: (t) => board.loose.play(t), commit: (edits) => board.commit(edits),
+    }, pourKind, pourCount, a, b);
+  }
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
@@ -176,7 +220,18 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     },
   });
   await net.start();
-  board.dice.onHit = (strength) => sound.clack(strength);
+  breakButton(board, $('hud'), $('top'), (k, i) => void send({ y: 'broke', k, i }), (wood) => sound.crumble(wood));
+  board.loose.onHit = (strength) => sound.clack(strength * 0.6);
+  board.shots.onSound = (kind, hit) => sound.shot(kind, hit);
+  // Everyone hears the dice; only the thrower feels them in the hand.
+  const tick = ticker();
+  board.dice.onHit = (strength, owner) => {
+    sound.clack(strength);
+    const ms = owner === me ? tick(strength, performance.now()) : 0;
+    if (ms) buzz(ms);
+  };
+  board.boulder.onRumble = (level) => sound.rumble(level);
+  board.boulder.onThud = (strength) => sound.thud(strength);
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
@@ -194,6 +249,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       case 'emote':
         if (!elsewhere && typeof msg.id === 'string') { board.emote(msg.id, String(msg.e)); sound.emote(String(msg.e)); }
         break;
+      case 'shot': {
+        const shot = elsewhere ? null : readShot(store, msg, pid(from));
+        if (shot) board.shoot(shot);
+        break;
+      }
       case 'chat':
         if (msg.to && msg.to !== meId) break; // a whisper for someone else
         say(`${who}${msg.to ? ' <span class="sys">whispers</span>' : ''}: ${esc(String(msg.m).slice(0, 300))}`);
@@ -218,8 +278,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         void board.dice.play(msg.t, net.colorOf(from), from).then(() => showRoll(who, shown, false));
         break;
       }
+      // Only a GM's boulder rolls (on a table without one, anybody's).
+      case 'boulder': if (!elsewhere && fullPowers(store, pid(from))) board.boulder.play(msg.t); break;
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
+      case 'broke': if (!elsewhere && typeof msg.k === 'string') board.broke(msg.k, String(msg.i)); break;
+      // Only someone who may build can pour; the recording itself is checked by the view.
+      case 'pour': if (!elsewhere && fullPowers(store, pid(from))) void board.loose.play(msg.t); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'fall': {
+        // Only what this player can see is worth a line: a fall must not give a mini away.
+        const v = elsewhere ? null : store.get<MiniVal>(`m:${String(msg.id)}`), n = Math.round(Number(msg.n));
+        if (v && n > 0 && n <= 40 && miniShown(store, meId, v, eyesOf(store, meId)) !== 'no') say(`<span class="sys">${esc(fellLine(v, n))}.</span>`);
+        break;
+      }
+      case 'blast': if (!elsewhere && Array.isArray(msg.c) && msg.c.every(Number.isFinite)) board.rock(msg.c, Math.max(1, Math.min(MAX_BLAST, Number(msg.r) || 1))); break;
     }
   }
 
@@ -231,6 +303,29 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}${esc(p.name)}</span>`).join('');
   }
   renderPlayers();
+
+  /** Log the falls and tell the table. A hidden mini's fall stays with the GM: nothing is sent. */
+  function fell(falls: Fall[]): void {
+    for (const { id, cells } of falls) {
+      const v = store.get<MiniVal>(`m:${id}`);
+      if (!v) continue;
+      say(`<span class="sys">${esc(fellLine(v, cells))}.</span>`);
+      if (!v.h) void send({ y: 'fall', id, n: cells });
+    }
+  }
+  /** The GM's blast, set off where the circle template lies: minis are thrown outward, props rock. One step of undo. */
+  function setOff(): void {
+    const r = myRuler;
+    if (!r || r.m !== 'circle' || !full()) return;
+    const c: Vec = [Math.floor(r.a[0]), Math.round(r.a[1]), Math.floor(r.a[2])];
+    const radius = Math.max(1, Math.min(MAX_BLAST, Math.round(Math.hypot(r.b[0] - r.a[0], r.b[2] - r.a[2]))));
+    const out = blast(store, c, radius, true);
+    board.editAll(out.edits);
+    board.rock(c, radius);
+    navigator.vibrate?.(30);
+    void send({ y: 'blast', c, r: radius });
+    fell(out.falls);
+  }
 
   function say(html: string, mine = false): void {
     const d = document.createElement('div');
@@ -248,9 +343,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const r = (Array.isArray(m.r) ? m.r : []).slice(0, 20).map(Number);
     const total = r.reduce((a, b) => a + b, 0) + (Number(m.mod) || 0);
     const detail = r.length > 1 || m.mod ? ` <span class="sys">(${r.join(' + ')}${m.mod ? ` ${m.mod > 0 ? '+' : '−'} ${Math.abs(m.mod)}` : ''})</span>` : '';
-    say(`🎲 ${who} rolled ${esc(String(m.d))}: <span class="tot">${total}</span>${detail}`, mine);
+    // A lone coin reads as a side, not a sum.
+    const shown = m.d === '1d2' && !m.mod && r.length === 1 ? (r[0] === 1 ? 'Heads' : 'Tails') : total;
+    say(`🎲 ${who} rolled ${esc(String(m.d))}: <span class="tot">${shown}</span>${detail}`, mine);
     const t = $('toast');
-    t.innerHTML = `<big>${total}</big>${mine ? 'You' : who} · ${esc(String(m.d))}`;
+    t.innerHTML = `<big>${shown}</big>${mine ? 'You' : who} · ${esc(String(m.d))}`;
     t.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
@@ -274,10 +371,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     const total = [...hand.values()].reduce((a, b) => a + b, 0);
     if (total) $('logToggle').dataset.n = String(total); else delete $('logToggle').dataset.n;
-    $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw` : 'Tap dice to pick them up';
+    syncShake();
+    $('hand').textContent = total ? `${handText()} in hand — drag on the table and let go to throw${unwatch ? ', or shake the phone' : ''}` : 'Tap dice to pick them up';
     $('hand').classList.toggle('full', total > 0);
     $<HTMLCanvasElement>('c').style.cursor = total ? 'grabbing' : '';
     if (total) void import('cannon-es'); // warm up the physics engine before the throw
+    if (total) armBoulder(false); // dice in hand: the boulder is put back
   }
   function pickUp(sides: number, n = 1): boolean {
     const next = new Map(hand).set(sides, (hand.get(sides) ?? 0) + n);
@@ -292,18 +391,103 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderHand();
   }
 
+  // Shake to roll, an extra for phones. The motion sensor is only listened to while dice are in
+  // hand. Where the browser wants asking (iOS) it starts off, and is asked for from a tap.
+  let shakeOn = canShake() && (ls.get('shake') ?? (shakeNeedsAsking() ? 'off' : 'on')) === 'on';
+  let shakeOk = !shakeNeedsAsking();
+  let unwatch: (() => void) | null = null;
+  function syncShake(): void {
+    const want = shakeOn && shakeOk && hand.size > 0;
+    if (want && !unwatch) unwatch = watchShake(onShake);
+    else if (!want && unwatch) { unwatch(); unwatch = null; }
+    $('shake').classList.toggle('on', shakeOn);
+  }
+  /** From a tap: make sure we may listen (iOS forgets between visits, and answers at once if already allowed). */
+  async function armShake(): Promise<void> {
+    if (!shakeOn || shakeOk) return;
+    shakeOk = await askShake();
+    if (!shakeOk) {
+      shakeOn = false;
+      ls.set('shake', 'off');
+      say('<span class="sys">This browser will not share its motion sensor, so shaking is off.</span>');
+    }
+    renderHand();
+  }
+  function onShake(s: Shake): void {
+    // Thrown across the middle of the view, the way the phone was shaken (up the screen = away from you).
+    const { target, cam, tray } = board.throwSpot();
+    const len = Math.hypot(target[0] - cam[0], target[2] - cam[2]);
+    const fx = len > 0.01 ? (target[0] - cam[0]) / len : 0, fz = len > 0.01 ? (target[2] - cam[2]) / len : -1;
+    const dx = -fz * s.x + fx * s.y, dz = fx * s.x + fz * s.y, speed = 5 + 9 * s.power;
+    if (phoneSheet()) closeSheet();
+    board.toss([target[0] - dx * tray * 0.4, target[1] + 1.5, target[2] - dz * tray * 0.4], [dx * speed, 0, dz * speed]);
+  }
+  $('shake').hidden = !canShake();
+  $('shake').onclick = () => {
+    shakeOn = !shakeOn;
+    ls.set('shake', shakeOn ? 'on' : 'off');
+    say(`<span class="sys">${shakeOn ? 'Shake the phone to throw the dice in your hand.' : 'Shaking no longer throws the dice.'}</span>`);
+    renderHand();
+    void armShake();
+  };
+
   async function throwHand(starts: Start[], vel: Vec): Promise<void> {
     const kinds = handKinds(), d = handText(), mod = handMod;
     emptyHand();
     const { target, tray } = board.throwSpot();
     // Simulate the throw, share the recording, and let everyone watch it land.
-    const t = await simulate(kinds, starts, vel, target, store, tray);
+    const t = await simulate(kinds, starts, vel, target, store, tray, board.solidsNear(target, tray + 1));
     board.dice.endHold();
     const r = rollValues(kinds, results(t)!);
     void send({ y: 'roll', d, r, mod, t, ...(secret ? { s: true } : {}) });
-    navigator.vibrate?.(12);
+    buzz(12);
     await board.dice.play(t, myColor, me);
+    const felt = rollBuzz(kinds, r);
+    if (felt) buzz(felt);
     showRoll(meTag, { d, r, mod }, true);
+    // If the view was turned away during the roll, bring our own dice back into it.
+    const rest = decode(t);
+    if (rest) board.revealDice(rest.pos.map((p) => p[t.n - 1]));
+  }
+
+  // The boulder trap, the GM's: tap Boulder, press on the table where it starts, flick the way it should roll.
+  function armBoulder(on: boolean): void {
+    board.boulderArmed = on && full();
+    $('boulder').classList.toggle('on', board.boulderArmed);
+    if (board.boulderArmed) void import('cannon-es'); // warm up the physics engine before the roll
+    else board.boulder.endHold();
+  }
+  $('boulder').onclick = () => {
+    emptyHand();
+    armBoulder(!board.boulderArmed);
+    if (!board.boulderArmed) return;
+    if (phoneSheet()) closeSheet();
+    say('<span class="sys">Boulder ready — press on the table where it starts and flick (or drag) the way it should roll.</span>');
+  };
+  async function rollBoulder(start: Vec, vel: Vec): Promise<void> {
+    if (!full()) return armBoulder(false);
+    if (Math.hypot(vel[0], vel[2]) < 1.5) { // no flick, no roll: it stays ready
+      board.boulder.endHold();
+      return say('<span class="sys">Flick or drag the way the boulder should roll.</span>');
+    }
+    board.boulderArmed = false; // one boulder a go; it stays in the hand until the roll is worked out
+    const at = here;
+    // Simulate the roll, share the recording, and let everyone watch it go.
+    const t = await simulateBoulder(start, vel, store, board.solidsNear(start, BOULDER_REACH, false));
+    armBoulder(false);
+    if (at !== here) return;
+    void send({ y: 'boulder', t });
+    navigator.vibrate?.(20);
+    // The figures in its way go down as it reaches them: ordinary edits, one undo step, made here only.
+    const hits = boulderHits(t, store);
+    let step: ReturnType<typeof board.commit> | undefined;
+    board.boulder.play(t, (f) => {
+      while (hits.length && hits[0].f <= f) {
+        const h = hits.shift()!, v = store.get<MiniVal>(`m:${h.id}`);
+        // Moved or removed since the boulder set off: it got out of the way.
+        if (v && v.x === h.from[0] && v.y === h.from[1] && v.z === h.from[2]) step = board.commit([[`m:${h.id}`, { ...v, x: h.to[0], y: h.to[1], z: h.to[2], d: true }]], step);
+      }
+    });
   }
   function closeSheet(): void { openSheet(null); }
 
@@ -313,7 +497,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $('secret').classList.toggle('on', secret);
     say(`<span class="sys">${secret ? 'Your rolls are now secret: players see blank dice.' : 'Your rolls are public again.'}</span>`);
   };
-  for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => { pickUp(+b.dataset.d!); renderHand(); };
+  for (const b of $('dice').querySelectorAll<HTMLButtonElement>('[data-d]')) b.onclick = () => { pickUp(+b.dataset.d!); renderHand(); void armShake(); };
   $('diceClear').onclick = emptyHand;
 
   /** `/r 2d6+1d20+3`: standard dice go into the hand; anything else (d7, 30 dice) is just rolled as numbers. */
@@ -415,7 +599,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const fits: Record<Cat, (id: string) => boolean> = {
       land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
       walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
-      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light',
+      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light' || id === 'pour',
       figures: () => true,
       scenes: (id) => id === 'copy' || id === 'paste',
     };
@@ -515,11 +699,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         blocks(BLOCK_SHELVES.Building);
       } else if (cat === 'things') {
         for (const name of Object.keys(PROP_SHELVES)) {
-          if (name !== 'Structures') chip(name, thingShelf === name, () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
+          if (name !== 'Structures') chip(name, thingShelf === name && board.brush !== 'pour', () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
         turn();
         chip('Light', board.brush === 'light', brush('light'), svg('sun'), 'Tap a torch, fire or crystal to step its light: normal, bright, dim, out');
-        props(PROP_SHELVES[thingShelf]);
+        chip('Scatter', board.brush === 'pour', () => { board.brush = 'pour'; trayOpen = true; }, '', 'Scatter loose pieces: tap the table to pour them out, drag to strew them');
+        if (board.brush === 'pour') {
+          chip(`× ${pourCount}`, false, () => { pourCount = POUR_COUNTS[(POUR_COUNTS.indexOf(pourCount) + 1) % POUR_COUNTS.length]; }, '', `How many pieces a pour drops: ${pourCount}`);
+          for (const [id, k] of Object.entries(LOOSE)) tile(k.name, pourKind === id, () => { pourKind = id; }, k.thumb, undefined, k.icon);
+        } else props(PROP_SHELVES[thingShelf]);
       } else if (cat === 'figures') {
         for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
@@ -560,11 +748,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         b.classList.toggle('on', on);
         b.onclick = () => { click(); renderPalette(); };
         row.append(b);
+        return b;
       };
       if (board.tool === 'ruler') {
         const modes: [RulerMode, string, string][] = [['line', 'line', 'Distance'], ['circle', 'circle', 'Radius'], ['cone', 'cone', 'Cone']];
         for (const [m, icon, title] of modes) chip(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
-        chip('Put away', 'x', false, () => { board.showRuler('me', null, ''); void send({ y: 'ruler', r: null }); }, 'Put the ruler away');
+        if (full() && board.rulerMode === 'circle') chip('Blast', 'spark', false, setOff, `Blast: throw back every mini in the circle (up to ${MAX_BLAST} cells wide)`).disabled = !ringOut();
+        if (full() && board.rulerMode === 'circle') chip('Undo', 'undo', false, () => board.undo(), 'Undo the last edit'); // the build dock's undo is out of reach in Play
+        chip('Put away', 'x', false, () => { board.showRuler('me', null, ''); myRuler = null; void send({ y: 'ruler', r: null }); }, 'Put the ruler away');
       } else {
         chip('Hide', 'fog', board.fogHide, () => { board.fogHide = true; }, 'Hide: drag to cover an area');
         chip('Reveal', 'eye', !board.fogHide, () => { board.fogHide = false; }, 'Reveal: drag to uncover');
@@ -579,6 +770,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     board.emote(board.selected, kind);
     sound.emote(kind);
     void send({ y: 'emote', id: board.selected, e: kind });
+  }
+
+  /** Pick what to shoot: the next tap on a mini or on the table is the target. Shown to everyone, changes nothing. */
+  function aim(kind: string): void {
+    const a = board.selected;
+    if (!a) return;
+    board.aimed = (b) => {
+      board.aimed = null;
+      renderRing(); // back to the picker, ready for the next one
+      if (b === a) return; // tapping the shooter calls it off
+      board.shoot({ k: kind, a, b });
+      void send({ y: 'shot', k: kind, a, b });
+    };
+    renderRing();
   }
 
   // Slabs travel as text, so they can be sent over any chat app.
@@ -617,10 +822,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     here = id;
     store.setBoard(id);
     board.clear();
-    for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
+    for (const p of ['b:', 'f:', 'm:', 'w:', 'l:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
     cutAuto = true;
     setCut(Infinity);
     emptyHand();
+    armBoulder(false);
   }
   function renderBoards(active: string): void {
     const f = full(), list = $('boardList');
@@ -669,7 +875,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function newBoard(copy: boolean): void {
     if (!full()) return;
     const id = crypto.randomUUID().slice(0, 6);
-    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
+    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:', 'l:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
     store.set(`bd:${id}`, { n: copy ? `${boardName(here)} copy`.slice(0, 24) : `Board ${boardList().length + 1}` });
     peek = id; // start on it alone; bring the players over when it is ready
     sync();
@@ -703,7 +909,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     if (document.activeElement !== glow) glow.value = String(setting(store, 'glow', 1));
     glow.disabled = !full();
     $('soundOn').innerHTML = sound.enabled ? `${ico('sound')}Sound on this device: on` : `${ico('mute')}Sound on this device: off`;
+    $('hapticsOn').hidden = !canBuzz();
+    $('hapticsOn').innerHTML = `${ico('buzz')}Vibration on this device: ${hapticsOn() ? 'on' : 'off'}`;
   }
+  $('hapticsOn').onclick = () => {
+    setHaptics(!hapticsOn());
+    buzz(20); // feel that it is on
+    renderAtmo();
+  };
   $('soundOn').onclick = () => {
     sound.setEnabled(!sound.enabled);
     ls.set('sound', sound.enabled ? 'on' : 'off');
@@ -813,13 +1026,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const FLY = [0, 1, 2, 3, 5, 8];
 
   // What you do to a piece in play sits in a ring around it; the full editor only opens on request.
-  let ringMode: 'main' | 'emote' | 'hp' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
+  let ringMode: 'main' | 'emote' | 'hp' | 'shot' | 'shove' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
   function renderRing(): void {
     const el = $('ring'), v = sel();
     el.innerHTML = '';
     el.hidden = !v || board.tool !== 'move';
+    const mine = !!v && canControl(store, meId, v);
+    if (!v || el.hidden || !mine) board.aimed = null; // nothing selected to shoot with any more
     if (!v || el.hidden) return;
-    const mine = canControl(store, meId, v);
+    if (ringMode === 'shove' && board.shoving !== board.selected) ringMode = 'main';
     const button = (title: string, inner: string, click: () => void, on = false) => {
       const b = document.createElement('button');
       b.title = title;
@@ -837,24 +1052,46 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         button('Emote', '👋', to('emote')),
         button('Hit points', `<span style="color:#ff6b7a;display:grid">${ico('heart')}</span>`, to('hp')),
         more,
+        button('Shoot', '🏹', to('shot')),
+        button('Shove', '💨', () => { if (board.aimShove(board.selected)) to('shove')(); }),
       ] : [more];
-      // Two to each side of the piece: its name and hit points float above it and must stay readable.
-      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25];
+      // Two to each side of the piece and two below: its name and hit points float above it and must stay readable.
+      const at = items.length === 1 ? [-25] : [-155, 155, -25, 25, 122, 58];
       items.forEach((b, i) => { b.dataset.a = String(at[i]); el.append(b); });
     } else {
       const pop = document.createElement('div');
       pop.className = 'pop';
-      if (ringMode === 'emote') {
+      if (board.aimed) {
+        pop.style.gridTemplateColumns = 'auto 46px';
+        const hint = document.createElement('b');
+        hint.textContent = 'Tap a target';
+        hint.style.cssText = 'padding:0 8px;white-space:nowrap';
+        pop.append(hint, button('Cancel', ico('x'), () => { board.aimed = null; renderRing(); }));
+        el.append(pop);
+        placeRing();
+        return;
+      }
+      if (ringMode === 'shot') {
+        pop.style.gridTemplateColumns = 'repeat(3, 46px)';
+        for (const [kind, k] of Object.entries(SHOTS)) pop.append(button(k.name, k.icon, () => aim(kind)));
+      } else if (ringMode === 'emote') {
         pop.style.gridTemplateColumns = 'repeat(5, 46px)';
         for (const [kind, icon] of Object.entries(EMOTES)) pop.append(button(kind, icon, () => emote(kind)));
         pop.append(button(v.d ? 'Stand up' : 'Knock down', '💀', () => patch({ d: !v.d }), !!v.d));
+      } else if (ringMode === 'shove') {
+        // The board is waiting for a tap: on the table for which way, or on the mini doing the shoving.
+        pop.style.gridTemplateColumns = 'auto 46px';
+        const hint = document.createElement('b');
+        hint.textContent = 'Tap which way';
+        hint.style.padding = '0 8px';
+        pop.append(hint);
       } else {
         pop.style.gridTemplateColumns = '46px auto 46px 46px';
         const count = document.createElement('b');
         count.innerHTML = `<span style="color:#ff6b7a">${v.hp ?? v.mhp ?? '–'}</span>${v.mhp === undefined ? '' : `<span style="opacity:.6">/${v.mhp}</span>`}`;
         pop.append(button('Lose a hit point', '−', () => bump(-1)), count, button('Gain a hit point', '+', () => bump(1)));
       }
-      pop.append(button('Back', ico('x'), to('main')));
+      pop.append(button('Back', ico('x'), () => { board.aimShove(null); to('main')(); }));
       el.append(pop);
     }
     placeRing();
@@ -884,14 +1121,14 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
 
   function showMiniPanel(id: string | null): void {
-    if (id !== ringFor) { ringFor = id; ringMode = 'main'; moreOpen = false; } // another piece: start from the ring
+    if (id !== ringFor) { ringFor = id; ringMode = 'main'; moreOpen = false; board.aimed = null; } // another piece: start from the ring
     const wasOpen = !$('minipanel').hidden;
     $('minipanel').hidden = !id || !moreOpen;
     renderRing();
     // A piece is never left behind the panel it is being edited in: the view slides to keep it clear.
     if (id && (id !== shownFor || wasOpen !== moreOpen)) {
       const roof = $('top').getBoundingClientRect().bottom + 110;
-      const floor = (moreOpen && !$('minipanel').hidden ? $('minipanel') : $('tools')).getBoundingClientRect().top - 70;
+      const floor = (moreOpen && !$('minipanel').hidden ? $('minipanel') : $('tools')).getBoundingClientRect().top - 130; // room for the ring's lowest button
       // On wide screens the panel sits beside the table, not under it: only the bars at top and bottom matter.
       board.keepInView(id, roof, Math.max(roof + 40, innerWidth >= 700 ? innerHeight - 150 : floor));
     }
@@ -976,9 +1213,31 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     catch { prompt('Copy this invite link:', invite); }
   };
   $('menuBtn').onclick = () => { $('menu').hidden = !$('menu').hidden; };
+  // This device's own choices (not shared): ambient motion (off by default for those who ask for
+  // less motion; it also saves battery) and whether the camera follows the turn order.
+  const local = {
+    ambient: (ls.get('ambient') ?? (matchMedia('(prefers-reduced-motion: reduce)').matches ? '0' : '1')) === '1',
+    follow: ls.get('follow') !== '0',
+  };
+  function renderLocal(): void {
+    board.setAmbient(local.ambient);
+    board.followTurns = local.follow;
+    for (const [k, icon, label] of [['ambient', 'tree', 'Ambient motion'], ['follow', 'next', 'Follow turns']] as const) {
+      const b = $('menu').querySelector<HTMLElement>(`[data-act="${k}"]`)!;
+      b.innerHTML = `${ico(icon)}${label}: ${local[k] ? 'on' : 'off'}`;
+      b.setAttribute('aria-pressed', String(local[k]));
+    }
+  }
+  renderLocal();
   $('menu').onclick = (e) => {
     const act = (e.target as HTMLElement).dataset.act;
     if (!act) return;
+    if (act === 'ambient' || act === 'follow') { // a switch: flip it and leave the menu open to show it
+      local[act] = !local[act];
+      ls.set(act, local[act] ? '1' : '0');
+      renderLocal();
+      return;
+    }
     $('menu').hidden = true;
     if (act === 'gm') {
       const g = gms(store), here = [meId, ...[...net.peers.keys()].map(pid)];
@@ -1006,7 +1265,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'import') $('file').click();
     if (act === 'clear' && confirm('Remove everything from the table, for everyone?')) {
-      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:'), ...store.keys('w:')]) store.set(k, null);
+      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:'), ...store.keys('w:'), ...store.keys('l:')]) store.set(k, null);
       store.set('gen', null);
       store.set('turn', null);
     }
