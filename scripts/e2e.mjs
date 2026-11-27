@@ -825,13 +825,13 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(await p.evaluate(() => /1d2 in hand.*shake/.test(document.querySelector('#hand').textContent) && document.querySelector('#shake').classList.contains('on')), 'a coin goes in the hand, and the hint offers a shake');
   await shakeIt();
   await p.waitForFunction(() => /rolled 1d2: (Heads|Tails)/.test(document.querySelector('#msgs').textContent));
-  const flip = await p.evaluate(() => {
+  const tossed = await p.evaluate(() => {
     const { board } = window.__ct, mine = board.dice.playing[board.dice.playing.length - 1];
     const v = mine.meshes[0].position.clone().project(board.camera);
     return { kind: mine.kinds.join(), seen: Math.abs(v.x) < 1 && Math.abs(v.y) < 1, hand: board.hand.length, sheet: document.querySelector('#log').classList.contains('closed'), vib: window.__vib.length };
   });
-  assert(flip.kind === 'd2' && flip.seen && !flip.hand && flip.sheet && (await cells()).length === 1, 'a shake flips the coin into view, once, and edits nothing');
-  assert(flip.vib > 0, `the thrower feels the throw (${flip.vib} buzzes)`);
+  assert(tossed.kind === 'd2' && tossed.seen && !tossed.hand && tossed.sheet && (await cells()).length === 1, 'a shake flips the coin into view, once, and edits nothing');
+  assert(tossed.vib > 0, `the thrower feels the throw (${tossed.vib} buzzes)`);
   // Switched off, a shake does nothing; the touch throw is untouched by all this.
   await p.tap('#logToggle');
   await p.tap('#shake');
@@ -840,6 +840,85 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await settle();
   assert(await p.evaluate(() => window.__ct.board.hand.length === 1 && !window.__ct.board.dice.held && !/shake/.test(document.querySelector('#hand').textContent)), 'with shaking switched off the coin stays in the hand');
   await p.tap('#diceClear');
+  // Ambient life: a tree and a fire stir a few frames a second; switched off, an idle table draws nothing.
+  await p.evaluate(() => {
+    const { board, store } = window.__ct;
+    for (const d of board.dice.playing) d.t = 1e9; // put the dice away now, not in the middle of the count
+    store.set('b:3,0,3', { i: 'tree' });
+    store.set('b:-3,0,3', { i: 'campfire' });
+  });
+  await p.waitForFunction(() => { const { board } = window.__ct; return !board.dice.playing.length && [...board.props.values()].every((g) => !g.userData.pending); });
+  const frames = (ms) => p.evaluate(async (ms) => {
+    const { board } = window.__ct, f = board.frames, t = performance.now();
+    await new Promise((r) => setTimeout(r, ms));
+    return { n: board.frames - f, rate: (board.frames - f) / ((performance.now() - t) / 1000) };
+  }, ms);
+  const flip = async (act) => {
+    await p.tap('#menuBtn');
+    await p.tap(`[data-act="${act}"]`);
+    const b = await p.evaluate((act) => { const el = document.querySelector(`[data-act="${act}"]`), r = el.getBoundingClientRect(); return { text: el.textContent, h: r.height, w: r.width }; }, act);
+    await p.tap('#menuBtn');
+    return b;
+  };
+  const off = await flip('ambient');
+  assert(/Ambient motion: off/.test(off.text) && off.h >= 44 && off.w >= 44 && (await p.evaluate(() => document.querySelector('#menu').hidden)), `ambient motion has a thumb-sized switch in the menu (${off.text})`);
+  await p.waitForFunction(async () => { const { board } = window.__ct, f = board.frames; await new Promise((r) => setTimeout(r, 400)); return board.frames === f; });
+  const still = await frames(1000);
+  assert(still.n === 0, `with ambient motion off an idle table draws no frames (${still.n})`);
+  // The software renderer here is slow enough to switch ambience off by itself: pretend it is not.
+  await p.evaluate(() => { window.__ct.board.slowed = false; window.__ct.board.stirSlow = -1e9; });
+  const on = await flip('ambient');
+  await p.waitForTimeout(300);
+  const stir = await frames(3000);
+  const fire = await p.evaluate(() => { const { board } = window.__ct; return { lit: board.lamps.some((l) => l.visible && l.intensity !== l.userData.base), shadows: board.renderer.shadowMap.needsUpdate, alive: board.alive }; });
+  assert(/: on/.test(on.text) && fire.alive && stir.n >= 1 && stir.rate < 20 && fire.lit && !fire.shadows, `with it on, leaves and firelight stir at a throttled rate, shadows left alone (${stir.rate.toFixed(1)} frames/s)`);
+  await p.evaluate(() => { window.__ct.board.slowed = true; });
+  const tired = await frames(700);
+  assert(tired.n <= 1, `a device that has had to lower quality gets no ambient frames (${tired.n})`);
+  await flip('ambient');
+
+  // Camera: the turn passing to a mini out of view glides the camera to it; a finger on the table stops that.
+  const target = () => p.evaluate(() => window.__ct.board.controls.target.toArray());
+  await p.evaluate(() => {
+    const { store } = window.__ct, mini = (x) => ({ x, y: 0, z: 0, k: 'knight', c: '#3e63dd', n: '', r: 0, s: 1, ini: 5 });
+    store.set('m:far1', mini(40));
+    store.set('m:far2', mini(-40));
+  });
+  await p.waitForFunction(() => window.__ct.board.minis.has('far1') && window.__ct.board.minis.has('far2'));
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 1 }));
+  await p.waitForFunction(() => { const t = window.__ct.board.controls.target; return Math.hypot(t.x - 40.5, t.z - 0.5) < 0.05 && !window.__ct.board.glide; });
+  assert(true, 'the camera glides to the mini whose turn it is when it is out of view');
+  // A finger already on the table (somewhere clear of the turn strip and the dock): the camera stays put.
+  const bare = await p.evaluate(() => {
+    for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if (document.elementFromPoint(x, y)?.id === 'c') return [x, y];
+    return null;
+  });
+  await touch('touchStart', [bare]);
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 1 }));
+  await p.waitForFunction(() => window.__ct.board.turnId === 'far2');
+  await p.waitForTimeout(200);
+  const held = await target();
+  await touch('touchEnd', []);
+  assert(Math.abs(held[0] - 40.5) < 0.05 && (await p.evaluate(() => !window.__ct.board.glide)), 'the camera does not move while a finger is on the table');
+  // A glide under way (frames held still so it cannot finish first) is dropped the moment a finger lands.
+  await p.evaluate(() => window.__ct.board.renderer.setAnimationLoop(null));
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 2 })); // (in view already: no move)
+  await p.waitForFunction(() => window.__ct.board.turnId === 'far1');
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 2 }));
+  await p.waitForFunction(() => !!window.__ct.board.glide);
+  await touch('touchStart', [bare]);
+  const dropped = await p.evaluate(() => !window.__ct.board.glide);
+  await touch('touchEnd', []);
+  await p.evaluate(() => { const { board } = window.__ct; board.renderer.setAnimationLoop(() => board.frame()); });
+  assert(dropped, 'a touch on the table cancels a camera glide at once');
+  // Switched off, turns no longer move the camera.
+  const follow = await flip('follow');
+  const camBefore = await target();
+  await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 3 }));
+  await p.waitForFunction(() => window.__ct.board.turnId === 'far1');
+  await p.waitForTimeout(200);
+  const camAfter = await target();
+  assert(/Follow turns: off/.test(follow.text) && follow.h >= 44 && camBefore[0] === camAfter[0] && camBefore[2] === camAfter[2], 'with "Follow turns" off the camera stays where it is');
   await p.context().close();
 }
 

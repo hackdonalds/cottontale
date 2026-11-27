@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
-import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
+import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, setWind, withDetail, type Season } from './kit';
+import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, safeArea, type Ambience } from './glide';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
 import { Debris } from './debris';
@@ -436,6 +437,23 @@ export class Board {
   private redoStack: Undo[][] = [];
   private batch: Undo[] | null = null;
   private dirty = true;
+  /** Frames drawn so far (for the checks: an idle table must not add to it). */
+  frames = 0;
+  /** Leaves sway and fires flicker, a few frames a second, while nothing else is going on. Local, not shared. */
+  ambient = false;
+  /** Glide to the mini whose turn it has become, if it is out of view. Local, not shared. */
+  followTurns = true;
+  private glide: Glide | null = null;
+  /** Is there anything on the table that sways or flickers? Looked up again only once the table is at rest. */
+  private alive = false;
+  private lifeDirty = true;
+  /** adapt() has had to give up quality: this device has nothing to spare for ambience. */
+  private slowed = false;
+  /** Was the last frame an ambient one, and how many of those have run long (see frame). */
+  private stirred = false;
+  private stirSlow = 0;
+  private drawn = 0;
+  private calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
   private coarse = matchMedia('(pointer: coarse)').matches;
   private last = performance.now();
 
@@ -592,6 +610,7 @@ export class Board {
       e.preventDefault();
       e.stopPropagation();
       const px = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY;
+      this.glide = null;
       const from = this.zoomGoal ?? this.camera.position.distanceTo(this.controls.target);
       this.zoomGoal = Math.min(this.controls.maxDistance, Math.max(this.controls.minDistance, from * Math.exp(px * (e.ctrlKey ? 0.012 : 0.0016))));
     }, { capture: true, passive: false });
@@ -667,6 +686,7 @@ export class Board {
 
   setTurn(id: string | null): void {
     if (this.turnId) this.minis.get(this.turnId)?.group.remove(this.turnRing);
+    if (id && id !== this.turnId) this.follow(id);
     this.turnId = id;
     const m = id ? this.minis.get(id) : null;
     if (m) {
@@ -768,7 +788,7 @@ export class Board {
     let moved = false;
     this.lamps.forEach((lamp, i) => {
       const n = near[i];
-      lamp.intensity = n ? n.glow[1] * this.glow : 0;
+      lamp.intensity = lamp.userData.base = n ? n.glow[1] * this.glow : 0; // (breathe() flickers around the base)
       lamp.visible = !!n && this.glow > 0; // a lamp with nothing to light costs nothing
       if (!n) return;
       const y = n.p.y + n.glow[2];
@@ -783,7 +803,7 @@ export class Board {
   /** Ask for a redraw. The board only renders when something changed. */
   invalidate(): void { this.dirty = true; }
   /** The table itself changed (not just the camera): shadows need redrawing too. */
-  private touched(): void { this.dirty = this.shadowDirty = true; }
+  private touched(): void { this.dirty = this.shadowDirty = this.lifeDirty = true; }
   private hideGhost(): void {
     if (this.ghost.visible) this.invalidate();
     this.ghost.visible = false;
@@ -1844,6 +1864,109 @@ export class Board {
     this.invalidate();
   }
 
+  // ---- camera moves and ambient life ---------------------------------------------
+  // Both are this device's own business (see glide.ts): nothing is stored or sent.
+
+  /** Where a point on the table is on the screen, in CSS pixels (it may be off it), or null behind the camera. */
+  private screen(p: THREE.Vector3): { x: number; y: number } | null {
+    this.camera.updateMatrixWorld();
+    const v = p.clone().project(this.camera);
+    return v.z > 1 ? null : { x: ((v.x + 1) / 2) * this.canvas.clientWidth, y: ((1 - v.y) / 2) * this.canvas.clientHeight };
+  }
+  /** Is the player busy with the table (a finger down, dice in hand)? Then the camera is theirs alone. */
+  private handsOn(): boolean { return this.pointers.size > 0 || this.hand.length > 0; }
+  /** Slide the whole view by `d`, smoothly. Any touch on the table stops it where it is (see onDown). */
+  private glideBy(d: THREE.Vector3): void {
+    if (d.lengthSq() < 1e-4 || d.length() > 2 * LIMIT) return;
+    this.glide = new Glide([d.x, d.y, d.z], this.calm ? 0 : 0.5);
+    this.invalidate();
+  }
+  /** The turn has passed to a mini: go to it, but only if it is out of view and the player is not busy. */
+  private follow(id: string): void {
+    const m = this.minis.get(id);
+    if (!this.followTurns || !m || !m.group.visible || this.handsOn()) return;
+    if (!outOfView(this.screen(m.target), safeArea(this.canvas.clientWidth, this.canvas.clientHeight))) return;
+    this.glideBy(m.target.clone().sub(this.controls.target));
+  }
+  /**
+   * This player's own dice have come to rest at these spots: if some lie outside the view (the
+   * camera was turned during the roll), slide it just far enough to show them. Other players'
+   * throws never move the camera.
+   */
+  revealDice(at: THREE.Vector3[]): void {
+    if (!at.length || this.handsOn()) return;
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, pad = 24;
+    const box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }, mid = new THREE.Vector3();
+    let lost = false;
+    for (const p of at) {
+      const s = this.screen(p);
+      mid.addScaledVector(p, 1 / at.length);
+      if (!s) { lost = true; continue; }
+      box.x0 = Math.min(box.x0, s.x - pad); box.x1 = Math.max(box.x1, s.x + pad);
+      box.y0 = Math.min(box.y0, s.y - pad); box.y1 = Math.max(box.y1, s.y + pad);
+    }
+    const [dx, dy] = lost ? [1, 1] : nudge(box, safeArea(w, h));
+    if (!dx && !dy) return;
+    // Which spot on the dice's own level should come to the middle of the screen? Slide by the difference.
+    const level = new THREE.Plane(THREE.Object3D.DEFAULT_UP, -mid.y);
+    const under = (x: number, y: number) => {
+      this.ray.setFromCamera(new THREE.Vector2((x / w) * 2 - 1, 1 - (y / h) * 2), this.camera);
+      return this.ray.ray.intersectPlane(level, new THREE.Vector3());
+    };
+    const now = under(w / 2, h / 2), then = lost ? null : under(w / 2 - dx, h / 2 - dy);
+    // Behind the camera or over the horizon there is no "just enough": go and look at them.
+    if (now && then && now.distanceTo(then) < 40) this.glideBy(then.sub(now));
+    else this.glideBy(mid.sub(this.controls.target).setY(0));
+  }
+  /** Hand out this frame's share of a camera move. True while one is under way. */
+  private slide(dt: number): boolean {
+    const s = this.glide?.step(dt);
+    if (!s) { this.glide = null; return false; }
+    this.controls.target.x += s[0]; this.controls.target.y += s[1]; this.controls.target.z += s[2];
+    this.camera.position.x += s[0]; this.camera.position.y += s[1]; this.camera.position.z += s[2];
+    return true;
+  }
+
+  /** Switch ambient motion on or off. Off, everything comes to rest and an idle table draws nothing. */
+  setAmbient(on: boolean): void {
+    this.ambient = on;
+    this.invalidate();
+  }
+  /** What decides whether the table stirs. `fresh` looks the table over again if it has changed (only done at rest). */
+  private ambience(fresh = false): Ambience {
+    if (fresh && this.lifeDirty && this.ambient) {
+      this.lifeDirty = false;
+      this.alive = this.lamps.some((l) => l.visible) || this.stirs();
+    }
+    return { on: this.ambient, hidden: document.hidden, slowed: this.slowed, alive: this.alive };
+  }
+  /** Is there a piece in sight with leaves, needles or flame on it? (Each model is looked through once.) */
+  private stirs(): boolean {
+    for (const g of this.props.values()) {
+      if (!g.visible) continue;
+      let found = false;
+      g.traverse((o) => {
+        const geo = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined, kind = geo?.getAttribute('kind');
+        if (!geo || !kind || (o as THREE.InstancedMesh).isInstancedMesh) return;
+        if (geo.userData.stirs === undefined) {
+          geo.userData.stirs = false;
+          for (let i = 0; i < kind.count && !geo.userData.stirs; i++) { const k = kind.getX(i); geo.userData.stirs = k === 3 || k === 4 || k === 7; }
+        }
+        found ||= geo.userData.stirs;
+      });
+      if (found) return true;
+    }
+    return false;
+  }
+  /** Set the breeze and the firelight for the frame about to be drawn (still, if ambience is not live). */
+  private breathe(now: number): void {
+    const live = ambientLive(this.ambience()), s = now / 1000;
+    setWind(live ? s : 0, live ? 1 : 0);
+    this.lamps.forEach((lamp, i) => { lamp.intensity = (lamp.userData.base ?? 0) * (live ? flicker(s, i) : 1); });
+    this.drawn = now;
+    this.frames++;
+  }
+
   // ---- picking ---------------------------------------------------------------
 
   private aim(e: { clientX: number; clientY: number }, lift = 0): void {
@@ -1923,7 +2046,7 @@ export class Board {
 
   private onDown(e: PointerEvent): void {
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    this.zoomGoal = null;
+    this.zoomGoal = this.glide = null; // a finger on the table always wins over a camera move
     if (this.pointers.size > 1) {
       // A second finger means a camera gesture, never an edit.
       const claimed = !this.controls.enabled;
@@ -2356,6 +2479,7 @@ export class Board {
     this.slow = frameMs > 34 ? this.slow + 1 : Math.max(0, this.slow - 2);
     if (this.slow < 24 || this.quality >= 3) return;
     this.slow = 0;
+    this.slowed = true;
     if (this.look) { // the finished look goes first: it is the most work for the least loss
       if (++this.lookLevel >= 2) this.look = null;
       else this.look.setLevel(this.lookLevel);
@@ -2375,7 +2499,14 @@ export class Board {
     const elapsed = now - this.last;
     const dt = Math.min(elapsed / 1000, 0.1);
     this.last = now;
-    let moving = this.controls.update();
+    // An ambient frame that holds up the next one is more than this device can spare: after a few, stop.
+    if (this.stirred) {
+      this.stirSlow = elapsed > 40 ? this.stirSlow + 1 : Math.max(0, this.stirSlow - 1);
+      if (this.stirSlow >= 6) this.slowed = true;
+      this.stirred = false;
+    }
+    const slid = this.slide(dt);
+    let moving = this.controls.update() || slid;
     if (this.zoomGoal !== null) {
       const t = this.controls.target, dist = this.camera.position.distanceTo(t);
       const next = Math.abs(this.zoomGoal - dist) < 0.01 ? this.zoomGoal : dist + (this.zoomGoal - dist) * (1 - Math.exp(-dt * 16));
@@ -2417,10 +2548,14 @@ export class Board {
       }
       busy = true;
     }
-    // Idle tables cost no GPU time (and no battery).
-    if (!busy) { this.wasBusy = false; return; }
-    if (this.wasBusy) this.adapt(elapsed); // only judge frames that follow another drawn frame
-    this.wasBusy = true;
+    // Idle tables cost no GPU time (and no battery) — unless ambience is on and there are leaves
+    // or flames to stir, and then only a few frames a second, with no shadows or labels redone.
+    const stir = !busy;
+    if (stir && !ambientDue(this.ambience(true), now, this.drawn)) { this.wasBusy = false; return; }
+    if (this.wasBusy && !stir) this.adapt(elapsed); // only judge frames that follow another drawn frame
+    this.wasBusy = !stir; // (an ambient frame is late on purpose: it must not count as a slow one)
+    this.stirred = stir;
+    this.breathe(now);
     this.dirty = false;
     // The sun follows the camera target in coarse steps, so panning rarely moves the shadows.
     const t = this.controls.target, sx = Math.round(t.x / 6) * 6, sz = Math.round(t.z / 6) * 6;
@@ -2449,7 +2584,7 @@ export class Board {
     this.camera.layers.enable(0);
     this.camera.layers.enable(OVERLAY);
     if (!this.look) this.renderer.render(this.scene, this.camera);
-    this.hooks.onView();
+    if (!stir) this.hooks.onView();
     if (this.offered) this.onOffer(this.offered); // its button follows the piece across the screen
   }
   private wasBusy = false;
