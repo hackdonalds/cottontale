@@ -7,6 +7,7 @@ import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Kind, type Start } from './dice';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
+import { Look } from './look';
 
 export type { CellVal, MiniVal };
 export type Tool = 'move' | 'build' | 'mini' | 'ruler' | 'fog';
@@ -47,6 +48,11 @@ type Edge = [x: number, y: number, z: number, s: Side];
 const PLAIN_WALL = new THREE.BoxGeometry(1, 1, 0.11).translate(0, 0.5, -0.5);
 const PLAIN_POST = new THREE.BoxGeometry(0.26, 1, 0.26).translate(-0.5, 0.5, -0.5);
 const ROOM_MAX = 24;
+/** Props that shed light: its colour, its strength, and how high above the floor it burns. */
+const GLOWS: Record<string, [color: string, power: number, height: number]> = {
+  torch: ['#ffae5e', 11, 1.0], campfire: ['#ff9440', 14, 0.45], candles: ['#ffc98a', 6, 0.5], cauldron: ['#9dff8a', 5, 0.6],
+  crystal: ['#7fd8ff', 7, 0.6], portal: ['#b594ff', 9, 0.8], hoard: ['#ffd76a', 3, 0.3],
+};
 /** Brushes that shape or dress the land (see rules.ts). */
 const LAND = new Set(['raise', 'lower', 'level', 'grow']);
 function noise(x: number, y: number, z: number): number {
@@ -247,9 +253,9 @@ function plate(v: MiniVal): THREE.Sprite {
 }
 
 const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number }> = {
-  day: { bg: '#1b2233', sun: '#ffe7c2', sunI: 2.5, hemi: '#cfe0ff', hemiI: 1.15 },
-  dusk: { bg: '#2b1d2e', sun: '#ff9d5c', sunI: 1.5, hemi: '#ffc9a8', hemiI: 0.7 },
-  night: { bg: '#080b14', sun: '#8fb0ff', sunI: 0.55, hemi: '#7f95d6', hemiI: 0.42 },
+  day: { bg: '#100e0d', sun: '#ffdcae', sunI: 3.9, hemi: '#a9bdea', hemiI: 0.95 },
+  dusk: { bg: '#120b0f', sun: '#ff9a58', sunI: 2.3, hemi: '#b79fc9', hemiI: 0.6 },
+  night: { bg: '#05060b', sun: '#8fb0ff', sunI: 0.75, hemi: '#6f84c6', hemiI: 0.34 }, // dark enough for torches to matter
 };
 
 export class Board {
@@ -276,6 +282,11 @@ export class Board {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
   private controls: OrbitControls;
+  private look: Look | null = null;
+  /** 0 the full look, 1 its light version, 2 plain. */
+  private lookLevel = 2;
+  private lamps: THREE.PointLight[] = [];
+  private litAt = new THREE.Vector3(1e9, 0, 0);
   private sun: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
   private ground: THREE.Mesh;
@@ -340,16 +351,31 @@ export class Board {
     // Keep painted colours rich in bright light instead of washing out to white.
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.shadowMap.enabled = !lowEnd;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // Shadows only change when the table does, not when the camera moves: redraw them on demand.
     this.renderer.shadowMap.autoUpdate = false;
     this.scene.background = new THREE.Color();
     this.scene.fog = new THREE.Fog('#000', 60, 170);
+    // The finished look costs a few screenfuls of work a frame: phones start on the light
+    // version, the weakest draw plain, and adapt() steps down if frames run long.
+    this.lookLevel = lowEnd ? 2 : this.coarse ? 1 : 0;
+    if (this.lookLevel < 2) {
+      this.look = new Look(this.renderer, this.scene, this.camera);
+      this.look.setLevel(this.lookLevel);
+    }
+    // Fire and magic light what stands near them. A fixed handful of lamps is handed to
+    // whichever sources are nearest the middle of the view (see relight).
+    for (let i = 0; i < (this.coarse ? 2 : 4); i++) {
+      const lamp = new THREE.PointLight('#ffb46b', 0, 7.5, 2);
+      this.lamps.push(lamp);
+      this.scene.add(lamp);
+    }
 
     this.hemi = new THREE.HemisphereLight('#fff', '#6b5a4c', 1); // warm light bounced up off the table
     this.sun = new THREE.DirectionalLight('#fff', 1);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.setScalar(this.coarse ? 1024 : 2048);
+    this.sun.shadow.mapSize.setScalar(this.coarse ? 1024 : 4096);
+    this.sun.shadow.radius = 3; // soft-edged, like a lamp over a table
     const sc = this.sun.shadow.camera;
     sc.left = sc.bottom = -36;
     sc.right = sc.top = 36;
@@ -364,9 +390,9 @@ export class Board {
     const cv = document.createElement('canvas');
     cv.width = cv.height = 128;
     const g = cv.getContext('2d')!;
-    g.fillStyle = '#34415a';
+    g.fillStyle = '#2a2420'; // a dark table top: the scene is the bright thing on it
     g.fillRect(0, 0, 128, 128);
-    g.strokeStyle = '#5b6a88';
+    g.strokeStyle = '#463c35';
     g.lineWidth = 6; // half of it falls outside the tile, leaving a 3px line per edge
     g.strokeRect(0, 0, 128, 128);
     const tex = new THREE.CanvasTexture(cv);
@@ -587,6 +613,21 @@ export class Board {
   }
 
   // ---- store → scene -------------------------------------------------------
+
+  /** Hand the lamps to the fires, torches and crystals nearest the middle of the view. */
+  private relight(): void {
+    const at = this.litAt.copy(this.controls.target), near: { d: number; p: THREE.Vector3; glow: (typeof GLOWS)[string] }[] = [];
+    for (const [key, g] of this.props) {
+      const glow = GLOWS[this.store.get<CellVal>(key)?.i ?? ''];
+      if (glow && g.visible) near.push({ d: g.position.distanceToSquared(at), p: g.position, glow });
+    }
+    near.sort((a, b) => a.d - b.d);
+    this.lamps.forEach((lamp, i) => {
+      const n = near[i];
+      lamp.intensity = n ? n.glow[1] : 0;
+      if (n) { lamp.color.set(n.glow[0]); lamp.position.set(n.p.x, n.p.y + n.glow[2], n.p.z); }
+    });
+  }
 
   /** Ask for a redraw. The board only renders when something changed. */
   invalidate(): void { this.dirty = true; }
@@ -1762,6 +1803,7 @@ export class Board {
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
+    this.look?.setSize(w, h, this.renderer.getPixelRatio());
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.invalidate();
@@ -1776,6 +1818,12 @@ export class Board {
     this.slow = frameMs > 34 ? this.slow + 1 : Math.max(0, this.slow - 2);
     if (this.slow < 24 || this.quality >= 3) return;
     this.slow = 0;
+    if (this.look) { // the finished look goes first: it is the most work for the least loss
+      if (++this.lookLevel >= 2) this.look = null;
+      else this.look.setLevel(this.lookLevel);
+      this.invalidate();
+      return;
+    }
     this.quality++;
     const base = Math.min(devicePixelRatio, 2);
     if (this.quality === 3) this.renderer.shadowMap.enabled = false;
@@ -1807,6 +1855,7 @@ export class Board {
     for (const l of this.layers.values()) if (l.dirty) { l.rebuild(); changed = true; }
     if (this.edgesDirty) { this.rebuildEdges(); changed = true; }
     if (this.coverDirty) { this.rebuildCover(); changed = true; }
+    if (changed || this.controls.target.distanceToSquared(this.litAt) > 4) this.relight();
     const k = 1 - Math.exp(-dt * 14);
     for (const m of this.minis.values()) {
       if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;
@@ -1841,7 +1890,8 @@ export class Board {
     }
     if (changed) this.renderer.shadowMap.needsUpdate = true;
     this.shadowDirty = false;
-    this.renderer.render(this.scene, this.camera);
+    if (this.look) this.look.render(this.camera.position.distanceTo(this.controls.target));
+    else this.renderer.render(this.scene, this.camera);
   }
   private wasBusy = false;
 }

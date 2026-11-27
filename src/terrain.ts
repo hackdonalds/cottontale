@@ -9,7 +9,7 @@ import * as THREE from 'three';
 
 /** Blocks that are ground: their colour, and what the surface is made of (2 earth/stone, 3 growth). */
 export const GROUND: Record<string, { color: string; kind: number }> = {
-  grass: { color: '#86b552', kind: 3 }, meadow: { color: '#5f9a45', kind: 3 }, moss: { color: '#7d9462', kind: 3 },
+  grass: { color: '#7da04c', kind: 3 }, meadow: { color: '#5c8a44', kind: 3 }, moss: { color: '#74875c', kind: 3 },
   dirt: { color: '#8b5e3c', kind: 2 }, mud: { color: '#5b4636', kind: 2 }, sand: { color: '#e2cf96', kind: 2 },
   gravel: { color: '#9a958c', kind: 2 }, clay: { color: '#b5651d', kind: 2 }, basalt: { color: '#3a3d45', kind: 2 },
   snow: { color: '#f1f5f9', kind: 2 },

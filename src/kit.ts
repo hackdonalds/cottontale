@@ -143,9 +143,20 @@ export function withDetail<T extends THREE.MeshStandardMaterial>(mat: T, terrain
           diffuseColor.rgb = mix(diffuseColor.rgb, turned, leafy * step(0.1, vLiving.y) * 0.92);
         } else if (season > 2.5) { // winter: snow lying on whatever still has needles or leaves
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.95, 1.0), max(leafy, evergreen) * vLiving.z * (0.3 + 0.5 * smoothstep(0.42, 0.56, fine)));
+        }`)
+      // Relief: the same pattern that tints the surface also dents it, so stone and timber
+      // catch the light across their grain instead of lying flat. Worked out from how the
+      // pattern changes across the screen, so no tangents or normal maps are needed.
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {
+          float dent = (fine - 0.5) * (detailMask.x * 0.045 + detailMask.y * 0.075) + (broad - 0.5) * detailMask.y * 0.05;
+          vec3 sx = dFdx(-vViewPosition), sy = dFdy(-vViewPosition);
+          vec3 r1 = cross(sy, normal), r2 = cross(normal, sx);
+          float det = dot(sx, r1);
+          normal = normalize(abs(det) * normal - sign(det) * (dFdx(dent) * r1 + dFdy(dent) * r2));
         }`);
   };
-  mat.customProgramCacheKey = () => (terrain ? 'kit-detail-terrain' : 'kit-detail');
+  mat.customProgramCacheKey = () => (terrain ? 'kit-relief-terrain' : 'kit-relief');
   return mat;
 }
 

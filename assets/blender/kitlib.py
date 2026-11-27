@@ -278,6 +278,19 @@ class Piece:
         bm.faces.ensure_lookup_table()
         cache = {}
         head_layer = bm.verts.layers.int['head']
+        # Painted like a miniature: a dark wash settles in the creases and a lighter, warmer
+        # drybrush catches the raised edges. How raised or sunken a corner is follows from
+        # whether its neighbours lie below or above the surface there.
+        bm.normal_update()
+        relief = {}
+        for v in bm.verts:
+            s = n_ = 0
+            for e in v.link_edges:
+                d = e.other_vert(v).co - v.co
+                if d.length > 1e-6:
+                    s += v.normal.dot(d.normalized())
+                    n_ += 1
+            relief[v.index] = s / n_ if n_ else 0.0
         for f in bm.faces:
             centre = f.calc_center_median()
             for l in f.loops:
@@ -301,7 +314,13 @@ class Piece:
                 if l.vert[head_layer]:
                     k = 1 - (1 - k) * 0.3  # leaves shade as a mass (see below), so only a hint of occlusion
                 c = l[self.col]
-                l[self.col] = (c[0] * k, c[1] * k, c[2] * k, c[3])
+                r = relief[l.vert.index]
+                edge, crease = min(1.0, max(0.0, -r * 2.4)), min(1.0, max(0.0, r * 2.4))
+                if l.vert[head_layer] or abs(c[3] - 0.875) < 0.01:  # leaves and flame take no wash
+                    edge = crease = 0.0
+                k *= (1 + 0.3 * edge) * (1 - 0.34 * crease)
+                lift = 0.07 * edge  # the drybrush is a paler, warmer paint, not just the same one brighter
+                l[self.col] = (c[0] * k + lift, c[1] * k + lift * 0.94, c[2] * k + lift * 0.8, c[3])
         mesh = bpy.data.meshes.new(self.name)
         heads = [v[bm.verts.layers.int['head']] for v in bm.verts]
         bm.to_mesh(mesh)
