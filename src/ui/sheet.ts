@@ -64,6 +64,9 @@ let runner: ScriptRunner | null = null;
  * use); they are validated and applied by the authority. With none set, scripts are ignored.
  */
 export function setScriptRunner(fn: ScriptRunner | null): void { runner = fn; }
+let pickerNote: ((el: HTMLElement) => void) | null = null;
+/** Extension point: something to draw under the list of systems (src/script.ts asks about a system's scripts there). */
+export function setPickerNote(fn: ((el: HTMLElement) => void) | null): void { pickerNote = fn; }
 
 // The system in the store is a copy somebody else may have written: always read it through the parser.
 let rawSeen: unknown, parsedSeen: System | null = null;
@@ -105,6 +108,7 @@ export function renderSystemPicker(el: HTMLElement): void {
   }
   // A system that came with the table but is not on this device's list still shows as the one in use.
   if (cur && !(offer ?? []).some((s) => s.id === cur.id)) row(cur.name, cur.about ?? '', true, () => {});
+  pickerNote?.(el);
   if (!offer) {
     offer = [];
     void fetch('./systems/index.json').then((r) => r.json()).then((raw) => { offer = parseIndex(raw); if (el.isConnected) renderSystemPicker(el); }).catch(() => {});

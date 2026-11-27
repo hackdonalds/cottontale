@@ -52,6 +52,13 @@ first, then enhance for larger screens.
   `set:system` when picked. With none picked the app behaves as it always did.
 - `src/ui/sheet.ts` the character sheet drawn from a system's schema, the rules picker (`renderSystemPicker`), and the
   referee: triggers are applied by one device only (the GM's; lowest id of several; the actor's with no GM here).
+- Scripts of a system (`scripts: { name: source }`, run by a trigger's `{ script }`) are a stranger's code: they run
+  only in QuickJS-in-WebAssembly inside a worker — `src/scriptbox.ts` (the box and its limits; pure, unit-tested under
+  node in `src/script.test.ts`), `src/script.worker.ts`, `src/script.ts` (the worker's keeper, budgets, and the
+  per-device "Allow" for that exact set of scripts). Never `eval`/`new Function` them, never give the box a host
+  function beyond `roll` and `log`; all that comes out is edits for `parseEdits`. `main.ts` imports `./script` lazily,
+  and the worker and `.wasm` load only on the device that referees, on the first script due: keep it that way
+  (e2e checks the request log). `public/systems/hard-knocks.json` is the example.
 - A mini stores only inputs and outcomes: `sv` (entered stats), `cn` (conditions), `fx` (ids of the last events applied
   to it, so a repeat is harmless) beside the old `hp`/`mhp`/`ini`. Derived values are never stored.
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).

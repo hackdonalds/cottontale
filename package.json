@@ -15,8 +15,10 @@
     "thumbs": "/Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P assets/blender/thumbs.py -- sample public/ui/thumbs.webp src/thumbs.json"
   },
   "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
     "cannon-es": "^0.20.0",
     "nostr-tools": "^2.26.1",
+    "quickjs-emscripten-core": "^0.32.0",
     "three": "^0.187.0"
   },
   "devDependencies": {

@@ -24,6 +24,7 @@ const DICE_LEN = 120, DICE_TERMS = 8, DICE_COUNT = 100, DICE_SIDES = 1000;
 const MAX_REAL = 12;            // dice in one physical throw (MAX_DICE in dice.ts)
 const BURSTS = 40;              // extra dice one term can gain by exploding
 const SECTIONS = 12, FIELDS = 24, ROLLS = 40, MODES = 8, CONDS = 40, MODS = 8, TRIGGERS = 40, EDITS = 8, OPTIONS = 12;
+const SCRIPTS = 16, SCRIPT_LEN = 8192, SCRIPTS_LEN = 49152; // scripts a system may carry, and their size in characters
 const CONDS_ON = 16;            // conditions one piece can carry
 const FX = 6;                   // event ids a piece remembers (see `fire`)
 
@@ -480,6 +481,8 @@ export interface System {
   /** The dice the tray offers. */
   dice: number[];
   sections: Section[]; rolls: RollDef[]; modes: Mode[]; conditions: Condition[]; triggers: Trigger[];
+  /** Small programs a trigger's `{ script }` can name: JavaScript source, run boxed in on one device (src/script.ts). */
+  scripts?: Record<string, string>;
 }
 export interface SystemRef { id: string; name: string; about?: string; file: string }
 
@@ -596,7 +599,7 @@ export function parseSystem(raw: unknown, notes: string[] = []): System | null {
   if (!isObj(raw) || raw.v !== 1) return null;
   const name = text(raw.name, 40);
   if (!name) return null;
-  known(raw, ['v', 'id', 'name', 'about', 'hp', 'dice', 'sections', 'rolls', 'modes', 'conditions', 'triggers'], 'system', notes);
+  known(raw, ['v', 'id', 'name', 'about', 'hp', 'dice', 'sections', 'rolls', 'modes', 'conditions', 'triggers', 'scripts'], 'system', notes);
   const sys: System = { v: 1, id: typeof raw.id === 'string' && /^[a-z0-9][a-z0-9-]{0,31}$/.test(raw.id) ? raw.id : 'custom', name, dice: [], sections: [], rolls: [], modes: [], conditions: [], triggers: [] };
   if (text(raw.about, 200)) sys.about = text(raw.about, 200);
 
@@ -678,6 +681,18 @@ export function parseSystem(raw: unknown, notes: string[] = []): System | null {
     if (!edits.length) { notes.push(`${where}: does nothing`); return; }
     sys.triggers.push({ on: t.on as TriggerOn, ...(t.roll ? { roll: t.roll as string } : {}), ...(t.if ? { if: t.if as string } : {}), do: edits });
   });
+
+  // ---- scripts: source text only, kept or dropped whole; nothing here runs it (src/script.ts) ----
+  if (raw.scripts !== undefined) {
+    const scripts: Record<string, string> = {};
+    let n = 0, size = 0;
+    for (const [k, src] of isObj(raw.scripts) ? Object.entries(raw.scripts) : []) {
+      if (!PLAIN_ID.test(k) || typeof src !== 'string' || !src.trim() || src.length > SCRIPT_LEN || n >= SCRIPTS || size + src.length > SCRIPTS_LEN) { notes.push('scripts: one was dropped (bad name, empty, too long or too many)'); continue; }
+      scripts[k] = src; n++; size += src.length;
+    }
+    if (n) sys.scripts = scripts; else notes.push('scripts: none understood');
+  }
+  // ---- end of scripts ----
   return sys;
 }
 

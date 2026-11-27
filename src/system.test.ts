@@ -225,7 +225,7 @@ describe('parseSystem', () => {
       expect(parseSystem(JSON.parse(JSON.stringify(s)), again)).toEqual(s);
       expect(again).toEqual([]);
     }
-    expect(parseIndex(INDEX).map((r) => r.id)).toEqual(['lantern-d20', 'six-sides', 'three-hearts']);
+    expect(parseIndex(INDEX).map((r) => r.id)).toEqual(['lantern-d20', 'six-sides', 'three-hearts', 'hard-knocks']);
     expect(parseIndex([{ file: '../../etc/passwd', name: 'x' }, { file: 'ok.json' }, 5, { file: 'fine-1.json', name: 'Fine' }])).toEqual([{ id: 'fine-1', name: 'Fine', file: 'fine-1.json' }]);
     expect(parseIndex('nope')).toEqual([]);
   });
