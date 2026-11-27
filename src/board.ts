@@ -12,6 +12,7 @@ import { BREAK_KEY, broken, debrisOf, seedOf, shatter } from './breaking';
 import { SHOTS, ShotsView, shotPath, type Shot } from './shots';
 import { buzz } from './haptics';
 import { LIGHT_LEVELS, nextLight } from './rules';
+import { RISE, SQUASH, TOPPLE, hopAt, hopPlan, nearestDir, riseAt, squashAt, toppleAt } from './feel';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { heading, land } from './forces';
@@ -270,7 +271,18 @@ function propSolids(g: THREE.Group): Solid[] {
   return out;
 }
 
-interface Mini { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string }
+interface Mini extends Feel { group: THREE.Group; target: THREE.Vector3; val: MiniVal; sig: string }
+/** What a mini is in the middle of, for show only (see `src/feel.ts`): each is gone again once it has played out. */
+interface Feel {
+  /** Falling over, or (`up`) getting back up: seconds in. */
+  fall?: { t: number; up: boolean };
+  /** Seconds since it landed. */
+  squash?: number;
+  /** In the air between two spots: where it left from, the arc, and which way it is going. */
+  hop?: { from: THREE.Vector3; t: number; dur: number; h: number; dx: number; dz: number };
+  /** How fast it was being carried last frame, to feel the pull when that changes. */
+  vel?: [x: number, z: number];
+}
 
 // Shared by every mini: one base shape, one material per base colour, one invisible hit area.
 const BASE = new THREE.CylinderGeometry(0.38, 0.4, 0.08, 24);
@@ -1098,6 +1110,7 @@ export class Board {
       }
       return;
     }
+    const was = m?.val ?? v; // before a rebuild forgets it
     const ghost = this.full && !!v.h;
     const fly = Math.max(0, Math.min(12, v.e || 0));
     const sig = [v.k, v.c, v.n, v.s, v.hp, v.mhp, fly, ghost, !!v.d].join('|');
@@ -1138,18 +1151,19 @@ export class Board {
       group.position.copy(m ? m.group.position : pos);
       group.visible = m ? m.group.visible : false; // decided by refreshMinis before the next frame
       if (m) this.scene.remove(m.group);
-      m = { group, target: pos, val: v, sig };
+      m = { group, target: pos, val: v, sig, fall: m?.fall, squash: m?.squash, hop: m?.hop, vel: m?.vel }; // a rebuilt figure carries on with what it was doing
       this.minis.set(id, m);
       this.scene.add(group);
       if (this.selected === id) this.attachRing(m);
       if (this.turnId === id) this.setTurn(id);
       this.visDirty = true;
     }
-    // Set down somewhere new, a figure rocks on its base the way it was going.
-    const dx = v.x - m.val.x, dz = v.z - m.val.z, far = Math.hypot(dx, dz);
-    if (far && !v.d) this.kick(id, (dx / far) * 2.4, (dz / far) * 2.4);
     m.val = v;
-    if (this.gesture?.mini !== id) m.target.copy(pos);
+    if (!!was.d !== !!v.d) m.fall = { t: 0, up: !v.d }; // knocked down, or helped up
+    if (this.gesture?.mini !== id) {
+      m.target.copy(pos);
+      if (was.x !== v.x || was.y !== v.y || was.z !== v.z) this.hop(m, v.x - was.x, v.z - was.z);
+    }
     this.pose(m);
   }
 
@@ -1158,6 +1172,7 @@ export class Board {
     const body = m.group.children[0], v = m.val;
     body.rotation.set(v.d ? -Math.PI / 2 : 0, ((v.r || 0) * Math.PI) / 4, 0, 'YXZ');
     body.position.set(0, Math.max(0, Math.min(12, v.e || 0)) + (v.d ? 0.22 * (v.s || 1) : 0), 0);
+    this.posture(m);
   }
 
   /** Play a short emote on a mini: a little movement and an emoji popping up over its head. */
@@ -1187,8 +1202,8 @@ export class Board {
       const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + MINIS[m.val.k].height * s;
       const w = Math.sin(Math.min(1, u * 2) * Math.PI); // one swell over the first half
       if (!m.val.d) switch (a.kind) {
-        case 'attack': body.translateZ(w * 0.45); body.rotateX(w * 0.35); break;
-        case 'hurt': body.position.x += Math.sin(a.t * 55) * 0.07 * (1 - u); body.rotateX(-w * 0.3); break;
+        case 'attack': this.lunge(a.id, m, w * 0.45, w * 0.35) || (body.translateZ(w * 0.45), body.rotateX(w * 0.35)); break;
+        case 'hurt': body.position.x += Math.sin(a.t * 55) * 0.07 * (1 - u); this.lunge(a.id, m, -w * 0.25, -w * 0.3) || body.rotateX(-w * 0.3); break;
         case 'cheer': body.position.y += Math.abs(Math.sin(u * Math.PI * 2)) * 0.4; body.rotateY(u * Math.PI * 2); break;
         case 'sleep': body.rotateZ(w * 0.35); break;
         default: body.rotateZ(Math.sin(u * Math.PI * 4) * 0.22 * (1 - u));
@@ -1455,7 +1470,101 @@ export class Board {
   /** Another player is dragging a mini: show it moving before they drop it. */
   liveMove(id: string, p: Vec): void {
     const m = this.minis.get(id);
-    if (m && this.gesture?.mini !== id && p.every(Number.isFinite)) m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5);
+    if (m && this.gesture?.mini !== id && p.every(Number.isFinite)) { m.target.set(p[0] + 0.5, p[1] + 0.3, p[2] + 0.5); m.hop = undefined; }
+  }
+
+  // ---- feel ------------------------------------------------------------------
+  // Minis hop from cell to cell, swing in the hand, land with a squash and fall over when knocked
+  // down. Like the knocks above it is for show, worked out here from the moves everyone already
+  // shares, and it always ends on the resting pose.
+
+  /** The passing part of a mini's pose: part-way through falling or getting up, squashed from a landing. */
+  private posture(m: Mini): void {
+    const body = m.group.children[0], v = m.val, s = v.s || 1;
+    if (m.fall) {
+      const a = m.fall.up ? riseAt(m.fall.t) : toppleAt(m.fall.t);
+      body.rotation.x = (-Math.PI / 2) * a;
+      body.position.y = Math.max(0, Math.min(12, v.e || 0)) + 0.22 * s * Math.max(0, Math.min(1, a));
+    }
+    const q = m.squash === undefined || v.d ? 1 : squashAt(m.squash);
+    body.scale.set(s / Math.sqrt(q), s * q, s / Math.sqrt(q));
+  }
+
+  /** Send a mini to its target in an arc from wherever it is now. `dx`, `dz` is the way it is travelling. */
+  private hop(m: Mini, dx: number, dz: number): void {
+    const from = m.group.position.clone(), dist = Math.hypot(m.target.x - from.x, m.target.z - from.z);
+    m.hop = { from, t: 0, ...hopPlan(dist, m.target.y - from.y), dx, dz };
+    m.vel = undefined;
+    this.invalidate();
+  }
+
+  /** A mini has come down: it squashes and rocks the way it was going, and the ones standing next to it shiver. */
+  private land(id: string, m: Mini, dx: number, dz: number): void {
+    const v = m.val, far = Math.hypot(dx, dz);
+    if (v.d) return;
+    m.squash = 0;
+    if (far) this.kick(id, (dx / far) * 2.4, (dz / far) * 2.4);
+    if (!m.group.visible) return; // a mini this player cannot see must not give itself away
+    for (const [oid, o] of this.minis) {
+      const ox = o.val.x - v.x, oz = o.val.z - v.z, d = Math.hypot(ox, oz);
+      if (oid !== id && d && d < 1.6 && Math.abs(o.val.y - v.y) <= 1 && o.group.visible && !o.val.d) this.kick(oid, (ox / d) * 0.5, (oz / d) * 0.5);
+    }
+  }
+
+  /**
+   * Lean and step a mini toward the nearest other mini within about two cells (away from it, if
+   * negative). False if nobody is that close. Hidden minis do not count, so the GM's table shows
+   * the same move as everyone else's.
+   */
+  private lunge(id: string, m: Mini, step: number, lean: number): boolean {
+    const v = m.val, near: [number, number][] = [];
+    for (const [oid, o] of this.minis) if (oid !== id && o.group.visible && !o.val.h && Math.abs(o.val.y - v.y) <= 2) near.push([o.val.x, o.val.z]);
+    const dir = nearestDir(v.x, v.z, near, 2.5), body = m.group.children[0];
+    if (!dir) return false;
+    body.position.x += dir[0] * step;
+    body.position.z += dir[1] * step;
+    body.quaternion.premultiply(this.tilt.setFromAxisAngle(this.axis.set(dir[1], 0, -dir[0]), lean));
+    return true;
+  }
+
+  /** Play out the falls, getting-ups and landings. True while any is still going. */
+  private feel(dt: number): boolean {
+    let busy = false;
+    for (const m of this.minis.values()) {
+      if (!m.fall && m.squash === undefined) continue;
+      if (m.fall && (m.fall.t += dt) >= (m.fall.up ? RISE : TOPPLE)) m.fall = undefined;
+      if (m.squash !== undefined && (m.squash += dt) >= SQUASH) m.squash = undefined;
+      this.pose(m);
+      busy = true;
+    }
+    return busy;
+  }
+
+  /** Move each mini toward where it should be: along its arc if it is hopping, else carried there. True while any moves. */
+  private travel(dt: number): boolean {
+    let moving = false;
+    const k = 1 - Math.exp(-dt * 14);
+    for (const [id, m] of this.minis) {
+      if (this.gesture?.mini === id) m.hop = undefined; // picked up in mid-air
+      const at = m.group.position, h = m.hop;
+      if (h) {
+        h.t += dt;
+        at.set(...hopAt(h.from.toArray(), m.target.toArray(), h.h, h.t / h.dur));
+        if (h.t >= h.dur) { m.hop = undefined; this.land(id, m, h.dx, h.dz); }
+        moving = true;
+        continue;
+      }
+      if (at.distanceToSquared(m.target) < 1e-6) { m.vel = undefined; continue; }
+      const x = at.x, z = at.z;
+      at.lerp(m.target, k);
+      moving = true;
+      if (dt < 1e-4 || m.val.d) continue;
+      // Carried, it hangs like a pendulum from the hand: it leans against every change of speed.
+      const vx = (at.x - x) / dt, vz = (at.z - z) / dt, [px, pz] = m.vel ?? [0, 0];
+      this.kick(id, (px - vx) * 0.18, (pz - vz) * 0.18);
+      m.vel = [vx, vz];
+    }
+    return moving;
   }
 
   ping(p: Vec, color: string): void {
@@ -2552,6 +2661,7 @@ export class Board {
     let changed = this.shadowDirty;
     if (this.dice.update(dt)) changed = true;
     if (this.boulder.update(dt)) changed = true;
+    if (this.feel(dt)) changed = true;
     if (this.animate(dt)) changed = true;
     if (this.wobble(dt)) changed = true;
     if (this.debris.update(dt)) this.dirty = true; // drawn, but it casts no shadow to redraw
@@ -2563,12 +2673,7 @@ export class Board {
     if (this.edgesDirty) { this.rebuildEdges(); changed = true; }
     if (this.coverDirty) { this.rebuildCover(); changed = true; }
     if ((changed || this.controls.target.distanceToSquared(this.litAt) > 4) && this.relight()) changed = true;
-    const k = 1 - Math.exp(-dt * 14);
-    for (const m of this.minis.values()) {
-      if (m.group.position.distanceToSquared(m.target) < 1e-6) continue;
-      m.group.position.lerp(m.target, k);
-      changed = true;
-    }
+    if (this.travel(dt)) changed = true;
     let busy = moving || changed || this.dirty;
     if (this.shots.update(dt)) busy = true; // in the air, they cast no shadow: the table itself is unchanged
     for (let i = this.pings.length - 1; i >= 0; i--) {

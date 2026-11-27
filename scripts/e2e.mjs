@@ -117,6 +117,42 @@ const knock = await a.evaluate(async () => {
 assert(knock.solid && knock.lean > 0.02 && !knock.rocking && knock.upright && knock.same, `a mini is solid to dice; knocked, it rocks and settles without changing the table ${JSON.stringify(knock)}`);
 assert(true, 'mixed hands, percentile, /r and chat delivered');
 
+// Feel: a moved mini hops over in an arc and lands squashed; a knocked-down one falls rather than snaps.
+// All for show: it ends exactly on the resting pose and writes nothing of its own to the table.
+const feel = await a.evaluate(async () => {
+  const { board, store } = window.__ct;
+  const [id, m] = [...board.minis][0], orig = { ...m.val }, body = () => board.minis.get(id).group.children[0];
+  // Watch the mini every frame until `until` says it is over (or time runs out).
+  const watch = (until, ms = 20000) => new Promise((res) => {
+    const seen = { top: -Infinity, squashed: 1, part: false }, t0 = performance.now();
+    const tick = () => {
+      const g = board.minis.get(id).group, rx = body().rotation.x;
+      seen.top = Math.max(seen.top, g.position.y);
+      seen.squashed = Math.min(seen.squashed, body().scale.y / (orig.s || 1));
+      if (rx < -0.05 && rx > -Math.PI / 2 + 0.05) seen.part = true;
+      if (until() || performance.now() - t0 > ms) res(seen); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const calm = () => { const x = board.minis.get(id); return !x.hop && !x.fall && x.squash === undefined && !board.wobbles.has(id); };
+  store.set(`m:${id}`, { ...orig, x: orig.x + 2 });
+  const hopping = !!board.minis.get(id).hop;
+  const hop = await watch(calm);
+  const g = board.minis.get(id).group, b = body();
+  const landed = g.position.x === orig.x + 2.5 && g.position.y === orig.y && b.scale.y === (orig.s || 1) && b.scale.x === (orig.s || 1) && Math.abs(b.rotation.x) + Math.abs(b.rotation.z) < 1e-6;
+  store.set(`m:${id}`, { ...orig, x: orig.x + 2, d: true });
+  const fall = await watch(calm);
+  const flat = body().rotation.x === -Math.PI / 2;
+  store.set(`m:${id}`, { ...orig, x: orig.x + 2 });
+  const rise = await watch(calm);
+  const up = body().rotation.x === 0;
+  store.set(`m:${id}`, orig);
+  await watch(calm);
+  return { hopping, top: hop.top - orig.y, squashed: hop.squashed, landed, fell: fall.part, flat, rose: rise.part, up, back: JSON.stringify(store.get(`m:${id}`)) === JSON.stringify(orig), calm: calm() };
+});
+assert(feel.hopping && feel.top > 0.15 && feel.squashed < 0.99 && feel.landed, `a moved mini hops in an arc, lands with a squash and settles exactly on its cell (${JSON.stringify(feel)})`);
+assert(feel.fell && feel.flat && feel.rose && feel.up && feel.back && feel.calm, 'a knocked-down mini topples into the lying pose and stands back up, and the table goes quiet again');
+
 // ---- GM tools: one player runs the table, the other only sees and moves what they should ----
 const ok = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 }).then(() => true, () => false);
 const id = await a.evaluate(() => [...window.__ct.store.keys('m:')][0].slice(2));
