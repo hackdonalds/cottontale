@@ -45,6 +45,11 @@ first, then enhance for larger screens.
   - `sheets.ts` sheet heights. Every `.sheet` has three (`data-h`: peek = its first row, half = as it opens, full = forms) and a grab handle that is a real button (`setSheetHeight(id, 'peek'|'half'|'full')`, `sheetHeight`, `cycleSheetHeight`). One sheet at a time; a sheet sits on top of the dock (`--dock`) and drops to peek when a finger lands on the table; `#hud[data-sheet]` hides what a sheet would cover. Drill down with `pushSheetPage(id, title, render)` (a page with Back in the same sheet), never a second sheet
   - `library.ts` (pure: recents, favourites, search — unit-test here) and `hotbar.ts` (the Recent / Favourites shelves, the `#lib` sheet with search and a grid). Pieces are named by key (`b_grass`, `p_barrel`, `m_knight`) and looked up at draw time, never assumed to exist; long-press pins, but the star in the library is the tap path
   - `prep.ts` Prep, the third mode: full-screen pages with a title bar and Back (button, Escape and the phone's back button share the history). Add a page with `registerPrepPage({ id, title, icon, order, hint, render(el, ctx), update?(el, ctx) })`; `prepPages.ts` has the Theme gallery and placeholders that a page with the same id replaces
+- `src/themeEdit.ts` pure theme editing (copy under `<player>:<slug>`, set/clamp, pieces, share code, size, undo): every edit is read
+  back through `parseTheme`, so what is written is what is read — unit-test here (`src/themeEdit.test.ts`).
+  `src/ui/themeEditor.ts` (+ its own `.css`) is the UI: the Prep → Theme gallery, the see-through editor page (one panel with tabs,
+  the table as live preview: `PrepPage.see`, `board.setInset`) and the piece-picker page. It writes the whole theme to `at:theme` at
+  most every 300 ms; "Mine" is this device's `cottontale:themes`; "Use on every board" writes `set:theme`.
 - Thin walls live on cell edges, not in cells: `w:x,y,z,n|w` (low-z / low-x side of a cell, see `src/rules.ts`).
   They block sight unless the piece is a window or doorway; corner posts are derived, never stored.
 - Board-specific keys (`b:` `m:` `f:` `w:` `at:` `turn`) are scoped per board by the store;

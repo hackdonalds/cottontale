@@ -16,6 +16,7 @@ import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type Game
 import { FAVS, Hotbar, RECENT, type Shelf } from './ui/hotbar';
 import { initPrep } from './ui/prep';
 import { registerBuiltinPrepPages } from './ui/prepPages';
+import { initThemeEditor } from './ui/themeEditor';
 import { initSheets, popSheetPage, pushSheetPage, setSheetHeight, sheetHeight } from './ui/sheets';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -826,6 +827,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // Prep: the full-screen pages for getting a table ready (see ui/prep.ts).
   registerBuiltinPrepPages();
   const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme });
+  // Make your own theme (ui/themeEditor.ts): the Theme page's gallery with Customise, and the editor over the live table.
+  const themeEd = initThemeEditor({ store, board, known, me: meId, color: () => myColor, full, ls, themes: themesOffered, pickTheme, thumb, lookAround: () => setTool('move'), open: (page) => prep.open(page) });
   /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
@@ -1356,6 +1359,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   initSheets();
   Object.assign((window as unknown as { __ct: object }).__ct, { ui: { prep, pushSheetPage, popSheetPage, setSheetHeight, sheetHeight } });
+  Object.assign((window as unknown as { __ct: object }).__ct, { themeEd });
   setTool('move');
   renderHand();
   ui.ready = true;
