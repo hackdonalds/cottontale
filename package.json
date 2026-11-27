@@ -10,7 +10,8 @@
     "relay": "node scripts/relay.mjs",
     "test": "vitest run",
     "e2e": "node scripts/e2e.mjs",
-    "kit": "node scripts/kit.mjs"
+    "kit": "node scripts/kit.mjs",
+    "thumbs": "/Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P assets/blender/thumbs.py -- sample public/ui/thumbs.webp src/thumbs.json"
   },
   "dependencies": {
     "cannon-es": "^0.20.0",

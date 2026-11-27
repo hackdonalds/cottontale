@@ -33,15 +33,38 @@
     <button class="primary" id="join">Sit down at the table</button>
   </form>
 
+  <!-- The icon set: one stroke weight, drawn on a 24 grid. Used as <svg><use href="#i-name"/></svg>. -->
+  <svg id="icons" aria-hidden="true">
+    <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 11V5.500a1.500 1.500 0 0 1 3 0V10m0-1V4.500a1.500 1.500 0 0 1 3 0V10m0-3.500a1.500 1.500 0 0 1 3 0V13c0 4.500-2.200 8-6 8-3 0-4.400-1.600-6-4.500l-2-3.700a1.500 1.500 0 0 1 2.600-1.500L8 14"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 3 4 7.500v9L12 21l8-4.500v-9zM4 7.500l8 4.500 8-4.500M12 12v9"/></symbol>
+    <symbol id="i-pawn" viewBox="0 0 24 24"><circle cx="12" cy="6.500" r="3"/><path d="M9.500 9.500h5M10 10c0 4-2.500 5-3 8h10c-.5-3-3-4-3-8M6 21h12"/></symbol>
+    <symbol id="i-ruler" viewBox="0 0 24 24"><path d="m3.500 16.500 13-13 4 4-13 13zM7 13l1.500 1.500M10 10l2.500 2.500M13 7l1.500 1.500"/></symbol>
+    <symbol id="i-fog" viewBox="0 0 24 24"><path d="M7 14a4 4 0 0 1 .5-8 5 5 0 0 1 9.500 1 3.500 3.500 0 0 1 0 7zM5 17.500h12M8 21h10"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M8 5 4 9l4 4M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+    <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3.500"/><path d="M9 9h.01M15 15h.01M15 9h.01M9 15h.01"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></symbol>
+    <symbol id="i-hill" viewBox="0 0 24 24"><path d="m3 19 6-10 4 6 2-3 6 7zM16.500 6.500h.01"/></symbol>
+    <symbol id="i-wall" viewBox="0 0 24 24"><path d="M3.500 6h17v12h-17zM3.500 10h17M3.500 14h17M9 6v4M15 10v4M9 14v4"/></symbol>
+    <symbol id="i-chair" viewBox="0 0 24 24"><path d="M7 3v9h10V3M7 7h10M6 12h12v3H6zM7.500 15v6M16.500 15v6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M11 3.500 12.800 9l5.700 2-5.700 2-1.800 5.500L9.200 13l-5.700-2 5.700-2zM18.500 16.500l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
+    <symbol id="i-erase" viewBox="0 0 24 24"><path d="m5 15 9-9 5 5-9 9H7zM11 9l5 5M4 20h16"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.500v13l11-6.500z"/></symbol>
+    <symbol id="i-turn" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.500-5.400M17 3v4h-4"/></symbol>
+  </svg>
   <div id="hud" hidden>
     <div id="top" class="panel">
       <b>🐇</b>
       <span id="status" title="Relay connections">●</span>
       <span id="players"></span>
       <span class="grow"></span>
-      <button id="invite" title="Copy invite link">🔗 Invite</button>
-      <button id="menuBtn" title="Menu">☰</button>
+      <!-- Two ways of being at the table: playing on it, or building it. -->
+      <span id="modes" data-gm>
+        <button data-mode="play"><svg><use href="#i-play"/></svg>Play</button>
+        <button data-mode="build"><svg><use href="#i-cube"/></svg>Build</button>
+      </span>
+      <button id="menuBtn" title="Menu" aria-label="Menu"><svg><use href="#i-menu"/></svg></button>
       <div id="menu" class="panel" hidden>
+        <button id="invite">🔗 Invite someone</button>
         <button data-act="gm"></button>
         <button data-act="los" data-gm></button>
         <button data-act="boards">🗺️ Boards</button>
@@ -117,14 +140,16 @@
       </div>
 
       <div id="tools" class="panel">
-        <button data-tool="move" title="Move minis · hold to ping" aria-label="Move minis">✋</button>
-        <button data-tool="build" title="Build and erase" aria-label="Build and erase" data-gm>🧱</button>
-        <button data-tool="mini" title="Add minis" aria-label="Add minis" data-gm>♟️</button>
-        <button data-tool="ruler" title="Measure" aria-label="Measure">📏</button>
-        <button data-tool="fog" title="Fog: hide areas from players" aria-label="Fog" data-gm data-gmonly>🌫️</button>
-        <span class="sep"></span>
-        <button id="undo" title="Undo" aria-label="Undo" data-gm>↩️</button>
-        <button id="logToggle" title="Dice &amp; chat" aria-label="Dice and chat">🎲</button>
+        <button data-tool="move" data-in="play" title="Move minis · hold to ping"><svg><use href="#i-hand"/></svg>Move</button>
+        <button data-tool="ruler" data-in="play" title="Measure"><svg><use href="#i-ruler"/></svg>Measure</button>
+        <button data-tool="fog" data-in="play" title="Fog: hide areas from players" data-gm data-gmonly><svg><use href="#i-fog"/></svg>Fog</button>
+        <button id="logToggle" data-in="play" title="Dice &amp; chat"><svg><use href="#i-dice"/></svg>Dice</button>
+        <button data-cat="land" data-in="build" title="Shape and paint the ground"><svg><use href="#i-hill"/></svg>Land</button>
+        <button data-cat="walls" data-in="build" title="Walls, rooms and building blocks"><svg><use href="#i-wall"/></svg>Walls</button>
+        <button data-cat="things" data-in="build" title="Furniture, nature and dungeon dressing"><svg><use href="#i-chair"/></svg>Things</button>
+        <button data-cat="figures" data-in="build" title="Add minis"><svg><use href="#i-pawn"/></svg>Figures</button>
+        <button data-cat="scenes" data-in="build" title="Generate, copy and paste"><svg><use href="#i-spark"/></svg>Scenes</button>
+        <button id="undo" data-in="build" title="Undo" data-gm><svg><use href="#i-undo"/></svg>Undo</button>
       </div>
     </div>
 

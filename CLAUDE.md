@@ -42,4 +42,5 @@ first, then enhance for larger screens.
 
 - `npm run dev` · `npm test` · `npm run build && npm run e2e`
 - `npm run relay` — local in-memory relay (used by e2e)
+- `npm run thumbs` — re-render the library pictures (`public/ui/thumbs.webp`, indexed by `src/thumbs.json`) after the kit changes
 - `npm run kit` — rebuild the kit packs with headless Blender (`-- --sheet out.png` also renders a contact sheet); which family ships in which pack is `assets/blender/packs.py`

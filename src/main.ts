@@ -2,6 +2,8 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
 import { loadKit, type Season } from './kit';
+import THUMBS from './thumbs.json';
+import { EDGES } from './rules';
 import { ROOM_NAMES, THEMES, generate, type GenOpts, type GenRoom, type Theme } from './gen';
 import { MAX_DICE, kindsFor, results, rollValues, simulate, type Kind, type Start } from './dice';
 import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } from './net';
@@ -369,19 +371,53 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   // ---- tools & palette ----
 
+  // Two modes. Play: move, measure, fog, dice. Build: the dock is the categories of the
+  // library, and the tray above it holds the current category's pieces and actions.
+  type Cat = 'land' | 'walls' | 'things' | 'figures' | 'scenes';
+  let cat: Cat = 'land';
+  const building = () => board.tool === 'build' || board.tool === 'mini';
   function setTool(t: Tool): void {
     board.setTool(t);
-    for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.classList.toggle('on', b.dataset.tool === t);
+    const build = building();
+    for (const b of $('tools').querySelectorAll<HTMLButtonElement>('button')) {
+      b.hidden = (b.dataset.in === 'build') !== build;
+      if (b.dataset.tool) b.classList.toggle('on', b.dataset.tool === t);
+      if (b.dataset.cat) b.classList.toggle('on', b.dataset.cat === cat);
+    }
+    for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.classList.toggle('on', (b.dataset.mode === 'build') === build);
+    if (build) openSheet(null);
     renderPalette();
   }
+  /** Open a category of the library, with a brush that belongs to it in hand. */
+  function setCat(c: Cat): void {
+    cat = c;
+    const fits: Record<Cat, (id: string) => boolean> = {
+      land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
+      walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
+      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase',
+      figures: () => true,
+      scenes: (id) => id === 'copy' || id === 'paste',
+    };
+    if (!fits[c](board.brush)) board.brush = { land: 'raise', walls: 'wall', things: PROP_SHELVES[thingShelf][0], figures: board.brush, scenes: 'copy' }[c];
+    setTool(c === 'figures' ? 'mini' : 'build');
+  }
   for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-tool]')) b.onclick = () => setTool(b.dataset.tool as Tool);
+  for (const b of $('tools').querySelectorAll<HTMLButtonElement>('[data-cat]')) b.onclick = () => setCat(b.dataset.cat as Cat);
+  for (const b of $('modes').querySelectorAll<HTMLButtonElement>('button')) b.onclick = () => (b.dataset.mode === 'build' ? setCat(cat) : setTool('move'));
 
-  let buildShelf = 'Terrain', miniShelf = 'Heroes';
-  const SLABS = 'Copy & paste';
+  let thingShelf = 'Nature', miniShelf = 'Heroes';
+  /** Where a piece's picture is on the sheet of thumbnails (see assets/blender/thumbs.py). */
+  const thumb = (family: string): string | null => {
+    const i = (THUMBS.at as Record<string, number>)[family];
+    if (i === undefined) return null;
+    const x = i % THUMBS.cols, y = Math.floor(i / THUMBS.cols);
+    return `background-image:url(./ui/thumbs.webp);background-size:${THUMBS.cols * 100}% ${THUMBS.rows * 100}%;background-position:${(x / (THUMBS.cols - 1)) * 100}% ${(y / (THUMBS.rows - 1)) * 100}%`;
+  };
 
   function renderPalette(): void {
     const el = $('palette');
     el.innerHTML = '';
+    el.classList.toggle('tray', building());
     const add = (title: string, inner: string, on: boolean, click: () => void) => {
       const b = document.createElement('button');
       b.title = title;
@@ -397,15 +433,6 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       return b;
     };
     const sep = () => el.insertAdjacentHTML('beforeend', '<span class="sep"></span>');
-    // A long library is shelved: pick a shelf with the phone's own picker, then scroll just that shelf.
-    const shelves = (names: string[], current: string, pick: (name: string) => void) => {
-      const sel = document.createElement('select');
-      sel.setAttribute('aria-label', 'Shelf');
-      sel.innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join('');
-      sel.value = current;
-      sel.onchange = () => { pick(sel.value); renderPalette(); };
-      el.append(sel);
-    };
     const v = sel();
     if (board.tool === 'move') {
       // Emotes for the selected mini sit where the palette is: right above the thumb.
@@ -414,42 +441,83 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         sep();
         add(v.d ? 'Stand up' : 'Knock down', '💀', !!v.d, () => patch({ d: !v.d }));
       }
-    } else if (board.tool === 'build') {
-      add('Eraser', '⛏️', board.brush === 'erase', () => { board.brush = 'erase'; });
-      shelves([...Object.keys(BLOCK_SHELVES), ...Object.keys(PROP_SHELVES), SLABS], buildShelf, (n) => { buildShelf = n; });
-      if (buildShelf === 'Terrain') {
+    } else if (building()) {
+      const chips = document.createElement('div'), tiles = document.createElement('div');
+      el.append(chips, tiles);
+      const press = (b: HTMLButtonElement, click: () => void) => {
+        b.onclick = () => {
+          click();
+          if (board.tool === 'build') board.setTool('build'); // some brushes change what a mouse drag does
+          renderPalette();
+        };
+        return b;
+      };
+      /** An action or a choice for the current category. */
+      const chip = (label: string, on: boolean, click: () => void, icon = '', title = label) => {
+        const b = document.createElement('button');
+        b.className = 'chip';
+        b.title = title;
+        b.setAttribute('aria-label', title);
+        b.innerHTML = `${icon}${esc(label)}`;
+        b.classList.toggle('on', on);
+        chips.append(b);
+        return press(b, click);
+      };
+      /** A piece of the library, shown as its picture (or its colour, or failing both its emoji). */
+      const tile = (name: string, on: boolean, click: () => void, family: string | null, flat?: string, emoji = '') => {
+        const b = document.createElement('button'), at = family && thumb(family);
+        b.className = 'tile';
+        b.title = name;
+        b.innerHTML = `<i${at ? ` style="${at}"` : flat ? ` class="flat" style="background-color:${flat}"` : ''}>${at || flat ? '' : emoji}</i><span>${esc(name)}</span>`;
+        b.classList.toggle('on', on);
+        tiles.append(b);
+        return press(b, click);
+      };
+      const svg = (id: string) => `<svg><use href="#i-${id}"/></svg>`;
+      const brush = (id: string) => () => { board.brush = id; };
+      const eraser = () => chip('Erase', board.brush === 'erase', brush('erase'), svg('erase'));
+      const turn = () => chip('Turn', false, () => { board.rot = (board.rot + 1) % 4; }, svg('turn'), 'Turn the next piece (R)');
+      const blocks = (ids: string[]) => { for (const id of ids) tile(BLOCKS[id].name, board.brush === id, brush(id), `b_${id}`, BLOCKS[id].color); };
+      const props = (ids: string[]) => { for (const id of ids) tile(PROPS[id].name, board.brush === id, brush(id), `p_${id}`, undefined, PROPS[id].icon); };
+      if (cat === 'land') {
         // Shaping the land: each is a brush you tap or drag over the ground.
-        const land: [string, string, string][] = [['raise', '⛰️', 'Raise the ground'], ['lower', '🕳️', 'Lower the ground'], ['level', '🟰', 'Level to where you start'], ['grow', '🌱', 'Grow what suits the ground']];
-        for (const [id, icon, title] of land) add(title, icon, board.brush === id, () => { board.brush = id; });
-        add(`Brush size: ${board.reach * 2 + 1} across`, ['•', '●', '⬤'][board.reach], false, () => { board.reach = (board.reach + 1) % 3; });
-        add('Repaint the surface instead of stacking', '🖌️', board.surface, () => { board.surface = !board.surface; });
-        sep();
-      }
-      for (const id of BLOCK_SHELVES[buildShelf] ?? []) add(BLOCKS[id].name, `<i style="background:${BLOCKS[id].color}"></i>`, board.brush === id, () => { board.brush = id; });
-      for (const id of PROP_SHELVES[buildShelf] ?? []) add(PROPS[id].name, PROPS[id].icon, board.brush === id, () => { board.brush = id; });
-      const turn = () => add('Turn (R)', ['⬆️', '➡️', '⬇️', '⬅️'][board.rot], false, () => { board.rot = (board.rot + 1) % 4; });
-      if (buildShelf === 'Structures') {
+        for (const [id, label, title] of [['raise', 'Raise', 'Raise the ground'], ['lower', 'Lower', 'Lower the ground'], ['level', 'Level', 'Level to where you start'], ['grow', 'Grow', 'Grow what suits the ground']]) {
+          chip(label, board.brush === id, brush(id), '', title);
+        }
+        chip(`Size ${board.reach * 2 + 1}`, false, () => { board.reach = (board.reach + 1) % 3; }, '', `Brush size: ${board.reach * 2 + 1} across`);
+        chip('Repaint', board.surface, () => { board.surface = !board.surface; }, '', 'Repaint the surface instead of stacking');
+        eraser();
+        blocks(BLOCK_SHELVES.Terrain);
+      } else if (cat === 'walls') {
         // A whole room in one drag: floor, walls, windows and a doorway.
-        const room = (timber: boolean) => add(`${timber ? 'Timber' : 'Stone'} room: drag out its floor`, timber ? '🛖' : '🏠', board.brush === 'room' && board.roomTimber === timber,
-          () => { board.brush = 'room'; board.roomTimber = timber; });
-        sep(); room(false); room(true);
-      }
-      if (PROP_SHELVES[buildShelf]) { sep(); turn(); }
-      if (buildShelf === SLABS) {
-        add('Copy: drag over an area', '✂️', board.brush === 'copy', () => { board.brush = 'copy'; });
-        add('Paste: tap where it goes', '📋', board.brush === 'paste', () => { board.brush = 'paste'; }).disabled = !board.slab;
+        for (const timber of [false, true]) {
+          chip(timber ? 'Timber room' : 'Stone room', board.brush === 'room' && board.roomTimber === timber, () => { board.brush = 'room'; board.roomTimber = timber; }, '', 'Drag out its floor');
+        }
         turn();
-        sep();
-        add('Share what you copied', '📤', false, () => void shareSlab()).disabled = !board.slab;
-        add('Paste a shared code', '📥', false, () => void importSlab());
+        eraser();
+        props(PROP_SHELVES.Structures);
+        blocks(BLOCK_SHELVES.Building);
+      } else if (cat === 'things') {
+        for (const name of Object.keys(PROP_SHELVES)) {
+          if (name !== 'Structures') chip(name, thingShelf === name, () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
+        }
+        turn();
+        eraser();
+        props(PROP_SHELVES[thingShelf]);
+      } else if (cat === 'figures') {
+        for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
+        chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
+        for (const id of MINI_SHELVES[miniShelf]) tile(MINIS[id].name, miniKind === id, () => { miniKind = id; }, `m_${id}`, undefined, MINIS[id].icon);
+      } else {
+        chip('Generate…', false, () => { renderGen(); openSheet('gen'); }, svg('spark'), 'Generate a scene');
+        chip('Starter scene', false, meadow);
+        chip('Copy', board.brush === 'copy', brush('copy'), '', 'Copy: drag over an area');
+        chip('Paste', board.brush === 'paste', brush('paste'), '', 'Paste: tap where it goes').disabled = !board.slab;
+        turn();
+        chip('Share', false, () => void shareSlab(), '', 'Share what you copied').disabled = !board.slab;
+        chip('Import', false, () => void importSlab(), '', 'Paste a shared code');
+        tiles.remove();
       }
-    } else if (board.tool === 'mini') {
-      shelves(Object.keys(MINI_SHELVES), miniShelf, (n) => { miniShelf = n; });
-      for (const id of MINI_SHELVES[miniShelf]) add(MINIS[id].name, MINIS[id].icon, miniKind === id, () => { miniKind = id; });
-      sep();
-      add('Base colour', `<i style="background:${miniColor};border-radius:50%"></i>`, false, () => {
-        miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length];
-      });
     } else if (board.tool === 'ruler') {
       const modes: [RulerMode, string, string][] = [['line', '📏', 'Distance'], ['circle', '⭕', 'Radius'], ['cone', '🔺', 'Cone']];
       for (const [m, icon, title] of modes) add(title, icon, board.rulerMode === m, () => { board.rulerMode = m; });
