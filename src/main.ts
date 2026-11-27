@@ -1,6 +1,7 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { Board, EMOTES, type MiniVal, type RulerMode, type Sky, type Slab, type Tool, type Vec } from './board';
 import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PLAYER_COLORS, PROPS, PROP_SHELVES } from './catalog';
+import * as registry from './registry';
 import { loadKit, type Season } from './kit';
 import THUMBS from './thumbs.json';
 import { EDGES } from './rules';
@@ -11,7 +12,7 @@ import { DEFAULT_RELAYS, Net, deriveRoom, hex, pack, unhex, unpack, type Msg } f
 import { SOUNDSCAPES, Sound, addSounds, loadSounds } from './sound';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
-import { activeTheme, loadThemes, moodEdits, type GameTheme, type Known } from './theme';
+import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type GameTheme, type Known } from './theme';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -157,7 +158,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
-    if (k === 'set:theme') renderPalette(); // its pieces come to the front of the library
+    if ((k === 'at:theme' || k === 'set:theme') && ui.ready) renderPalette(); // its pieces come to the front of the library
     later(); // role, turn order and panels follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; ls.set(`room:${tag}`, JSON.stringify(store.dump())); }, 1500);
   };
@@ -180,7 +181,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   });
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
-  Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
+  Object.assign(window, { __ct: { store, net, board, sound, registry, catalog: { BLOCKS, PROPS, MINIS } } });
   // The GM's own files (src/blob.ts). Servers: this device's list (local storage `cottontale:blossom`), else the table's (`set:blossom`), else the defaults.
   const blobs = new Blobs({
     key: deriveBlobKey(code), sk, net,
@@ -440,8 +441,19 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // The table's theme (see theme.ts) puts a shelf of its own in front of the others and its
   // ground and building blocks first on theirs: more to choose from, and no more chrome.
   const MINE = '★';
-  const known: Known = { block: (id) => id in BLOCKS, prop: (id) => id in PROPS, mini: (id) => id in MINIS, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in PRESETS, edge: (id) => id in EDGES };
-  const gameTheme = (): GameTheme | null => activeTheme(store.get('set:theme'), known);
+  const known: Known = { ...registry.known, amb: (id) => id in SOUNDSCAPES, gen: (id) => id in PRESETS, edge: (id) => id in EDGES };
+  /** The theme of the board in front of us (each board has its own atmosphere, see theme.ts). */
+  const gameTheme = (): GameTheme | null => activeTheme(atmo(store, 'theme', null), known);
+  // Pieces that arrive in a pack (see registry.ts) take their place on the shelves; a pack
+  // that leaves may take the shelf we were on, or the piece in hand, with it.
+  registry.onRegistry(() => {
+    if (thingShelf !== MINE && !PROP_SHELVES[thingShelf]) thingShelf = 'Nature';
+    if (miniShelf !== MINE && !MINI_SHELVES[miniShelf]) miniShelf = 'Heroes';
+    if (!registry.known.mini(miniKind)) miniKind = MINI_SHELVES.Heroes[0];
+    if (!ui.ready) return;
+    if (board.brush.includes(':') && !registry.kindOf(board.brush) && building()) setCat(cat);
+    else renderPalette();
+  });
   /** The themes on offer (public/themes): data that arrives after the table is up, never part of the app. */
   let gameThemes: GameTheme[] = [];
   // Sound recipes and generator presets are files too (public/sounds, public/gens). Themes name them, so they come first.
@@ -703,7 +715,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function newBoard(copy: boolean): void {
     if (!full()) return;
     const id = crypto.randomUUID().slice(0, 6);
-    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
+    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:', 'at:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
     store.set(`bd:${id}`, { n: copy ? `${boardName(here)} copy`.slice(0, 24) : `Board ${boardList().length + 1}` });
     peek = id; // start on it alone; bring the players over when it is ready
     sync();
@@ -717,15 +729,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
 
   const SKY_NAMES: Record<Sky, string> = { day: '☀️ Day', dusk: '🌇 Dusk', night: '🌙 Night' };
   const SEASON_NAMES: Record<Season, string> = { spring: '🌸 Spring', summer: '🌿 Summer', autumn: '🍂 Autumn', winter: '❄️ Winter' };
-  function choices(el: HTMLElement, items: Record<string, string>, key: string, fallback: string): void {
-    const f = full(), cur = setting(store, key, fallback);
+  function choices(el: HTMLElement, items: Record<string, string>, key: 'sky' | 'season' | 'amb', fallback: string): void {
+    const f = full(), cur = atmo(store, key, fallback);
     el.innerHTML = '';
     for (const [id, label] of Object.entries(items)) {
       const b = document.createElement('button');
       b.textContent = label.replace(/^[^\p{L}]+/u, ''); // the names carry an emoji for the chat log; the buttons do without
       b.classList.toggle('on', id === cur);
       b.disabled = !f;
-      b.onclick = () => store.set(`set:${key}`, id);
+      b.onclick = () => setAtmo(store, key, id);
       el.append(b);
     }
   }
@@ -743,9 +755,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       b.setAttribute('aria-pressed', String(t.id === cur));
       b.disabled = !f;
       b.onclick = () => {
-        if (t.id === cur) { store.set('set:theme', null); return; }
-        store.set('set:theme', t); // the whole theme, so the table carries it
-        for (const [k, v] of moodEdits(t)) store.set(k, v);
+        if (t.id === cur) { setAtmo(store, 'theme', null); return; }
+        setAtmo(store, 'theme', t); // the whole theme, so the table carries it
+        for (const [k, v] of moodEdits(t)) setAtmo(store, k, v);
         if (t.gen) genOpts = { ...genOpts, theme: t.gen as Theme };
         if (t.pieces.props.length) thingShelf = MINE;
         if (t.pieces.minis.length) miniShelf = MINE;
@@ -760,7 +772,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     // The soundscapes this device has loaded, and the ones the table's theme brings, each by its own name.
     choices($('scapes'), { ...SOUNDSCAPES, ...Object.fromEntries(Object.entries(gameTheme()?.sounds?.scapes ?? {}).map(([id, r]) => [id, r.name])) }, 'amb', 'off');
     const glow = $<HTMLInputElement>('glow');
-    if (document.activeElement !== glow) glow.value = String(setting(store, 'glow', 1));
+    if (document.activeElement !== glow) glow.value = String(atmo(store, 'glow', 1));
     glow.disabled = !full();
     $('soundOn').innerHTML = sound.enabled ? `${ico('sound')}Sound on this device: on` : `${ico('mute')}Sound on this device: off`;
   }
@@ -793,19 +805,21 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const ids = boardList().map((b) => b.id);
     const active = ids.includes(setting(store, 'board', '')) ? setting(store, 'board', '') : '';
     if (!f || (peek !== null && !ids.includes(peek))) peek = null;
-    if ((peek ?? active) !== here) enter(peek ?? active);
+    if ((peek ?? active) !== here) { enter(peek ?? active); renderPalette(); } // another board, another theme's shelf
     renderBoards(active);
     const l = setting(store, 'los', false);
     if (l !== los) { los = l; board.refresh(); }
-    board.setGlow(setting(store, 'glow', 1));
-    const sky = setting<Sky>(store, 'sky', 'day');
-    board.setSky(sky);
-    board.setSeason(setting<Season>(store, 'season', 'summer'));
+    board.setGlow(atmo(store, 'glow', 1));
+    const sky = atmo<Sky>(store, 'sky', 'day'), look = themeLook(gameTheme(), sky);
+    board.setSky(sky, look.light, look.fog);
+    board.setGrade(look.grade);
+    board.setDice(look.dice);
+    board.setSeason(atmo<Season>(store, 'season', 'summer'));
     const act = (a: string) => $('menu').querySelector<HTMLElement>(`[data-act="${a}"]`)!;
     act('gm').innerHTML = `${ico('crown')}${amGM ? 'Stop being the GM' : 'Become the GM'}`;
     act('los').innerHTML = `${ico(l ? 'eye' : 'eyeoff')}Line of sight: ${l ? 'on' : 'off'}`;
     sound.theme(gameTheme()?.sounds);
-    sound.scape(setting(store, 'amb', 'off'));
+    sound.scape(atmo(store, 'amb', 'off'));
     renderAtmo();
     renderPlayers();
     renderInit();
@@ -1169,7 +1183,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     ls.set('genRecent', JSON.stringify(genRecent));
     renderGen();
   }
-  $<HTMLInputElement>('glow').oninput = (e) => { if (full()) store.set('set:glow', +(e.target as HTMLInputElement).value); };
+  $<HTMLInputElement>('glow').oninput = (e) => { if (full()) setAtmo(store, 'glow', +(e.target as HTMLInputElement).value); };
   $('genGo').onclick = () => buildScene(genOpts, sceneRec()?.rooms.filter((q) => q.lock) ?? []);
   $('genAgain').onclick = () => {
     const rec = sceneRec(), locked = rec?.o.theme === genOpts.theme ? rec.rooms.filter((q) => q.lock) : [];

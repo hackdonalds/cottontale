@@ -1,7 +1,7 @@
 // The 3D table: renders the shared Store and turns pointer input into edits.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { BLOCKS, MINIS, PROPS, makeMini, makeProp } from './catalog';
+import { BLOCKS, MINIS, PROPS, STANDIN_HEIGHT, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, withDetail, type Season } from './kit';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { DiceView, type Kind, type Start } from './dice';
@@ -9,6 +9,8 @@ import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { Look } from './look';
+import { onRegistry } from './registry';
+import type { DiceLook, Fog, Grade, Light } from './theme';
 import { TABLE_SPAN, tableTexture } from './table';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
@@ -142,6 +144,11 @@ class Layer {
     this.turns = !family ? 1 : id === 'wood' ? 2 : 4;
     this.swarms = (family ?? [new THREE.BoxGeometry(1, h, 1).translate(0, h / 2, 0)]).map((g) => new Swarm(g, mat, scene, !mat.transparent));
   }
+  /** Its kind of block has left the library (see registry.ts): take its meshes off the table. */
+  dispose(scene: THREE.Scene): void {
+    for (const w of this.swarms) { scene.remove(w.mesh); w.mesh.dispose(); }
+    (this.swarms[0]?.mesh.material as THREE.Material | undefined)?.dispose();
+  }
   rebuild(): void {
     this.dirty = false;
     // Which member of the family a block is, and which way it is turned, follow from where it lies.
@@ -273,12 +280,17 @@ function plate(v: MiniVal): THREE.Sprite {
   return s;
 }
 
-/** `spill`: how far fire and magic glow into the picture; `sheen`: how much of the room shows in polished things. */
+/**
+ * `spill`: how far fire and magic glow into the picture; `sheen`: how much of the room shows in polished things.
+ * These three are what a sky looks like unless the board's theme brings a light of its own (see theme.ts).
+ */
 const SKIES: Record<Sky, { bg: string; sun: string; sunI: number; hemi: string; hemiI: number; spill: number; sheen: number }> = {
   day: { bg: '#100e0d', sun: '#ffdcae', sunI: 3.9, hemi: '#a9bdea', hemiI: 0.85, spill: 0.14, sheen: 0.32 },
   dusk: { bg: '#120b0f', sun: '#ff9a58', sunI: 2.3, hemi: '#b79fc9', hemiI: 0.55, spill: 0.3, sheen: 0.2 },
   night: { bg: '#05060b', sun: '#8fb0ff', sunI: 0.75, hemi: '#6f84c6', hemiI: 0.32, spill: 0.44, sheen: 0.08 }, // dark enough for torches to matter
 };
+/** Where the haze starts and ends unless a theme says otherwise: far out, only to lose the table's edge in the dark. */
+const HAZE = { near: 60, far: 170 };
 
 export class Board {
   tool: Tool = 'move';
@@ -309,6 +321,8 @@ export class Board {
   private lookLevel = 2;
   private lamps: THREE.PointLight[] = [];
   private spill = 0.2;
+  /** What the sky was last set to, so setting it again costs nothing. */
+  private skySig = '';
   /** How strongly fires, torches and crystals light the table: the GM's dial, 0 (out) to 2. */
   private glow = 1;
   private litAt = new THREE.Vector3(1e9, 0, 0);
@@ -316,6 +330,7 @@ export class Board {
   private hemi: THREE.HemisphereLight;
   private ground: THREE.Mesh;
   private layers = new Map<string, Layer>();
+  private layerFor!: (id: string) => Layer;
   private props = new Map<string, THREE.Group>();
   /** Thin walls on cell edges (see rules.ts): what stands on each, drawn as one swarm per shape. */
   private edges = new Map<string, string>();
@@ -382,7 +397,7 @@ export class Board {
     // Shadows only change when the table does, not when the camera moves: redraw them on demand.
     this.renderer.shadowMap.autoUpdate = false;
     this.scene.background = new THREE.Color();
-    this.scene.fog = new THREE.Fog('#000', 60, 170);
+    this.scene.fog = new THREE.Fog('#000', HAZE.near, HAZE.far);
     // The finished look costs a few screenfuls of work a frame: phones start on the light
     // version, the weakest draw plain, and adapt() steps down if frames run long.
     this.lookLevel = lowEnd ? 2 : this.coarse ? 1 : 0;
@@ -481,6 +496,11 @@ export class Board {
       return this.cellHidden(x, y, z) || (!!top && !!GROUND[top.id] && y <= top.y);
     };
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
+    this.layerFor = (id) => { // a block that registered after the table was laid
+      let l = this.layers.get(id);
+      if (!l) this.layers.set(id, (l = new Layer(id, this.scene, hidden)));
+      return l;
+    };
     this.dice = new DiceView(this.scene);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
     onKitPack(() => {
@@ -493,6 +513,23 @@ export class Board {
         this.applyMini(id, m.val);
       }
       this.coverDirty = this.edgesDirty = true;
+      this.touched();
+    });
+    // A pack of pieces has registered, changed or left: draw what this board has of it afresh,
+    // as the real thing or as stand-ins.
+    onRegistry((ns) => {
+      const mine = (id: unknown) => typeof id === 'string' && id.startsWith(`${ns}:`);
+      for (const [id, l] of this.layers) {
+        if (mine(id)) { l.dispose(this.scene); this.layers.delete(id); }
+      }
+      for (const key of [...this.store.keys('b:')]) {
+        const v = this.store.get<CellVal>(key);
+        if (v && mine(v.i)) this.applyCell(key, v, null);
+      }
+      for (const [id, m] of this.minis) {
+        if (mine(m.val.k)) { m.sig = ''; this.applyMini(id, m.val); }
+      }
+      this.visDirty = true;
       this.touched();
     });
 
@@ -567,10 +604,16 @@ export class Board {
     this.touched();
   }
 
-  setSky(name: Sky): void {
-    const s = SKIES[name] ?? SKIES.day;
+  /** The sky, and with it the light: a named one, with whatever the board's theme changes about it (and its haze). */
+  setSky(name: Sky, light?: Light, haze?: Fog): void {
+    const sig = JSON.stringify([name, light, haze]);
+    if (sig === this.skySig) return;
+    this.skySig = sig;
+    const s = { ...(SKIES[name] ?? SKIES.day), ...light }, fog = this.scene.fog as THREE.Fog;
     (this.scene.background as THREE.Color).set(s.bg);
-    this.scene.fog!.color.set(s.bg);
+    fog.color.set(haze?.color ?? s.bg);
+    fog.near = haze?.near ?? HAZE.near;
+    fog.far = haze?.far ?? HAZE.far;
     this.sun.color.set(s.sun);
     this.sun.intensity = s.sunI;
     this.hemi.color.set(s.hemi);
@@ -580,6 +623,13 @@ export class Board {
     this.look?.setGlow(this.spill * (0.5 + 0.5 * Math.min(this.glow, 2)));
     this.invalidate();
   }
+
+  /** The finished picture's grade, where a theme has one of its own (nothing to do on a device that draws plain). */
+  setGrade(grade?: Grade): void {
+    if (this.look?.setGrade(grade)) this.invalidate();
+  }
+  /** The table's dice (see theme.ts): the next ones picked up or thrown wear it. */
+  setDice(look?: DiceLook): void { this.dice.setLook(look); }
 
   setTurn(id: string | null): void {
     if (this.turnId) this.minis.get(this.turnId)?.group.remove(this.turnRing);
@@ -944,10 +994,10 @@ export class Board {
 
   private applyCell(key: string, v: CellVal | null, prev: CellVal | null): void {
     this.coverDirty = this.terrainDirty = true; // whatever changed, the ground and growth around it may want to change too
-    if (prev && BLOCKS[prev.i]) {
-      const l = this.layers.get(prev.i)!;
-      l.cells.delete(key);
-      l.dirty = true;
+    const was = prev && typeof prev.i === 'string' ? this.layers.get(prev.i) : undefined;
+    if (was) {
+      was.cells.delete(key);
+      was.dirty = true;
     }
     const old = this.props.get(key);
     if (old) {
@@ -957,18 +1007,18 @@ export class Board {
     if (!v || typeof v.i !== 'string') return;
     const [x, y, z] = parse(key);
     if (![x, y, z].every(Number.isInteger)) return;
-    if (BLOCKS[v.i]) {
-      const l = this.layers.get(v.i)!;
+    if (Object.hasOwn(BLOCKS, v.i)) {
+      const l = this.layerFor(v.i);
       l.cells.add(key);
       l.dirty = true;
-    } else if (PROPS[v.i]) {
-      this.placeProp(key, v);
+    } else {
+      this.placeProp(key, v); // a prop, or the stand-in for a piece this device does not have (yet)
     }
   }
 
   private applyMini(id: string, v: MiniVal | null): void {
     let m = this.minis.get(id);
-    if (!v || !MINIS[v.k]) {
+    if (!v || typeof v.k !== 'string') {
       if (m) {
         this.scene.remove(m.group);
         this.minis.delete(id);
@@ -982,7 +1032,8 @@ export class Board {
     const pos = new THREE.Vector3(v.x + 0.5, v.y, v.z + 0.5);
     if (!m || m.sig !== sig) {
       const group = new THREE.Group();
-      const def = MINIS[v.k], s = v.s || 1;
+      // A kind this device does not have (yet) stands as a plain marker until its pack registers.
+      const def = Object.hasOwn(MINIS, v.k) ? MINIS[v.k] : { height: STANDIN_HEIGHT }, s = v.s || 1;
       const base = new THREE.Mesh(BASE, baseMaterial(v.c));
       base.position.y = 0.04;
       base.castShadow = base.receiveShadow = true;
@@ -1059,7 +1110,7 @@ export class Board {
         continue;
       }
       this.pose(m);
-      const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + MINIS[m.val.k].height * s;
+      const body = m.group.children[0], s = m.val.s || 1, top = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? STANDIN_HEIGHT) * s;
       const w = Math.sin(Math.min(1, u * 2) * Math.PI); // one swell over the first half
       if (!m.val.d) switch (a.kind) {
         case 'attack': body.translateZ(w * 0.45); body.rotateX(w * 0.35); break;
@@ -1420,7 +1471,7 @@ export class Board {
   spotOf(id: string): { x: number; y: number; size: number } | null {
     const m = this.minis.get(id);
     if (!m || !m.group.visible) return null;
-    const h = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? 0.9) * (m.val.s || 1);
+    const h = (m.val.e || 0) + (MINIS[m.val.k]?.height ?? STANDIN_HEIGHT) * (m.val.s || 1);
     const mid = m.group.position.clone().setY(m.group.position.y + h * 0.5).project(this.camera);
     const top = m.group.position.clone().setY(m.group.position.y + h).project(this.camera);
     if (mid.z > 1) return null; // behind the camera

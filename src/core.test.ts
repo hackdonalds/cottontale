@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES } from './catalog';
+import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES, makeMini, makeProp } from './catalog';
+import { kindOf, known as has, namespaceOf, onRegistry, pieceId, registerPack, registered, unregisterPack } from './registry';
 import { kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
 import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
@@ -563,10 +564,61 @@ describe('library', () => {
       const shelved = Object.values(shelves).flat();
       expect([...shelved].sort()).toEqual(Object.keys(all).sort());
     }
-    for (const p of Object.values(PROPS)) expect(p.make().children.length).toBeGreaterThan(0);
-    for (const m of Object.values(MINIS)) expect(m.make().length).toBeGreaterThan(0);
+    for (const p of Object.values(PROPS)) expect(p.make!().children.length).toBeGreaterThan(0);
+    for (const m of Object.values(MINIS)) expect(m.make!().length).toBeGreaterThan(0);
     expect(Object.keys(PROPS).length).toBeGreaterThan(45);
     expect(Object.keys(MINIS).length).toBeGreaterThan(20);
+  });
+
+  it('takes in a pack of pieces under its own namespace, and lets it go again without a trace', () => {
+    const before = JSON.stringify([Object.keys(BLOCKS), Object.keys(PROPS), Object.keys(MINIS), BLOCK_SHELVES, PROP_SHELVES, MINI_SHELVES]);
+    const heard: string[] = [], stop = onRegistry((ns) => heard.push(ns));
+    const mesh = { geometry: new THREE.BoxGeometry(1, 1, 1), material: new THREE.MeshStandardMaterial() };
+    const ids = registerPack('ada', {
+      blocks: { moonrock: { name: 'Moon rock', color: '#99a' } },
+      props: { lamp: { name: 'Lamp', icon: '💡', make: () => new THREE.Group().add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial())) }, sign: { name: 'Sign', icon: '🪧', mesh }, 'Bad Name': { name: 'x', icon: 'x', mesh }, empty: { name: 'Nothing to draw', icon: 'x' } },
+      minis: { robot: { name: 'Robot', icon: '🤖', height: 1.1, mesh }, lamp: { name: 'Same name as the prop', icon: 'x', height: 1, mesh } },
+      shelves: { blocks: { Terrain: ['moonrock'] }, props: { Space: ['lamp', 'sign', 'nope'], Nature: ['lamp'] }, minis: { Heroes: ['robot'] } },
+    });
+    expect(ids).toEqual(['ada:moonrock', 'ada:lamp', 'ada:sign', 'ada:robot']);
+    expect(pieceId('ada', 'lamp')).toBe('ada:lamp');
+    expect([namespaceOf('ada:lamp'), namespaceOf('tree')]).toEqual(['ada', '']);
+    expect([kindOf('ada:moonrock'), kindOf('ada:lamp'), kindOf('ada:robot'), kindOf('knight'), kindOf('ada:nope'), kindOf('toString')]).toEqual(['block', 'prop', 'mini', 'mini', null, null]);
+    expect(has.prop('ada:sign') && has.block('stone') && !has.prop('ada:robot') && !has.mini('constructor')).toBe(true);
+    expect(PROP_SHELVES.Space).toEqual(['ada:lamp', 'ada:sign']);
+    expect(PROP_SHELVES.Nature.at(-1)).toBe('ada:lamp');
+    expect(BLOCK_SHELVES.Terrain.at(-1)).toBe('ada:moonrock');
+    expect(MINI_SHELVES.Heroes.at(-1)).toBe('ada:robot');
+    expect(registered()).toEqual(['ada']);
+    // Ready geometry is shared by every copy; a made piece is merged once and shared the same way.
+    const [a, b] = [makeProp('ada:sign'), makeProp('ada:sign')].map((g) => g.children[0] as THREE.Mesh);
+    expect(a.geometry === mesh.geometry && b.geometry === mesh.geometry && a.material === mesh.material).toBe(true);
+    const [c, d] = [makeProp('ada:lamp'), makeProp('ada:lamp')].map((g) => g.children[0] as THREE.Mesh);
+    expect(c.geometry === d.geometry && c.material === d.material && !makeProp('ada:lamp').userData.pending).toBe(true);
+    expect(makeMini('ada:robot')[0].geometry).toBe(mesh.geometry);
+    // The same namespace again replaces what it held; other namespaces are their own.
+    registerPack('ada', { props: { lamp: { name: 'Lamp 2', icon: '💡', mesh } } });
+    registerPack('Not A Namespace', { props: { lamp: { name: 'x', icon: 'x', mesh } } });
+    expect([PROPS['ada:lamp'].name, has.prop('ada:sign'), has.block('ada:moonrock'), PROP_SHELVES.Space, registered()]).toEqual(['Lamp 2', false, false, undefined, ['ada']]);
+    expect((makeProp('ada:lamp').children[0] as THREE.Mesh).geometry).toBe(mesh.geometry); // not the shape baked for the old one
+    unregisterPack('ada');
+    unregisterPack('ada'); // nothing left to take out: nobody is told
+    expect(heard).toEqual(['ada', 'ada', 'ada']);
+    expect(JSON.stringify([Object.keys(BLOCKS), Object.keys(PROPS), Object.keys(MINIS), BLOCK_SHELVES, PROP_SHELVES, MINI_SHELVES])).toBe(before);
+    stop();
+    registerPack('ada', {});
+    unregisterPack('ada');
+    expect(heard.length).toBe(3);
+  });
+
+  it('stands a plain marker in for a piece it does not have, one shape for all of them', () => {
+    const [a, b] = [makeProp('ada:gone'), makeProp('someday')];
+    expect(a.userData.pending && b.userData.pending).toBe(true);
+    const [m, n] = [a.children[0], b.children[0]] as THREE.Mesh[];
+    expect(m.geometry === n.geometry && m.material === n.material).toBe(true);
+    const [x, y] = [makeMini('ada:gone')[0], makeMini('__proto__')[0]];
+    expect(x.geometry === y.geometry && x.material === m.material).toBe(true);
+    expect(makeProp('tree').userData.pending).toBeUndefined();
   });
 
   it('packs slabs into text and back', async () => {
@@ -606,8 +658,8 @@ describe('terrain', () => {
 });
 
 describe('themes', async () => {
-  const { MAX_PIECES, activeTheme, loadThemes, moodEdits, parseTheme } = await import('./theme');
-  const known = { block: (id: string) => id in BLOCKS, prop: (id: string) => id in PROPS, mini: (id: string) => id in MINIS, amb: (id: string) => id in SOUNDSCAPES, gen: (id: string) => id in THEMES };
+  const { MAX_PIECES, activeTheme, atmo, loadThemes, moodEdits, parseTheme, setAtmo, themeLook } = await import('./theme');
+  const known = { ...has, amb: (id: string) => id in SOUNDSCAPES, gen: (id: string) => id in THEMES };
 
   it('every theme file that ships names only pieces, sounds and generators that exist', async () => {
     const names = await file('public/themes/index.json') as string[], shipped = await loadThemes('public/themes', known, file);
@@ -615,7 +667,9 @@ describe('themes', async () => {
     for (const t of shipped) {
       expect(t, t.id).toEqual(await file(`public/themes/${t.id}.json`)); // nothing dropped or clamped
       expect(t.pieces.props.length && t.pieces.minis.length && t.pieces.blocks.length, t.id).toBeTruthy();
+      expect(t.mood.light && t.mood.grade && t.dice, `${t.id} has a look of its own`).toBeTruthy();
     }
+    expect(new Set(shipped.map((t) => JSON.stringify([t.mood.light, t.mood.fog, t.mood.grade, t.dice]))).size).toBe(shipped.length);
   });
 
   it('offers what it can read and skips the rest', async () => {
@@ -672,7 +726,72 @@ describe('themes', async () => {
   it('the table carries its whole theme, and a mood is four settings', () => {
     const t = activeTheme({ v: 1, id: 'ada:x', name: 'Mine', mood: { sky: 'night', season: 'winter', glow: 1.75, amb: 'rain' } }, known)!;
     expect(activeTheme(null, known)).toBeNull();
-    expect(moodEdits(t)).toEqual([['set:sky', 'night'], ['set:season', 'winter'], ['set:glow', 1.75], ['set:amb', 'rain']]);
+    expect(moodEdits(t)).toEqual([['sky', 'night'], ['season', 'winter'], ['glow', 1.75], ['amb', 'rain']]);
+  });
+
+  it('keeps a look only as far as it makes sense: colours as #rrggbb, numbers within bounds', () => {
+    const base = { v: 1, id: 'x', name: 'X' };
+    const t = parseTheme({
+      ...base, dice: { body: '#AA0011', ink: 'red', rough: -3, metal: 9, run: 'x' },
+      mood: {
+        sky: 'night',
+        light: { bg: '#0A0B0C', sun: 'url(x)', sunI: 1e9, hemi: '#12345', hemiI: -1, spill: 0.5, sheen: '1', extra: 1 },
+        fog: { color: '#101820', near: 500, far: 3 },
+        grade: { sat: 9, warmth: -9, contrast: 0.4, vignette: NaN },
+      },
+    }, known)!;
+    expect(t.mood.light).toEqual({ bg: '#0a0b0c', sunI: 8, hemiI: 0, spill: 0.5 });
+    expect(t.mood.fog).toEqual({ color: '#101820', near: 200, far: 201 });
+    expect(t.mood.grade).toEqual({ sat: 1.5, warmth: -1, contrast: 0.4 });
+    expect(t.dice).toEqual({ body: '#aa0011', rough: 0, metal: 1 });
+    // Nothing usable is the same as nothing given: the keys are not there at all.
+    const plain = parseTheme({ ...base, dice: 7, mood: { light: { sun: 'blue' }, fog: { color: '#000000', near: 5 }, grade: [] } }, known)!;
+    expect(['light', 'fog', 'grade'].some((k) => k in plain.mood) || 'dice' in plain).toBe(false);
+  });
+
+  it('a theme lights its own sky; under another only its grade and dice stay', () => {
+    const t = parseTheme({ v: 1, id: 'x', name: 'X', dice: { ink: '#ffffff' }, mood: { sky: 'night', light: { sunI: 1 }, fog: { near: 10, far: 50 }, grade: { sat: 0.5 } } }, known)!;
+    expect(themeLook(t, 'night')).toEqual({ light: { sunI: 1 }, fog: { near: 10, far: 50 }, grade: { sat: 0.5 }, dice: { ink: '#ffffff' } });
+    expect(themeLook(t, 'day')).toEqual({ grade: { sat: 0.5 }, dice: { ink: '#ffffff' } });
+    expect(themeLook(null, 'day')).toEqual({});
+    expect(themeLook(parseTheme({ v: 1, id: 'x', name: 'X' }, known), 'day')).toEqual({});
+  });
+
+  it('keeps pieces from a pack this device has not got, and shelves them when it arrives', () => {
+    const raw = { v: 1, id: 'x', name: 'X', pieces: { blocks: ['stone', 'ada:moonrock'], props: ['tree', 'ada:lamp', 'nonsense', 'Ada:Lamp', 'a:b:c'], minis: ['ada:robot'] } };
+    const kept = { blocks: ['stone', 'ada:moonrock'], props: ['tree', 'ada:lamp'], minis: ['ada:robot'] };
+    expect(parseTheme(raw, known)!.pieces).toEqual(kept);
+    expect(activeTheme(raw, known)!.pieces).toEqual({ blocks: ['stone'], props: ['tree'], minis: [] });
+    registerPack('ada', { props: { lamp: { name: 'Lamp', icon: '💡', mesh: { geometry: new THREE.BufferGeometry(), material: new THREE.MeshBasicMaterial() } } } });
+    expect(activeTheme(raw, known)!.pieces).toEqual({ blocks: ['stone'], props: ['tree', 'ada:lamp'], minis: [] });
+    expect(activeTheme(parseTheme(raw, known), known)!.pieces.props).toEqual(['tree', 'ada:lamp']); // what the table carries is the whole list
+    unregisterPack('ada');
+  });
+
+  it('gives every board its own atmosphere, over the table\'s as the default', () => {
+    const s = new Store('gm');
+    s.set('set:sky', 'dusk'); // what a table from before boards had atmospheres holds
+    s.set('set:theme', { v: 1, id: 'old', name: 'Old' });
+    s.set('bd:crypt', { n: 'Crypt' });
+    expect([atmo(s, 'sky', 'day'), atmo(s, 'season', 'summer'), atmo(s, 'glow', 1)]).toEqual(['dusk', 'summer', 1]);
+    s.setBoard('crypt');
+    expect(atmo(s, 'sky', 'day')).toBe('dusk'); // a board nobody has dressed looks like the table
+    setAtmo(s, 'sky', 'night');
+    setAtmo(s, 'glow', 0);
+    setAtmo(s, 'theme', { v: 1, id: 'vampire', name: 'Vampires' });
+    expect([atmo(s, 'sky', 'day'), atmo(s, 'glow', 1), activeTheme(atmo(s, 'theme', null), known)?.id]).toEqual(['night', 0, 'vampire']);
+    setAtmo(s, 'theme', null); // letting go of the board's theme does not bring the table's back
+    expect(activeTheme(atmo(s, 'theme', null), known)).toBeNull();
+    s.setBoard('');
+    expect([atmo(s, 'sky', 'day'), atmo(s, 'glow', 1), activeTheme(atmo(s, 'theme', null), known)?.id]).toEqual(['dusk', 1, 'old']);
+    setAtmo(s, 'sky', 'day');
+    expect([s.get('at:sky'), s.get('set:sky'), s.entries.get('@crypt/at:sky')?.v, s.entries.has('@crypt/set:sky')]).toEqual(['day', 'dusk', 'night', false]);
+    // Another board's atmosphere changing is not this board's news.
+    const seen: string[] = [];
+    s.onChange = (k) => seen.push(k);
+    s.merge(['@crypt/at:sky', 'dusk', Date.now() + 1e6, 'zz']);
+    s.merge(['at:season', 'winter', Date.now() + 1e6, 'zz']);
+    expect(seen).toEqual(['at:season']);
   });
 });
 

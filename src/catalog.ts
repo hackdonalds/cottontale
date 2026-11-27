@@ -42,7 +42,10 @@ function group(...parts: THREE.Object3D[]): THREE.Group {
   return g;
 }
 
-export interface PropDef { name: string; icon: string; make: () => THREE.Group }
+/** Ready geometry for a piece that was not modelled here (see registry.ts): one geometry and one material, shared by every copy. */
+export interface Ready { geometry: THREE.BufferGeometry; material: THREE.Material }
+/** A prop gives either `make` (primitives, merged once) or `mesh`. */
+export interface PropDef { name: string; icon: string; make?: () => THREE.Group; mesh?: Ready }
 
 export const PROPS: Record<string, PropDef> = {
   tree: {
@@ -173,7 +176,7 @@ export const PROPS: Record<string, PropDef> = {
   },
 };
 
-export interface MiniDef { name: string; icon: string; make: () => THREE.Object3D[]; height: number }
+export interface MiniDef { name: string; icon: string; make?: () => THREE.Object3D[]; mesh?: Ready; height: number }
 
 const SKIN = '#e8b98f';
 const eyes = (y: number, z: number, dx = 0.07, r = 0.028, c = '#1b1b1f') => [
@@ -644,8 +647,35 @@ function copies(key: string, parts: () => THREE.Object3D[]): THREE.Mesh[] {
     return c;
   });
 }
+/** Drop what was baked for a piece: its pack has gone, or has come again with another shape (see registry.ts). */
+export function forget(id: string): void {
+  for (const key of [`p:${id}`, `m:${id}`]) {
+    for (const m of baked.get(key) ?? []) m.geometry.dispose();
+    baked.delete(key);
+  }
+}
+// What stands in for a piece this device does not have (its pack is not registered, or it
+// comes from a newer app): a plain grey marker, one shape and one material for all of them.
+const STANDIN = new THREE.MeshStandardMaterial({ color: '#8b8f98', roughness: 0.9, transparent: true, opacity: 0.6 });
+const STANDIN_PROP = box(0.5, 0.5, 0.5).translate(0, 0.25, 0);
+const STANDIN_MINI = cone(0.2, 0.7, 8).translate(0, 0.43, 0);
+/** The height a mini's label and hit area go by when its kind is not known here. */
+export const STANDIN_HEIGHT = 0.9;
+function ready(r: Ready): THREE.Mesh {
+  const m = new THREE.Mesh(r.geometry, r.material);
+  m.castShadow = !r.material.transparent;
+  m.receiveShadow = true;
+  return m;
+}
 /** A prop ready for the table (cheap: shares its geometry with every other copy). */
 export function makeProp(id: string, at: [number, number, number] = [0, 0, 0], crowd?: [number, number]): THREE.Group {
+  const def = Object.hasOwn(PROPS, id) ? PROPS[id] : null;
+  if (!def) { // not a piece this device has: hold the place, and the board stands it up if it registers
+    const waiting = group(new THREE.Mesh(STANDIN_PROP, STANDIN));
+    waiting.userData.pending = true;
+    return waiting;
+  }
+  if (def.mesh) return group(ready(def.mesh));
   const k = kitProp(id, ...at, crowd);
   if (k) return group(k);
   if (kitPending(`p_${id}`)) { // its pack is still downloading: hold the place, and the board stands it up on arrival
@@ -653,14 +683,17 @@ export function makeProp(id: string, at: [number, number, number] = [0, 0, 0], c
     waiting.userData.pending = true;
     return waiting;
   }
-  return group(...copies(`p:${id}`, () => PROPS[id].make().children.slice()));
+  return group(...copies(`p:${id}`, () => def.make?.().children.slice() ?? []));
 }
 /** The figure of a mini, without its base. */
 export function makeMini(kind: string): THREE.Mesh[] {
+  const def = Object.hasOwn(MINIS, kind) ? MINIS[kind] : null;
+  if (!def) return [new THREE.Mesh(STANDIN_MINI, STANDIN)];
+  if (def.mesh) return [ready(def.mesh)];
   const k = kitMesh(`m_${kind}`);
   if (k) return [k];
   if (kitPending(`m_${kind}`)) return []; // its pack is still downloading: just the base for now, and the board adds the figure on arrival
-  return copies(`m:${kind}`, () => MINIS[kind].make());
+  return copies(`m:${kind}`, () => def.make?.() ?? []);
 }
 
 export const PLAYER_COLORS = ['#e5484d', '#f2a33a', '#f5d90a', '#46a758', '#12a594', '#3e63dd', '#8e4ec6', '#e93d82', '#f1f5f9', '#30323a'];

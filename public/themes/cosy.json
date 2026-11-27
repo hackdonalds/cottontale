@@ -7,9 +7,27 @@
   "sky": "day",
   "season": "spring",
   "glow": 1,
-  "amb": "calm"
+  "amb": "calm",
+  "light": {
+   "bg": "#15100c",
+   "sun": "#ffd9a0",
+   "sunI": 4.1,
+   "hemi": "#c9c2e0",
+   "hemiI": 0.9
+  },
+  "grade": {
+   "sat": 1,
+   "warmth": 1.5,
+   "contrast": 0.28,
+   "vignette": 0.45
+  }
  },
  "gen": "forest",
+ "dice": {
+  "body": "#f3e6cf",
+  "ink": "#7a4a2a",
+  "rough": 0.6
+ },
  "pieces": {
   "blocks": [
    "meadow",
