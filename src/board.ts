@@ -10,6 +10,7 @@ import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown
 import type { Store } from './store';
 import { Look } from './look';
 import { onRegistry } from './registry';
+import { standees } from './standee';
 import type { DiceLook, Fog, Grade, Light } from './theme';
 import { TABLE_SPAN, tableTexture } from './table';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -2065,6 +2066,13 @@ export class Board {
       m.group.scale.set(1 + squash * 0.5, 1 - squash, 1 + squash * 0.5);
       m.group.rotation.set(-m.lean.y, 0, m.lean.x);
       changed = true;
+    }
+    // Standees (standee.ts) are drawn a page of pictures at a time: tell the pages where their cards stand now.
+    if (changed && standees.any) {
+      standees.begin();
+      for (const g of this.props.values()) standees.add(g);
+      for (const m of this.minis.values()) standees.add(m.group, this.full && m.val.h ? 0.5 : 1);
+      standees.end(this.scene);
     }
     let busy = moving || changed || this.dirty;
     for (let i = this.pings.length - 1; i >= 0; i--) {

@@ -44,6 +44,21 @@ async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { wi
 }
 const count = (page, prefix) => page.evaluate((p) => [...window.__ct.store.keys(p)].length, prefix);
 
+// A picture to import: a PNG made here (white paper, a red disc with a blue eye), so nothing is fetched or shipped.
+function png(w, h, at) {
+  const { deflateSync } = require('node:zlib');
+  const row = w * 4 + 1, raw = Buffer.alloc(row * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) raw.set(at(x, y), y * row + 1 + x * 4);
+  const crc = (buf) => { let c = ~0; for (const v of buf) { c ^= v; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+  const chunk = (type, data) => { const out = Buffer.alloc(12 + data.length); out.writeUInt32BE(data.length); out.write(type, 4, 'latin1'); data.copy(out, 8); out.writeUInt32BE(crc(out.subarray(4, 8 + data.length)), 8 + data.length); return out; };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(w); head.writeUInt32BE(h, 4); head.set([8, 6, 0, 0, 0], 8);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', head), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const TOKEN = { name: 'IMG_0042.png', mimeType: 'image/png', buffer: png(320, 320, (x, y) => (Math.hypot(x - 160, y - 160) < 110 ? (Math.hypot(x - 190, y - 130) < 18 ? [30, 60, 200, 255] : [200, 40, 40, 255]) : [255, 255, 255, 255])) };
+/** The alpha of the picture being cut out, at its corner and in its middle. */
+const cutAlpha = (page) => page.evaluate(() => { const c = document.querySelector('.impCut'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; return { corner: d[3 + (2 * c.width + 2) * 4], mid: d[3 + ((c.height >> 1) * c.width + (c.width >> 1)) * 4], w: c.width }; });
+
 const a = await join('Ada');
 const b = await join('Bo');
 await a.waitForFunction(() => window.__ct.net.peers.size === 1);
@@ -761,6 +776,102 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   });
   assert(onScreen && (await cells()).length === 1, 'flung dice come to rest in view, and the throw edits nothing');
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice.png` });
+
+  // ---- the GM's own pieces: a picture from the phone becomes a figure (Prep → Import), and Packs shows it ----
+  {
+  const shot = (name) => p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-${name}.png` });
+  // Upright with a file server; lying down with none (the picture stays on the phone and goes from player to player).
+  await p.evaluate((list) => window.__ct.store.set('set:blossom', list), label === 'portrait' ? [`http://localhost:${BLOSSOM}`] : []);
+  await p.evaluate(() => { for (const s of document.querySelectorAll('.sheet:not(.closed) [data-close]')) s.click(); });
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="import"]');
+  await p.waitForSelector('#impShoot');
+  bad = await layout();
+  const inputs = await p.evaluate(() => ({ camera: document.querySelector('#impCamera').getAttribute('capture'), accept: document.querySelector('#impCamera').accept, many: document.querySelector('#impFiles').multiple }));
+  assert(inputs.camera === 'environment' && inputs.accept === 'image/*' && inputs.many && !bad.length, `Import offers the camera and the phone's pictures ${bad.join('; ')}`);
+  await shot('import');
+  await p.setInputFiles('#impFiles', TOKEN);
+  await p.waitForSelector('#impCrop');
+  await settle();
+  bad = await layout();
+  // One finger moves the picture, two zoom it; the buttons do the same for a thumb.
+  const cropBox = await p.locator('#impCrop').boundingBox(), [kx, ky] = [cropBox.x + cropBox.width / 2, cropBox.y + cropBox.height / 2];
+  await p.tap('#impIn');
+  await touch('touchStart', [[kx, ky]]);
+  for (let i = 1; i <= 4; i++) await touch('touchMove', [[kx + i * 6, ky + i * 3]]);
+  await touch('touchEnd', []);
+  await touch('touchStart', [[kx - 30, ky]]);
+  await touch('touchStart', [[kx - 30, ky], [kx + 30, ky]]);
+  for (let i = 1; i <= 4; i++) await touch('touchMove', [[kx - 30 - i * 5, ky], [kx + 30 + i * 5, ky]]);
+  await touch('touchEnd', []);
+  await settle();
+  await shot('import-crop');
+  await p.tap('[data-frame="square"]'); // back to the whole picture in a square frame
+  await p.tap('#impNext');
+  await p.waitForSelector('.impCut');
+  await settle();
+  const cutBox = await p.locator('.impCut').boundingBox();
+  const before = await cutAlpha(p);
+  await p.touchscreen.tap(cutBox.x + 5, cutBox.y + 5);
+  await settle();
+  const erased = await cutAlpha(p);
+  // A second finger never edits: rubbing out with two fingers down changes nothing.
+  await p.tap('[data-tool="erase"]');
+  const [mx, my] = [cutBox.x + cutBox.width / 2, cutBox.y + cutBox.height / 2];
+  await touch('touchStart', [[mx, my]]);
+  await touch('touchStart', [[mx, my], [mx + 50, my]]);
+  for (let i = 1; i <= 4; i++) await touch('touchMove', [[mx + i * 4, my], [mx + 50 + i * 4, my]]);
+  await touch('touchEnd', []);
+  await settle();
+  const twoFingers = await cutAlpha(p);
+  bad.push(...await layout());
+  assert(before.corner === 255 && erased.corner === 0 && erased.mid === 255 && twoFingers.mid === 255 && !bad.length, `tapping the background cuts it away and leaves the figure; two fingers edit nothing ${JSON.stringify({ before, erased, twoFingers })} ${bad.join('; ')}`);
+  await shot('import-cut');
+  await p.tap('#impNext');
+  await p.waitForSelector('#impName');
+  await p.fill('#impName', 'Orc');
+  await p.evaluate(() => document.activeElement?.blur());
+  bad = await layout();
+  await p.waitForTimeout(250);
+  await shot('import-name');
+  await p.tap('#impDone');
+  await p.waitForSelector('.impDone li.ok');
+  bad.push(...await layout());
+  const saved = await p.evaluate(() => ({ text: document.querySelector('.impDone li.ok').textContent, pack: window.__ct.packs.listPacks()[0] }));
+  const piece = saved.pack?.pieces[0];
+  assert((label === 'portrait' ? /Stored on 1 server/ : /Saved on this phone and shared with players directly/).test(saved.text) && piece?.group === 'minis' && piece.entry.kind === 'standee' && piece.entry.name === 'Orc'
+    && /^image\/(webp|png)$/.test(piece.entry.ref.m) && piece.bytes <= 60 * 1024 + 28 && !bad.length, `a picture becomes a figure of the table's own pack, and says where it was stored (${saved.text.slice(3, 70)}; ${piece?.bytes} bytes) ${bad.join('; ')}`);
+  await shot('import-done');
+  await p.tap('#impPacks');
+  await p.waitForSelector('.pkPiece i[style]');
+  bad = await layout();
+  await shot('packs');
+  await p.tap('.pkPiece');
+  await p.tap('.pkDropPiece');
+  await p.waitForSelector('.pkYes');
+  bad.push(...await layout());
+  await p.waitForTimeout(250);
+  await shot('packs-confirm');
+  await p.tap('.pkKeep');
+  await p.tap('.pkRename');
+  await p.fill('.pkName', 'Horde');
+  await p.evaluate(() => document.activeElement?.blur());
+  bad.push(...await layout());
+  await p.tap('.pkSave');
+  await p.waitForFunction(() => window.__ct.packs.listPacks()[0]?.name === 'Horde' && document.querySelector('.pkHead b')?.textContent === 'Horde');
+  assert(await p.evaluate(() => window.__ct.packs.listPacks()[0].pieces.length === 1 && document.querySelectorAll('.pkPiece').length === 1) && !bad.length, `Packs shows the pack with its pieces; removing asks first, in the page; a pack can be renamed ${bad.join('; ')}`);
+  await p.evaluate(() => window.__ct.ui.prep.close());
+  // And in Build the piece is on its shelf, with its picture, like any other.
+  await p.tap('[data-mode="build"]');
+  await p.tap('[data-cat="figures"]');
+  if (await p.evaluate(() => ![...document.querySelectorAll('#palette .chip')].some((c) => c.textContent === 'Horde'))) await p.tap('#palette .cur');
+  await p.evaluate(() => [...document.querySelectorAll('#palette .chip')].find((c) => c.textContent === 'Horde').click());
+  await p.waitForFunction(() => /url\(/.test(document.querySelector('#palette .tile[title="Orc"] i, #palette .cur i')?.getAttribute('style') ?? ''));
+  bad = await layout();
+  await shot('packs-shelf');
+  const hand = await p.evaluate(() => ({ k: window.__ct.board.hooks.newMini().k, id: window.__ct.packs.listPacks()[0].pieces[0].id }));
+  assert(hand.k === hand.id && !bad.length, `the new figure is on its shelf in Build, with its picture, and in hand ${JSON.stringify(hand)} ${bad.join('; ')}`);
+  }
   await p.context().close();
 }
 
@@ -843,6 +954,129 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     return { n, revoked: await fetch(u).then(() => false, () => true) };
   }, one.ref);
   assert(url.n === 50_000 && url.revoked, 'objectUrl hands out the decrypted file and revokes it on release');
+  await a.context().close();
+  await b.context().close();
+}
+
+// ---- the GM's own pieces (src/packs.ts, src/standee.ts): a picture imported on one device is a piece on every device ----
+{
+  console.log('packs');
+  const a = await join('Ivy', 'packs-1234'), b = await join('Jon', 'packs-1234');
+  await a.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await b.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await a.evaluate((server) => { const s = window.__ct.store; s.set(`gm:${s.me}`, true); s.set('set:blossom', [server]); }, `http://localhost:${BLOSSOM}`);
+  await b.waitForFunction(() => window.__ct.blobs.servers().length === 1 && document.body.classList.contains('player'));
+  for (const page of [a, b]) await page.evaluate(() => { const { board } = window.__ct; board.camera.position.set(3, 7, 15); board.controls.target.set(3, 0, 3); });
+  /** Take one picture through Prep → Import as the GM would: crop, cut the paper away, name it, say what it is. */
+  const bring = async (name, as) => {
+    await a.evaluate(() => window.__ct.ui.prep.open('import'));
+    await a.setInputFiles('#impFiles', TOKEN);
+    await a.click('#impNext');
+    await a.waitForSelector('.impCut');
+    await a.click('.impCut', { position: { x: 4, y: 4 } });
+    await a.click('#impNext');
+    await a.fill('#impName', name);
+    await a.click(`[data-as="${as}"]`);
+    await a.click('#impDone');
+    await a.waitForFunction((name) => [...document.querySelectorAll('.impDone li.ok b')].some((x) => x.textContent === name), name);
+  };
+  await bring('Orc', 'figure');
+  await bring('Idol', 'thing');
+  const made = await a.evaluate(() => ({ said: document.querySelector('.impDone li.ok span').textContent, pack: window.__ct.packs.listPacks()[0], keys: [...window.__ct.store.keys('pk:')] }));
+  const orc = made.pack.pieces.find((x) => x.entry.name === 'Orc'), idol = made.pack.pieces.find((x) => x.entry.name === 'Idol');
+  assert(made.keys.length === 1 && made.keys[0] === `pk:${made.pack.ns}` && /^u-[0-9a-f]{10}$/.test(made.pack.ns) && orc?.group === 'minis' && idol?.group === 'props' && /Stored on 1 server/.test(made.said)
+    && [orc, idol].every((x) => x.entry.kind === 'standee' && x.bytes <= 60 * 1024 + 28 && x.entry.ref.s?.length === 1), `the GM imports a picture as a figure and as a thing: one pack in the table, files on the server (${orc?.bytes} and ${idol?.bytes} bytes, ${orc?.entry.ref.m})`);
+  // On the table: a figure and a thing. The other player has the pack as stand-ins until the pieces are drawn, then as pictures.
+  await a.evaluate(([m, p]) => { const s = window.__ct.store; s.set('m:tok', { x: 1, y: 0, z: 6, k: m, c: '#3e63dd', n: 'Grok', r: 0, s: 1, hp: 5, mhp: 9 }); s.set('b:0,0,0', { i: p }); }, [orc.id, idol.id]);
+  const drawn = ([m, p]) => {
+    const { board, packs, registry } = window.__ct, card = (o) => o?.geometry?.userData.standee;
+    const batch = board.scene.children.filter((o) => o.userData.standees && o.visible);
+    return registry.known.mini(m) && registry.known.prop(p) && packs.pieceState(m) === 'ready' && packs.pieceState(p) === 'ready'
+      && !!card(board.minis.get('tok')?.group.children[0].children[2]) && !!card(board.props.get('b:0,0,0')?.children[0]) && batch.length === 1 && batch[0].count === 2;
+  };
+  await b.waitForFunction(drawn, [orc.id, idol.id]);
+  await a.waitForFunction(drawn, [orc.id, idol.id]);
+  const seen = await b.evaluate(([m, ref]) => {
+    const { board, blobs, catalog } = window.__ct, page = board.scene.children.find((o) => o.userData.standees), g = page.material.map.image.getContext('2d');
+    const mini = board.minis.get('tok');
+    return { via: blobs.source(ref.h), page: page.material.map.image.width, edge: g.getImageData(8, 8, 1, 1).data[3], mid: [...g.getImageData(128, 128, 1, 1).data], height: catalog.MINIS[m].height,
+      label: mini.group.children[1].visible, base: mini.group.children[0].children[0].isMesh };
+  }, [orc.id, orc.entry.ref]);
+  assert(seen.via === 'server' && seen.page === 1024 && seen.edge === 0 && seen.mid[3] === 255 && seen.mid[0] > 150 && seen.mid[2] < 90 && seen.height > 1 && seen.label && seen.base,
+    `the other player sees them as themselves: the picture fetched through blobs, cut out, on a shared page, with a base and a name plate ${JSON.stringify(seen)}`);
+  await b.waitForTimeout(400);
+  await b.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/standees.png` });
+  // A hidden figure, line of sight and the rest are the board's own, as for any mini: the GM hides it, the player loses it.
+  await a.evaluate(() => { const s = window.__ct.store; s.set('m:tok', { ...s.get('m:tok'), h: true }); });
+  await b.waitForFunction(() => window.__ct.board.minis.get('tok').group.visible === false && window.__ct.board.scene.children.find((o) => o.userData.standees).count === 1);
+  assert(await a.evaluate(() => window.__ct.board.scene.children.find((o) => o.userData.standees).count === 2), 'a hidden standee leaves the player\'s table and stays (faded) on the GM\'s');
+  await a.evaluate(() => { const s = window.__ct.store; s.set('m:tok', null); });
+
+  // Draw calls: twenty tokens cost what one costs (one call for the page they share).
+  const calls = (page) => page.evaluate(() => new Promise((done) => {
+    const { board } = window.__ct, info = board.renderer.info, was = board.hooks.onView;
+    info.autoReset = false;
+    board.touched();
+    info.reset();
+    board.hooks.onView = () => { board.hooks.onView = was; was(); const n = info.render.calls; info.autoReset = true; done(n); };
+  }));
+  const things = (n, id) => b.evaluate(([n, id]) => { const s = window.__ct.store; for (let i = 0; i < 20; i++) s.set(`b:${i % 5},0,${Math.floor(i / 5)}`, i < n ? { i: id } : null); }, [n, id]);
+  const figures = (n, id) => b.evaluate(([n, id]) => { const s = window.__ct.store; for (let i = 0; i < 20; i++) s.set(`m:f${i}`, i < n ? { x: i % 5, y: 0, z: 6 + Math.floor(i / 5), k: id, c: '#3e63dd', n: '', r: 0, s: 1 } : null); }, [n, id]);
+  const settled = (n) => b.waitForFunction((n) => { const m = window.__ct.board.scene.children.find((o) => o.userData.standees); return (m?.visible ? m.count : 0) === n; }, n);
+  await a.evaluate(() => { const s = window.__ct.store; s.set(`gm:${s.me}`, null); }); // free play again: the player may build
+  await b.waitForFunction(() => !document.body.classList.contains('player'));
+  let cost;
+  for (let tries = 0; tries < 4; tries++) { // the board may change its own quality between two measurements on a busy machine: measure until it did not
+    await things(1, idol.id); await settled(1); await b.waitForTimeout(300);
+    const one = await calls(b);
+    await things(20, idol.id); await settled(20); await b.waitForTimeout(300);
+    const twenty = await calls(b);
+    await things(1, idol.id); await settled(1); await b.waitForTimeout(300);
+    cost = { one, twenty, again: await calls(b) };
+    if (cost.one === cost.again) break;
+  }
+  await things(0, idol.id);
+  await settled(0);
+  // Figures keep the base and name plate every mini has; the card itself adds nothing per figure.
+  await figures(1, orc.id); await settled(1); await b.waitForTimeout(300);
+  const fig1 = await calls(b);
+  await figures(20, orc.id); await settled(20); await b.waitForTimeout(300);
+  const fig20 = await calls(b);
+  await b.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/standees-20.png` });
+  await figures(0, orc.id); await settled(0);
+  await figures(1, 'marker'); await b.waitForTimeout(400);
+  const core1 = await calls(b);
+  await figures(20, 'marker'); await b.waitForTimeout(400);
+  const core20 = await calls(b);
+  await figures(0, 'marker');
+  console.log(`      draw calls a frame — standee things: 1 → ${cost.one}, 20 → ${cost.twenty}; standee figures: 1 → ${fig1}, 20 → ${fig20}; built-in marker figures: 1 → ${core1}, 20 → ${core20}`);
+  assert(cost.one === cost.again && cost.twenty === cost.one, `twenty standees cost the draw calls of one (${cost.one} a frame with 1, ${cost.twenty} with 20)`);
+  assert(fig20 - fig1 <= core20 - core1, `and a standee figure costs no more than the simplest built-in one (${fig20 - fig1} for 19 more, against ${core20 - core1})`);
+
+  // The table's export carries the pack (the manifest: the files stay where they are stored).
+  await a.evaluate(([m, p]) => { const s = window.__ct.store; s.set(`gm:${s.me}`, true); s.set('m:tok', { x: 1, y: 0, z: 6, k: m, c: '#3e63dd', n: 'Grok', r: 0, s: 1 }); s.set('b:0,0,0', { i: p }); }, [orc.id, idol.id]);
+  await b.waitForFunction(drawn, [orc.id, idol.id]);
+  const rows = await a.evaluate(() => window.__ct.store.dump().filter((r) => r[1] !== null && r[0].startsWith('pk:')).map(([k, v]) => [k, v]));
+  assert(rows.length === 1 && Object.keys(rows[0][1].pieces.minis).length === 1, 'saving the table keeps its packs');
+  // Removing the pack (Packs page, with its confirm step) leaves stand-ins on every device.
+  await a.click('#impPacks');
+  await a.waitForSelector('.pkPiece i[style]');
+  await a.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/packs-desktop.png` });
+  await a.click('.pkDrop');
+  assert(await a.evaluate(() => [...window.__ct.store.keys('pk:')].length === 1 && !!document.querySelector('.pkAsk[role="alertdialog"]')), 'removing a pack asks first, in the page');
+  await a.click('.pkYes');
+  const standIns = ([m, p]) => {
+    const { board, packs, registry } = window.__ct, batch = board.scene.children.filter((o) => o.userData.standees && o.visible);
+    return !registry.known.mini(m) && !registry.known.prop(p) && packs.pieceState(m) === null && board.props.get('b:0,0,0')?.userData.pending === true
+      && board.minis.get('tok')?.group.children[0].children[2].material.transparent === true && batch.length === 0;
+  };
+  await b.waitForFunction(standIns, [orc.id, idol.id]);
+  assert(await a.evaluate(standIns, [orc.id, idol.id]) && await a.evaluate(() => !document.querySelector('.pkPack')), 'with the pack removed its pieces are stand-ins again, for everyone');
+  // And importing the saved table brings the pack back: the pictures are still where they were stored.
+  await a.evaluate(() => window.__ct.ui.prep.close());
+  await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows })) });
+  await b.waitForFunction(drawn, [orc.id, idol.id]);
+  assert(await a.evaluate(drawn, [orc.id, idol.id]), 'importing the table brings its packs back, pictures and all');
   await a.context().close();
   await b.context().close();
 }

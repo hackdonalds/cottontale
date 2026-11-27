@@ -15,6 +15,9 @@ import { Store, type Row } from './store';
 import { activeTheme, atmo, loadThemes, moodEdits, setAtmo, themeLook, type GameTheme, type Known } from './theme';
 import { FAVS, Hotbar, RECENT, type Shelf } from './ui/hotbar';
 import { initPrep } from './ui/prep';
+import * as packs from './packs';
+import { registerImportPage } from './ui/importPage';
+import { registerPacksPage } from './ui/packsPage';
 import { registerBuiltinPrepPages } from './ui/prepPages';
 import { initSheets, popSheetPage, pushSheetPage, setSheetHeight, sheetHeight } from './ui/sheets';
 
@@ -161,6 +164,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
+    packs.packChanged(k); // the GM's own pieces (packs.ts)
     if (k === 'gen' && !$('gen').classList.contains('closed')) renderGen();
     if ((k === 'at:theme' || k === 'set:theme') && ui.ready) renderPalette(); // its pieces come to the front of the library
     if (ui.ready && v && /^[bwm]:/.test(k)) placed(k, v, prev);
@@ -193,7 +197,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     servers: () => pickServers(ls.get('blossom'), store.get('set:blossom')),
     ice: () => pickIce(ls.get('stun')),
   });
-  Object.assign((window as unknown as { __ct: object }).__ct, { blobs });
+  packs.initPacks({ store, blobs, me: meId, full });
+  Object.assign((window as unknown as { __ct: object }).__ct, { blobs, packs });
 
   $('lobby').hidden = true;
   $('hud').hidden = false;
@@ -505,7 +510,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   /** Where a piece's picture is on the sheet of thumbnails (see assets/blender/thumbs.py). */
   const thumb = (family: string): string | null => {
     const i = (THUMBS.at as Record<string, number>)[family];
-    if (i === undefined) return null;
+    if (i === undefined) return packs.packThumb(family.slice(2)); // a piece of the table's own packs shows its picture
     const x = i % THUMBS.cols, y = Math.floor(i / THUMBS.cols);
     return `background-image:url(./ui/thumbs.webp);background-size:${THUMBS.cols * 100}% ${THUMBS.rows * 100}%;background-position:${(x / (THUMBS.cols - 1)) * 100}% ${(y / (THUMBS.rows - 1)) * 100}%`;
   };
@@ -825,7 +830,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   }
   // Prep: the full-screen pages for getting a table ready (see ui/prep.ts).
   registerBuiltinPrepPages();
-  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme });
+  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name });
+  registerImportPage(); registerPacksPage(); // the GM's own pieces: these take the place of the placeholders
+  packs.onPacks(() => { if (ui.ready && building()) renderPalette(); }); // a piece's picture arrived
   /** The themes: one tap sets the whole mood and brings the theme's pieces to the front. Tapping it again lets go of it. */
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
@@ -1171,6 +1178,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       const data = JSON.parse(await input.files![0].text());
       for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmfw]:/.test(k)) store.set(k, v);
         else if (/^(@[\w-]+\/[bmfw]:|bd:)/.test(k)) store.setRaw(k, v);
+        else if (k.startsWith(packs.PACK_KEY) && full() && packs.parsePack(v, k.slice(3))) store.set(k, v); // the table's own packs (their files stay in the blob cache and on the servers)
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
   };
