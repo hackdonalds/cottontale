@@ -5,7 +5,6 @@
 # look stamped, so most pieces are a family grown from a seed; the app picks a
 # member by where the piece stands.
 import math
-import os
 
 from mathutils import Euler, Vector
 
@@ -409,47 +408,26 @@ def roots(p, girth, bark):
 
 def canopy(p, pads, lo, hi, tris=105, thick=0.44, tex='leaf'):
     """
-    Foliage as layered pads: flat, cloud-shaped shelves of leaf, each a few masses fused into
-    one seamless skin, set at different heights on the ends of the boughs. `pads` are
+    Foliage as layered pads: cloud-shaped shelves of leaf set at different heights on the
+    ends of the boughs. `pads` are
     (centre, width). The whole tree is coloured by height (cool and deep under the lowest
     shelf, warm and bright on the top one) and lit as a single form, so it reads as one
     crown in tiers rather than as separate lumps.
     """
     r = p.rng
     z0, z1 = min(c.z for c, _ in pads) - 0.16, max(c.z for c, _ in pads) + 0.2
-    style = os.environ.get('CANOPY', 'A')
-    if style != 'A':
-        # Clumped foliage: each shelf is a cluster of many small masses, so its surface is knobbly
-        # with leaf rather than smooth, and the hollows between the clumps hold shadow.
-        p.leaf_ao = 0.8
-        for c, w in pads:
-            w *= 1.12
-            lobes = [(c, w * 0.52, w * thick * 0.9)]
-            for _ in range(r.randint(9, 13)):
-                a, d = r.uniform(0, math.tau), w * 0.74 * math.sqrt(r.random())
-                at = c + Vector((math.cos(a) * d, math.sin(a) * d, r.uniform(-0.05, 0.09) * w / 0.34))
-                size = w * r.uniform(0.2, 0.34)
-                lobes.append((at, size, size * r.uniform(0.75, 1.0)))
-            p.fused(lobes, tris=int(tris * 2.4 * max(0.5, min(1.4, w / 0.34))), voxel=max(0.02, w * 0.065), rough=w * 0.05, col=(r.uniform(0.93, 1.05),), smooth=True,
-                    tex=tex, head=1, ramp=(lo, hi, z0, z1))
-            if style == 'C':  # sprigs of leaf breaking the outline
-                for _ in range(r.randint(10, 14)):
-                    a = r.uniform(0, math.tau)
-                    out = Vector((math.cos(a), math.sin(a), r.uniform(-0.15, 0.5))).normalized()
-                    at = c + Vector((out.x * w * 0.78, out.y * w * 0.78, out.z * w * thick * 0.8))
-                    t = max(0.0, min(1.0, (at.z - z0) / (z1 - z0)))
-                    p.leaf(at, out + Vector((0, 0, r.uniform(-0.2, 0.3))), Vector((-out.y, out.x, 0)), w * r.uniform(0.2, 0.3), w * r.uniform(0.1, 0.15),
-                           mix(lo, hi, t), out, head=1, tex=tex)
-        return
+    # Clumped foliage: each shelf is a cluster of many small masses fused into one skin, so its
+    # surface is knobbly with leaf rather than smooth, and the hollows between the clumps hold shadow.
+    p.leaf_ao = 0.8
     for c, w in pads:
-        w *= 1.1
-        lobes = [(c, w * 0.7, w * thick)]
-        n, turn = r.choice((3, 3, 4)), r.uniform(0, math.tau)
-        for i in range(n):  # uneven bulges round the rim, so no two shelves have the same outline
-            a = turn + i * math.tau / n + r.uniform(-0.5, 0.5)
-            out = w * r.uniform(0.42, 0.62)
-            lobes.append((c + Vector((math.cos(a) * out, math.sin(a) * out, r.uniform(-0.03, 0.05))), w * r.uniform(0.32, 0.56), w * thick * r.uniform(0.75, 0.9)))
-        p.fused(lobes, tris=int(tris * max(0.5, min(1.4, w / 0.34))), voxel=max(0.028, w * 0.11), rough=w * 0.09, col=(r.uniform(0.93, 1.05),), smooth=True,
+        w *= 1.12
+        lobes = [(c, w * 0.52, w * thick * 0.9)]
+        for _ in range(r.randint(9, 13)):
+            a, d = r.uniform(0, math.tau), w * 0.74 * math.sqrt(r.random())
+            at = c + Vector((math.cos(a) * d, math.sin(a) * d, r.uniform(-0.05, 0.09) * w / 0.34))
+            size = w * r.uniform(0.2, 0.34)
+            lobes.append((at, size, size * r.uniform(0.75, 1.0)))
+        p.fused(lobes, tris=int(tris * 2.4 * max(0.5, min(1.4, w / 0.34))), voxel=max(0.02, w * 0.065), rough=w * 0.05, col=(r.uniform(0.93, 1.05),), smooth=True,
                 tex=tex, head=1, ramp=(lo, hi, z0, z1))
 
 
