@@ -979,6 +979,15 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.evaluate(() => window.__ct.board.renderer.setAnimationLoop(null));
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 2 })); // (in view already: no move)
   await p.waitForFunction(() => window.__ct.board.turnId === 'far1');
+  // (Stand the other one somewhere that is off this screen for certain: a wide screen sees a long way.)
+  await p.evaluate(() => {
+    const { board, store } = window.__ct, v = store.get('m:far2'), t = board.controls.target;
+    const off = [[-40, 0], [0, 40], [0, -40], [-80, 0]].map(([x, z]) => [Math.round(t.x) + x, Math.round(t.z) + z]).find(([x, z]) => {
+      const q = board.ground.position.clone().set(x + 0.5, 0.5, z + 0.5).project(board.camera);
+      return Math.abs(q.x) > 1.2 || Math.abs(q.y) > 1.2 || q.z > 1;
+    });
+    if (off) store.set('m:far2', { ...v, x: off[0], z: off[1] });
+  });
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 2 }));
   await p.waitForFunction(() => !!window.__ct.board.glide);
   await touch('touchStart', [bare]);
@@ -1009,14 +1018,20 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await touch('touchEnd', []);
   await settle();
   assert(await p.evaluate(() => { const { board } = window.__ct; return !board.boulder.held && board.boulder.rolling.length === 0 && board.boulderArmed; }), 'a second finger cancels the boulder without rolling it');
-  await touch('touchStart', [[cx - 60, cy - 40]]);
+  const builtBefore = (await cells()).length;
+  // (Press where the table shows: by now a turn strip and other chrome may lie over the usual spot.)
+  const [bx, by] = await p.evaluate(() => {
+    for (let y = Math.round(innerHeight / 2); y > 60; y -= 20) for (const x of [innerWidth / 2 - 60, innerWidth / 4, (innerWidth * 3) / 4 - 80]) if (document.elementFromPoint(x, y)?.id === 'c' && document.elementFromPoint(x + 72, y - 24)?.id === 'c') return [x, y];
+    return [innerWidth / 2 - 60, innerHeight / 2 - 40];
+  });
+  await touch('touchStart', [[bx, by]]);
   await p.waitForFunction(() => window.__ct.board.boulder.held);
-  for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 60 + i * 12, cy - 40 - i * 4]]); await p.waitForTimeout(16); }
+  for (let i = 1; i <= 6; i++) { await touch('touchMove', [[bx + i * 12, by - i * 4]]); await p.waitForTimeout(16); }
   await touch('touchEnd', []);
   await p.waitForFunction(() => { const { board } = window.__ct; return board.boulder.rolling.length === 1 && !board.boulder.held && !board.boulderArmed; });
   await p.waitForTimeout(400);
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-boulder.png` });
-  assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === 1, `a flick sends the boulder rolling, and edits no terrain ${JSON.stringify(await p.evaluate(() => { const b = window.__ct.board, r = b.boulder.rolling[0]; return r && { n: r.n, from: r.pos[0].toArray().map((v) => +v.toFixed(1)), to: r.pos[r.n - 1].toArray().map((v) => +v.toFixed(1)), target: b.controls.target.toArray().map((v) => +v.toFixed(1)) }; }))} ${(await cells()).length}`);
+  assert(await p.evaluate(() => { const r = window.__ct.board.boulder.rolling[0]; return r.pos[r.n - 1].distanceTo(r.pos[0]) > 1.5; }) && (await cells()).length === builtBefore, `a flick sends the boulder rolling, and edits no terrain ${JSON.stringify(await p.evaluate(() => { const b = window.__ct.board, r = b.boulder.rolling[0]; return r && { n: r.n, from: r.pos[0].toArray().map((v) => +v.toFixed(1)), to: r.pos[r.n - 1].toArray().map((v) => +v.toFixed(1)), target: b.controls.target.toArray().map((v) => +v.toFixed(1)) }; }))} ${(await cells()).length}`);
   await p.context().close();
 }
 
