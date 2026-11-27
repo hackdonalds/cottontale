@@ -312,6 +312,69 @@ const c = await join('Cy');
 await c.waitForFunction((n) => [...window.__ct.store.keys('b:')].length === n, total);
 assert((await count(c, 'm:')) === figures && (await count(c, 'w:')) === walls, 'late joiner restored the whole table from snapshots');
 
+// ---- scatter: loose pieces poured out by one player fall, and come to rest, the same for everyone ----
+{
+  const sa = await join('Sy', 'scatter-1234'), sb = await join('Sol', 'scatter-1234');
+  await sa.waitForFunction(() => window.__ct.net.peers.size === 1);
+  await sb.waitForFunction(() => window.__ct.net.peers.size === 1);
+  const DRAWN = () => [...window.__ct.board.loose.swarms.values()].reduce((n, s) => n + s.swarm.mesh.count, 0);
+  const lying = (page) => page.evaluate(() => [...window.__ct.store.keys('l:')].sort().map((k) => JSON.stringify(window.__ct.store.get(k))));
+  // The peer keeps watch: did it see the fall, and how many pieces did it ever draw at once?
+  await sb.evaluate(`window.__watch = { most: 0, fell: false }; setInterval(() => { const w = window.__watch; w.fell ||= window.__ct.board.loose.playing.length > 0; w.most = Math.max(w.most, (${DRAWN})()); }, 16)`);
+  await sa.click('[data-mode="build"]');
+  await sa.click('[data-cat="things"]');
+  await sa.click('#palette [aria-label^="Scatter"]');
+  await sa.mouse.click(640, 380);
+  const settled = await ok(sb, () => [...window.__ct.store.keys('l:')].length === 6 && window.__ct.board.loose.playing.length === 0 && window.__ct.board.loose.pieces.size === 6);
+  const [la, lb] = [await lying(sa), await lying(sb)];
+  const watch = await sb.evaluate(() => window.__watch);
+  const whole = lb.every((v) => { const o = JSON.parse(v); return [...o.p, ...o.q].every(Number.isInteger) && o.p[1] >= 0 && o.p[1] < 100; });
+  assert(settled && la.join() === lb.join() && whole, `six pieces poured by a click lie in the same whole-number poses for both players (${settled}, ${lb.length})`);
+  assert(watch.fell && watch.most === 6 && await sb.evaluate(`(${DRAWN})() === 6`), `the peer watched them fall, and never drew a piece twice (most ${watch.most})`);
+  await sa.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/scatter-desktop.png` });
+  const still = await sa.evaluate(async () => { // an idle table with loose pieces on it draws nothing
+    const { board } = window.__ct;
+    await new Promise((r) => setTimeout(r, 600));
+    const before = board.renderer.info.render.frame;
+    await new Promise((r) => setTimeout(r, 400));
+    return board.renderer.info.render.frame - before;
+  });
+  const solid = await sa.evaluate(() => { const { board } = window.__ct, p = [...board.loose.pieces.values()][0].p; return board.solidsNear(p, 1).filter((s) => s.q).length; });
+  assert(still === 0 && solid >= 1, `resting pieces cost no frames (${still}) and are solid to dice (${solid} near)`);
+  // Under the GM's fog a piece is neither drawn nor solid for a player.
+  await sa.click('#menuBtn');
+  await sa.click('[data-act="gm"]');
+  const fogged = await sa.evaluate(() => {
+    const { board, store } = window.__ct, p = [...board.loose.pieces.values()][0].p, cell = [Math.floor(p[0]), Math.floor(p[2])];
+    store.set(`f:${cell[0]},${cell[1]}`, true);
+    return { cell, n: [...board.loose.pieces.values()].filter((v) => Math.floor(v.p[0]) === cell[0] && Math.floor(v.p[2]) === cell[1]).length };
+  });
+  const hid = await ok(sb, `(${DRAWN})() === ${6 - fogged.n} && !window.__ct.board.solidsNear([${fogged.cell[0] + 0.5}, 0, ${fogged.cell[1] + 0.5}], 0.5).some((s) => s.q)`);
+  assert(hid && fogged.n >= 1 && await sa.evaluate(`(${DRAWN})() === 6`), `fog hides the ${fogged.n} piece(s) under it from the player, not from the GM`);
+  // A player cannot pour, and a pour sent by one is not played.
+  await sb.evaluate(() => window.__ct.net.send({ y: 'pour', bd: '', t: { o: [0, 0, 0], i: 'coin', ids: ['zz'], n: 1, q: [[0, 500, 0, 0, 0, 0, 1000]] } }));
+  await sb.waitForTimeout(600);
+  assert((await lying(sb)).length === 6 && await sa.evaluate(() => window.__ct.board.loose.playing.length === 0 && window.__ct.board.loose.count === 6)
+    && await sb.evaluate(() => document.body.classList.contains('player')), 'only the GM pours');
+  await sa.evaluate(() => { const { store } = window.__ct; for (const k of [...store.keys('f:')]) store.set(k, null); });
+  // The eraser takes the pieces under the pointer; undo puts them back, and a pour is one undo step.
+  await sa.click('#palette [aria-label="Erase"]');
+  const at = await sa.evaluate(() => {
+    const { board } = window.__ct, p = [...board.loose.pieces.values()][0].p;
+    const v = board.ground.position.clone().set(p[0], p[1], p[2]).project(board.camera);
+    return [(v.x + 1) * 640, (1 - v.y) * 400];
+  });
+  await sa.mouse.click(at[0], at[1]);
+  const erased = await ok(sb, () => { const n = [...window.__ct.store.keys('l:')].length; return n >= 1 && n < 6; });
+  await sa.keyboard.press('Control+z');
+  const back = await ok(sb, () => [...window.__ct.store.keys('l:')].length === 6);
+  await sa.keyboard.press('Control+z');
+  const gone = await ok(sb, `[...window.__ct.store.keys('l:')].length === 0 && (${DRAWN})() === 0`);
+  assert(erased && back && gone, `the eraser removes loose pieces, undo returns them, and a whole pour undoes as one (${erased}, ${back}, ${gone})`);
+  await sa.context().close();
+  await sb.context().close();
+}
+
 // ---- phones: the primary target. Real touch events, both orientations. ----
 for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }]]) {
   console.log(`phone ${label}`);
@@ -478,6 +541,49 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(room.length > 8 && room.filter((i) => i === 'walldoor').length === 1, `dragging the room brush builds a room with one doorway (${room.length - 1} walls)`);
   await p.tap('#undo');
   await settle();
+  // Scatter: brush, kind and count are all chosen by touch; a tap pours, a drag strews, a second finger pours nothing.
+  await p.tap('[data-cat="things"]');
+  await p.tap('#palette [aria-label^="Scatter"]');
+  bad = await layout();
+  const pourUi = await p.evaluate(() => ({ kinds: document.querySelectorAll('#palette .tile').length, count: [...document.querySelectorAll('#palette .chip')].filter((c) => /^× \d+$/.test(c.textContent)).map((c) => c.getBoundingClientRect().height)[0] }));
+  assert(pourUi.kinds === 5 && pourUi.count >= 44 && !bad.length, `the scatter brush offers its kinds and a count within reach ${JSON.stringify(pourUi)} ${bad.join('; ')}`);
+  await p.tap('#palette [title="Coins"]');
+  const loose = () => p.evaluate(() => [...window.__ct.store.keys('l:')].map((k) => window.__ct.store.get(k).p));
+  const poured = (n) => p.waitForFunction((m) => [...window.__ct.store.keys('l:')].length === m && window.__ct.board.loose.playing.length === 0, n, { timeout: 15000 }).then(() => true, () => false);
+  await touch('touchStart', [[cx, cy - h * 0.1]]);
+  await touch('touchStart', [[cx, cy - h * 0.1], [cx + 80, cy - h * 0.1]]);
+  await touch('touchEnd', []);
+  await p.waitForTimeout(400);
+  assert(await p.evaluate(() => window.__ct.board.loose.count === 0), 'a second finger pours nothing');
+  await touch('touchStart', [[cx, cy - h * 0.1]]);
+  await touch('touchEnd', []);
+  const tapped = await poured(6);
+  const span = (ps) => Math.hypot(Math.max(...ps.map((q) => q[0])) - Math.min(...ps.map((q) => q[0])), Math.max(...ps.map((q) => q[2])) - Math.min(...ps.map((q) => q[2]))) / 100;
+  const heap = span(await loose());
+  await drag(cx - 130, cy - h * 0.14, cx + 110, cy - h * 0.06);
+  const strewn = await poured(12);
+  assert(tapped && strewn && (await cells()).length === 1, `a tap pours six coins in a heap (${heap.toFixed(1)} across), a drag strews six more (${span(await loose()).toFixed(1)} across), and nothing else is edited`);
+  await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-scatter.png` });
+  await p.tap('#palette [aria-label="Erase"]');
+  const coin = await p.evaluate(() => { // a coin on screen, clear of the bars
+    const { board } = window.__ct, c = document.querySelector('#c');
+    for (const v of board.loose.pieces.values()) {
+      const s = board.ground.position.clone().set(...v.p).project(board.camera), x = ((s.x + 1) / 2) * c.clientWidth, y = ((1 - s.y) / 2) * c.clientHeight;
+      if (document.elementFromPoint(x, y) === c) return [x, y];
+    }
+    return null;
+  });
+  await touch('touchStart', [coin]);
+  await touch('touchEnd', []);
+  await settle();
+  const left = (await loose()).length;
+  await p.tap('#undo');
+  await settle();
+  const again = (await loose()).length;
+  await p.tap('#undo');
+  await p.tap('#undo');
+  await settle();
+  assert(left < 12 && again === 12 && (await loose()).length === 0 && (await cells()).length === 1 && (await keys('w:')).length === 1, `a tap with the eraser picks loose pieces up (${12 - left}); undo returns them, then takes back each pour whole`);
   // Scenes: generate a dungeon from the sheet; its rooms are listed, and one can be refurnished alone.
   await p.tap('[data-cat="scenes"]');
   await p.tap('#palette [title="Generate a scene"]');

@@ -11,6 +11,8 @@ import { SOUNDSCAPES, Sound } from './sound';
 import { breakButton } from './breakui';
 import { canControl, fullPowers, gms, nextTurn, pid, setting, turnOrder, type Turn, parseEdge, roomEdges } from './rules';
 import { Store, type Row } from './store';
+import { LOOSE, MAX_LOOSE, POUR_COUNTS } from './loose';
+import { pour } from './pour';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ls = {
@@ -149,7 +151,19 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     },
     onGrab: () => { if (phoneSheet()) closeSheet(); },
     onThrow: (starts, vel) => void throwHand(starts, vel),
+    onPour: (a, b) => void pourOut(a, b),
   });
+
+  // The scatter brush: which loose pieces it pours out, and how many at a time.
+  let pourKind = 'stone', pourCount = 6;
+  async function pourOut(a: Vec, b: Vec): Promise<void> {
+    if (!full()) return;
+    if (board.loose.count >= MAX_LOOSE) return say(`<span class="sys">This board holds no more than ${MAX_LOOSE} loose pieces. Erase some first.</span>`);
+    void pour({
+      store, here: () => here, count: () => board.loose.count, solidsNear: (c, r) => board.solidsNear(c, r),
+      send: (t) => void send({ y: 'pour', t }), play: (t) => board.loose.play(t), commit: (edits) => board.commit(edits),
+    }, pourKind, pourCount, a, b);
+  }
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   store.onChange = (k, v, prev) => {
@@ -178,6 +192,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   await net.start();
   board.dice.onHit = (strength) => sound.clack(strength);
   breakButton(board, $('hud'), $('top'), (k, i) => void send({ y: 'broke', k, i }), (wood) => sound.crumble(wood));
+  board.loose.onHit = (strength) => sound.clack(strength * 0.6);
   Object.assign(window, { __ct: { store, net, board, sound, catalog: { BLOCKS, PROPS, MINIS } } });
 
   $('lobby').hidden = true;
@@ -221,6 +236,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       }
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
       case 'broke': if (!elsewhere && typeof msg.k === 'string') board.broke(msg.k, String(msg.i)); break;
+      // Only someone who may build can pour; the recording itself is checked by the view.
+      case 'pour': if (!elsewhere && fullPowers(store, pid(from))) void board.loose.play(msg.t); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
     }
   }
@@ -408,7 +425,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const fits: Record<Cat, (id: string) => boolean> = {
       land: (id) => BLOCK_SHELVES.Terrain.includes(id) || ['raise', 'lower', 'level', 'grow', 'erase'].includes(id),
       walls: (id) => !!EDGES[id] || PROP_SHELVES.Structures.includes(id) || BLOCK_SHELVES.Building.includes(id) || id === 'room' || id === 'erase',
-      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light',
+      things: (id) => PROP_SHELVES[thingShelf].includes(id) || id === 'erase' || id === 'light' || id === 'pour',
       figures: () => true,
       scenes: (id) => id === 'copy' || id === 'paste',
     };
@@ -510,12 +527,16 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         blocks(BLOCK_SHELVES.Building);
       } else if (cat === 'things') {
         for (const name of Object.keys(PROP_SHELVES)) {
-          if (name !== 'Structures') chip(name, thingShelf === name, () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
+          if (name !== 'Structures') chip(name, thingShelf === name && board.brush !== 'pour', () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
         turn();
         chip('Light', board.brush === 'light', brush('light'), svg('sun'), 'Tap a torch, fire or crystal to step its light: normal, bright, dim, out');
+        chip('Scatter', board.brush === 'pour', () => { board.brush = 'pour'; trayOpen = true; }, '', 'Scatter loose pieces: tap the table to pour them out, drag to strew them');
         eraser();
-        props(PROP_SHELVES[thingShelf]);
+        if (board.brush === 'pour') {
+          chip(`× ${pourCount}`, false, () => { pourCount = POUR_COUNTS[(POUR_COUNTS.indexOf(pourCount) + 1) % POUR_COUNTS.length]; }, '', `How many pieces a pour drops: ${pourCount}`);
+          for (const [id, k] of Object.entries(LOOSE)) tile(k.name, pourKind === id, () => { pourKind = id; }, k.thumb, undefined, k.icon);
+        } else props(PROP_SHELVES[thingShelf]);
       } else if (cat === 'figures') {
         for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
@@ -613,7 +634,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     here = id;
     store.setBoard(id);
     board.clear();
-    for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
+    for (const p of ['b:', 'f:', 'm:', 'w:', 'l:']) for (const k of [...store.keys(p)]) board.apply(k, store.get(k), null);
     cutAuto = true;
     setCut(Infinity);
     emptyHand();
@@ -665,7 +686,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function newBoard(copy: boolean): void {
     if (!full()) return;
     const id = crypto.randomUUID().slice(0, 6);
-    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
+    if (copy) for (const p of ['b:', 'f:', 'm:', 'w:', 'l:']) for (const k of [...store.keys(p)]) store.setRaw(`@${id}/${k}`, store.get(k));
     store.set(`bd:${id}`, { n: copy ? `${boardName(here)} copy`.slice(0, 24) : `Board ${boardList().length + 1}` });
     peek = id; // start on it alone; bring the players over when it is ready
     sync();
@@ -1000,7 +1021,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     }
     if (act === 'import') $('file').click();
     if (act === 'clear' && confirm('Remove everything from the table, for everyone?')) {
-      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:'), ...store.keys('w:')]) store.set(k, null);
+      for (const k of [...store.keys('b:'), ...store.keys('m:'), ...store.keys('f:'), ...store.keys('w:'), ...store.keys('l:')]) store.set(k, null);
       store.set('gen', null);
       store.set('turn', null);
     }

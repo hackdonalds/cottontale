@@ -11,6 +11,7 @@
 import { finalizeEvent, verifyEvent, getPublicKey, type Event } from 'nostr-tools/pure';
 import type { Ruler } from './board';
 import type { Throw } from './dice';
+import type { Pour } from './loose';
 import type { Row, Store } from './store';
 
 export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'];
@@ -29,7 +30,8 @@ type Body =
   | { y: 'ping'; p: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] }
   /** A piece (`i`) at a cell or edge key was broken on purpose: burst it when its removal arrives. */
-  | { y: 'broke'; k: string; i: string };
+  | { y: 'broke'; k: string; i: string }
+  | { y: 'pour'; t: Pour };
 
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */
 export type Msg = Body & { bd?: string };

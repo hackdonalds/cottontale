@@ -6,7 +6,7 @@ export type Row = [key: string, value: unknown, time: number, by: string];
 export interface Entry { v: unknown; t: number; b: string }
 
 /** Keys that belong to one board; everything else (GM, settings, the board list) is table-wide. */
-const BOARD_KEY = /^(?:[bmfw]:|turn$|gen$)/;
+const BOARD_KEY = /^(?:[bmfwl]:|turn$|gen$)/;
 
 export class Store {
   entries = new Map<string, Entry>();

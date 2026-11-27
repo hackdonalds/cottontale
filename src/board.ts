@@ -11,6 +11,8 @@ import { LIGHT_LEVELS, nextLight } from './rules';
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { Look } from './look';
+import { LooseView } from './looseview';
+import { decodeLoose } from './loose';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 export type { CellVal, MiniVal };
@@ -40,6 +42,8 @@ export interface BoardHooks {
   onRuler(r: Ruler | null): void;
   /** An area was copied with the copy brush. */
   onSlab(slab: Slab): void;
+  /** The scatter brush was tapped at a spot (`a` = `b`) or dragged from `a` to `b`: pour loose pieces out there. */
+  onPour?(a: Vec, b: Vec): void;
   /** A light was stepped to another strength with the light brush. */
   onLight(name: string): void;
   /** The picture was just redrawn: anything pinned to a spot on the table should follow. */
@@ -69,7 +73,7 @@ function noise(x: number, y: number, z: number): number {
 }
 
 /** Many copies of one shape as a single draw call, refilled from scratch whenever its contents change. */
-class Swarm {
+export class Swarm {
   mesh: THREE.InstancedMesh;
   /** What each copy stands for (a cell key), by instance number. */
   keys: string[] = [];
@@ -189,6 +193,9 @@ interface Gesture {
   /** Touch editing: what the first contact pointed at, and the flat layer a drag paints on. */
   first: Vec | null;
   stroke: { level: number; plane: number } | null;
+  /** Scattering: where on the table the finger came down. Wiping: the stroke began on loose pieces, and clears only those. */
+  from?: Vec | null;
+  wipe?: boolean;
   /** Shaping the land: the columns this stroke has already touched (each changes once a stroke). */
   shaped?: Set<string>;
   /** Drawing a wall: the edge the finger started on. The run stays in line with it. */
@@ -377,6 +384,8 @@ export class Board {
   /** How far the land brushes reach around the cell touched, in cells (0 = just that cell). */
   reach = 0;
   private minis = new Map<string, Mini>();
+  /** Small things lying where they fell (loose.ts), one swarm for each kind. */
+  readonly loose: LooseView;
   private rulers = new Map<string, THREE.Group>();
   private fog: THREE.InstancedMesh | null = null;
   private fogDirty = false;
@@ -540,6 +549,7 @@ export class Board {
     };
     for (const id of Object.keys(BLOCKS)) this.layers.set(id, new Layer(id, this.scene, GROUND[id] ? buried : hidden));
     this.dice = new DiceView(this.scene);
+    this.loose = new LooseView((geo, mat) => new Swarm(geo, mat, this.scene, true), hidden);
     this.dice.onBump = (at, dv) => this.bump(at, dv);
     this.debris = new Debris(this.scene);
     // A pack of models has arrived: stand up the pieces that were waiting for it.
@@ -553,6 +563,7 @@ export class Board {
         this.applyMini(id, m.val);
       }
       this.coverDirty = this.edgesDirty = true;
+      this.loose.kitChanged();
       this.touched();
     });
 
@@ -595,6 +606,7 @@ export class Board {
     for (const [key, g] of this.props) g.visible = !this.cellHidden(...parse(key));
     for (const [id, m] of this.minis) this.applyMini(id, m.val); // ghosting depends on the role
     this.fogDirty = this.visDirty = true;
+    this.loose.refresh();
     this.touched();
   }
 
@@ -707,6 +719,7 @@ export class Board {
     this.edges.clear();
     this.edgesDirty = true;
     this.minis.clear();
+    this.loose.clear();
     this.rulers.clear();
     this.pings.length = this.anims.length = 0;
     this.wobbles.clear();
@@ -778,6 +791,8 @@ export class Board {
       if (v && EDGES[v.i]) this.edges.set(key, v.i);
       else this.edges.delete(key);
       this.edgesDirty = this.visDirty = this.terrainDirty = this.coverDirty = true;
+    } else if (key.startsWith('l:')) {
+      this.loose.set(key.slice(2), value);
     } else if (key.startsWith('f:')) {
       this.fogDirty = this.visDirty = true;
       if (!this.full) this.refresh();
@@ -1166,6 +1181,7 @@ export class Board {
       if (piece === 'walldoor' || !near(x + 0.5, z + 0.5) || this.cellHidden(x, y, z)) continue; // doorways stand open
       out.push(side === 'n' ? { p: [x + 0.5, y + 0.5, z], h: [0.5, 0.5, 0.1] } : { p: [x, y + 0.5, z + 0.5], h: [0.1, 0.5, 0.5] });
     }
+    out.push(...this.loose.solids(c, reach));
     return out;
   }
 
@@ -1426,6 +1442,37 @@ export class Board {
   private get rooming(): boolean { return this.tool === 'build' && this.brush === 'room'; }
   /** The brush that steps a torch, fire or crystal through its strengths. */
   private get lighting(): boolean { return this.tool === 'build' && this.brush === 'light'; }
+  /** The brush that pours loose pieces out where the table is touched. */
+  private get pouring(): boolean { return this.tool === 'build' && this.brush === 'pour'; }
+  /** A spot on the table for the scatter brush: where the pointer meets the ground or a block. */
+  private pourSpot(): Vec | null {
+    const p = this.pickSurface()?.point;
+    return p && this.full && p.y < Math.min(MAX_Y, this.cut) ? [+p.x.toFixed(2), +Math.max(0, p.y).toFixed(2), +p.z.toFixed(2)] : null;
+  }
+  /** The loose pieces under the pointer: a fingertip covers more than one coin, so all that it covers. */
+  private looseAt(): string[] {
+    const s = this.pickSurface(), far = s ? s.point.distanceTo(this.ray.ray.origin) + 0.2 : Infinity;
+    return this.loose.near(this.ray.ray, this.coarse ? 0.34 : 0.24, far).map((id) => `l:${id}`);
+  }
+  /** Dragging the eraser over loose pieces sweeps them up, as one undo step. */
+  private wipe(g: Gesture): void {
+    const keys = this.looseAt();
+    if (!keys.length) return;
+    if (!g.stroke) {
+      g.stroke = { level: 0, plane: 0 };
+      this.batch = [];
+      this.undoStack.push(this.batch);
+    }
+    for (const k of keys) this.edit(k, null);
+  }
+  /** Write several edits as one undo step (the resting places of a pour). */
+  commit(edits: [string, unknown][]): void {
+    if (!edits.length || !this.full) return;
+    const mine = !this.batch;
+    if (mine) { this.batch = []; this.undoStack.push(this.batch); }
+    for (const [k, v] of edits) this.edit(k, v);
+    if (mine) this.batch = null;
+  }
   private stepLight(): void {
     const p = this.pickProp(), v = p && this.store.get<CellVal>(p.key);
     if (!p || !v || !GLOWS[v.i]) return;
@@ -1614,6 +1661,10 @@ export class Board {
       if (scene.has(k)) continue;
       const [x, , z] = k.slice(2).split(',').map(Number);
       if (old.has(k) || (x >= x0 && x <= x1 + 1 && z >= z0 && z <= z1 + 1)) this.edit(k, null);
+    }
+    for (const k of [...this.store.keys('l:')]) { // loose pieces would be left buried in the new ground, or hanging over it
+      const p = decodeLoose(this.store.get(k))?.p;
+      if (!p || (p[0] >= x0 && p[0] <= x1 + 1 && p[2] >= z0 && p[2] <= z1 + 1)) this.edit(k, null);
     }
     for (const [k, v] of edits) if (JSON.stringify(this.store.get(k)) !== JSON.stringify(v)) this.edit(k, v);
     this.batch = null;
@@ -1868,13 +1919,14 @@ export class Board {
           this.canvas.setPointerCapture(e.pointerId);
           break;
         }
+        if (this.pouring) g.from = this.pourSpot();
         if (!touch) break;
         // No hover on touch: show where the edit will land as soon as the finger is down.
         this.updateGhost();
-        if (this.pasting) break;
+        if (this.pasting || this.pouring) break;
         if (this.edging) { g.edge = this.pickEdge(); break; }
         if (this.shaping || this.lighting) break;
-        if (this.erasing) { const t = this.eraseTarget(); g.first = t && !t.startsWith('w:') ? parse(t) : null; }
+        if (this.erasing) { const t = this.eraseTarget(); g.wipe = !!t?.startsWith('l:'); g.first = t && !/^[wl]:/.test(t) ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
   }
@@ -1945,7 +1997,8 @@ export class Board {
     else if (this.rooming) this.stretchRoom(g, false);
     else if (this.edging) { if (g.moved) this.paintEdges(g); }
     else if (this.shaping) { if (g.moved) { this.shape(g); this.updateGhost(); } }
-    else if (this.tool === 'mini' || this.pasting) this.updateGhost();
+    else if (this.tool === 'mini' || this.pasting || this.pouring) this.updateGhost();
+    else if (g.wipe) { if (g.moved) this.wipe(g); }
     else if (this.tool === 'build' && g.moved) this.paint(g);
   }
 
@@ -2035,9 +2088,10 @@ export class Board {
       const t = this.eraseTarget();
       if (!t) return;
       if (t.startsWith('w:')) { this.edgeGhost(parseEdge(t), '#ff5a5a'); return; }
-      const [x, y, z] = parse(t);
+      const lp = t.startsWith('l:') ? this.loose.pieces.get(t.slice(2))?.p : null;
+      const [x, y, z] = lp ? [lp[0] - 0.5, lp[1] - 0.25, lp[2] - 0.5] : parse(t);
       mat.color.set('#ff5a5a');
-      this.ghost.scale.setScalar(1.04);
+      this.ghost.scale.setScalar(lp ? 0.5 : 1.04);
       this.ghost.position.set(x + 0.5, y - 0.02, z + 0.5);
     } else {
       const p = this.tool === 'mini' ? this.standing() : this.pickSurface()?.place;
@@ -2055,6 +2109,8 @@ export class Board {
     const p = this.pickProp(), w = this.pickWall();
     if (w && w.dist <= far && (!p || w.dist <= p.dist)) return w.key;
     if (p && p.dist <= far) return p.key;
+    const l = this.looseAt()[0]; // lying on the ground or on a block: they go before what they lie on
+    if (l) return l;
     return s?.cell ? ck(...s.cell) : null;
   }
 
@@ -2108,7 +2164,7 @@ export class Board {
       return;
     }
     // A moved pointer was a camera drag, except a finger sliding a mini's landing spot.
-    if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting))) { this.hideGhost(); return; }
+    if (g.moved && !(g.touch && (this.tool === 'mini' || this.pasting || this.pouring))) { this.hideGhost(); return; }
     this.gesture = g; // so edit() knows whether to give haptic feedback
     switch (this.tool) {
       case 'move':
@@ -2122,6 +2178,11 @@ export class Board {
           break;
         }
         if (this.brush === 'paste') break;
+        if (this.pouring) {
+          const to = this.pourSpot(), from = g.touch && g.moved ? g.from ?? to : to;
+          if (from && to) this.hooks.onPour?.(from, to);
+          break;
+        }
         if (this.edging) {
           const edge = this.pickEdge();
           if (edge) this.setEdge(edge);
@@ -2135,7 +2196,8 @@ export class Board {
         if (this.lighting) { this.stepLight(); break; }
         if (this.erasing) {
           const t = this.eraseTarget();
-          if (t) this.edit(t, null);
+          if (t?.startsWith('l:')) this.commit(this.looseAt().map((k) => [k, null]));
+          else if (t) this.edit(t, null);
           break;
         }
         const p = this.pickSurface()?.place;
@@ -2236,6 +2298,7 @@ export class Board {
     if (this.animate(dt)) changed = true;
     if (this.wobble(dt)) changed = true;
     if (this.debris.update(dt)) this.dirty = true; // drawn, but it casts no shadow to redraw
+    if (this.loose.update(dt)) changed = true;
     if (this.fogDirty) { this.rebuildFog(); changed = true; }
     if (this.visDirty) { this.refreshMinis(); changed = true; }
     if (this.terrainDirty) { this.rebuildTerrain(); changed = true; }

@@ -170,14 +170,37 @@ export function kindsFor(n: number, sides: number): Kind[] | null {
 
 /**
  * Something standing on the table that dice bounce off: a box (`h` = half extents) or, with
- * `round`, an upright cylinder (`h[0]` radius, `h[1]` half height). `p` is its centre.
+ * `round`, an upright cylinder (`h[0]` radius, `h[1]` half height). `p` is its centre; `q`
+ * turns it, for things that lie as they fell.
  */
-export interface Solid { p: V3; h: V3; round?: boolean }
+export interface Solid { p: V3; h: V3; round?: boolean; q?: [number, number, number, number] }
 
 /** Where a held die is when it leaves the hand. */
 export interface Start { p: V3; q: [number, number, number, number] }
 
 // ---- simulation (thrower only) ------------------------------------------------------
+
+/**
+ * The blocks around a spot as boxes for a physics world: [x, y, z, height] of each run of
+ * stacked blocks (one tall box has fewer seams to snag on than a pile of cubes).
+ */
+export function columns(store: Store, cx: number, cz: number, edge: number): [number, number, number, number][] {
+  const solid = (x: number, y: number, z: number) => {
+    const v = store.get<{ i: string }>(`b:${x},${y},${z}`);
+    return !!v && !!BLOCKS[v.i];
+  };
+  const out: [number, number, number, number][] = [];
+  for (let x = cx - edge; x <= cx + edge; x++) for (let z = cz - edge; z <= cz + edge; z++) {
+    for (let y = 0; y < 40; y++) {
+      if (!solid(x, y, z)) continue;
+      let top = y;
+      while (solid(x, top + 1, z)) top++;
+      out.push([x, y, z, top - y + 1]);
+      y = top;
+    }
+  }
+  return out;
+}
 
 const rnd = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
 const spread = (r: number) => (rnd() * 2 - 1) * r;
@@ -200,6 +223,7 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
     const b = new C.Body({ type: C.Body.STATIC, shape, position: new C.Vec3(x, y, z) });
     b.quaternion.setFromEuler(ex, ey, 0);
     world.addBody(b);
+    return b;
   };
   const TRAY = tray, EDGE = Math.ceil(tray) + 1;
   fixed(new C.Plane(), 0, 0, 0, -Math.PI / 2);
@@ -207,22 +231,10 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
   fixed(new C.Plane(), o[0] + TRAY, 0, o[2], 0, -Math.PI / 2);
   fixed(new C.Plane(), o[0], 0, o[2] - TRAY, 0, 0);
   fixed(new C.Plane(), o[0], 0, o[2] + TRAY, 0, Math.PI);
-  const solid = (x: number, y: number, z: number) => {
-    const v = store.get<{ i: string }>(`b:${x},${y},${z}`);
-    return !!v && !!BLOCKS[v.i];
-  };
   const tops = new Map<string, number>();
-  const cx = Math.floor(o[0]), cz = Math.floor(o[2]);
-  for (let x = cx - EDGE; x <= cx + EDGE; x++) for (let z = cz - EDGE; z <= cz + EDGE; z++) {
-    for (let y = 0; y < 40; y++) {
-      if (!solid(x, y, z)) continue;
-      let top = y;
-      while (solid(x, top + 1, z)) top++; // stacked blocks become one tall box: fewer seams to snag on
-      const h = top - y + 1;
-      fixed(new C.Box(new C.Vec3(0.5, h / 2, 0.5)), x + 0.5, y + h / 2, z + 0.5);
-      tops.set(`${x},${z}`, top + 1);
-      y = top;
-    }
+  for (const [x, y, z, h] of columns(store, Math.floor(o[0]), Math.floor(o[2]), EDGE)) {
+    fixed(new C.Box(new C.Vec3(0.5, h / 2, 0.5)), x + 0.5, y + h / 2, z + 0.5);
+    tops.set(`${x},${z}`, y + h);
   }
 
   // Let go: every die leaves with the hand's velocity plus a little of its own. A
@@ -255,7 +267,8 @@ export async function simulate(kinds: Kind[], starts: Start[], vel: V3, center: 
   for (const s of solids) {
     const [hx, hy, hz] = s.round ? [s.h[0], s.h[1], s.h[0]] : s.h;
     if (bodies.some((b) => Math.abs(b.position.x - s.p[0]) < hx + reach && Math.abs(b.position.y - s.p[1]) < hy + reach && Math.abs(b.position.z - s.p[2]) < hz + reach)) continue;
-    fixed(s.round ? new C.Cylinder(s.h[0], s.h[0], s.h[1] * 2, 8) : new C.Box(new C.Vec3(hx, hy, hz)), ...s.p);
+    const b = fixed(s.round ? new C.Cylinder(s.h[0], s.h[0], s.h[1] * 2, 8) : new C.Box(new C.Vec3(hx, hy, hz)), ...s.p);
+    if (s.q) b.quaternion.set(...s.q);
   }
 
   const q: number[][] = kinds.map(() => []);
