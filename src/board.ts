@@ -676,6 +676,8 @@ export class Board {
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
     canvas.addEventListener('pointerup', (e) => this.onUp(e));
     canvas.addEventListener('pointercancel', (e) => { this.pointers.delete(e.pointerId); this.abortGesture(); });
+    // The app went to the background mid-touch: those fingers never come up for us.
+    addEventListener('blur', () => { if (this.pointers.size) { this.pointers.clear(); this.abortGesture(); } });
     canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this.hideGhost(); });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     // Wheel and trackpad zoom glide to their target instead of jumping a step per notch.
@@ -2261,6 +2263,10 @@ export class Board {
   // ---- pointer input -----------------------------------------------------------
 
   private onDown(e: PointerEvent): void {
+    // A first finger coming down means no other finger is on the glass. One we still count was
+    // lifted where we could not see it (over a page that had opened, or taken by the phone):
+    // forget it, or every touch from now on would read as a second finger and move only the camera.
+    if (e.isPrimary && this.pointers.size) { this.pointers.clear(); this.abortGesture(); }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.zoomGoal = this.glide = null; // a finger on the table always wins over a camera move
     if (this.pointers.size > 1) {
