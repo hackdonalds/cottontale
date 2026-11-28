@@ -239,6 +239,11 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
 #stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 #palette select { flex: none; width: auto; max-width: 132px; height: 50px; }
 #msgs { flex: 1; min-height: 44px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; font-size: 14px; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; overscroll-behavior: contain; }
+/* On a phone held upright the dice sheet must leave the table in reach: at its usual height the log
+   shows its last few lines (it scrolls; pull the sheet up to read on). */
+@media (orientation: portrait) and (max-width: 600px) {
+  #log:not([data-h="full"]) #msgs { max-height: 88px; }
+}
 #msgs .sys { opacity: .55; font-style: italic; }
 #msgs b { font-weight: 650; }
 #msgs .tot { font-weight: 800; color: var(--acc); }
@@ -456,6 +461,9 @@ body:not(.sys) :is(#sheetBtn, #miniSheet) { display: none; }
 .pkBar i { display: block; height: 100%; border-radius: 4px; background: var(--acc); }
 .pkTotal.soft .pkBar i { background: #f2a33a; }
 .pkTotal.hard .pkBar i { background: #e5484d; }
+.pkWhere { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
+.pkWhere .choices { grid-template-columns: repeat(2, 1fr); }
+.pkWhere .choices button { min-height: var(--tap); white-space: normal; }
 .pkPack { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 14px; background: rgba(255, 226, 190, .06); }
 .pkHead { display: flex; align-items: center; gap: 8px; }
 .pkHead > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
