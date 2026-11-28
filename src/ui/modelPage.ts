@@ -26,7 +26,7 @@ export interface ModelHost {
   /** Draw the Import page again. */
   repaint(): void;
   /** A line for the list of what was imported. */
-  result(r: { name: string; ok: boolean; text: string }): void;
+  result(r: { name: string; ok: boolean; text: string; piece?: { group: 'props' | 'minis'; id: string } }): void;
   packName(ctx: PrepCtx): string;
   shelves(as: 'figure' | 'thing'): string[];
 }
@@ -405,7 +405,7 @@ async function save(ctx: PrepCtx): Promise<void> {
     };
     const own = host.packName(ctx), done = addPiece(ns, group, pieceKey(label, (k) => taken.has(k)), entry, { shelf: m.shelf, pack: own });
     if (!done.ok) return failed(done.reason, 'save');
-    host.result({ name: label, ok: true, text: `${storedText(ref, outcomes)}. ${before(made.stats)}. Find it in Build → ${m.as === 'figure' ? 'Figures' : 'Things'}, on the shelf “${m.shelf || own}”.` });
+    host.result({ name: label, ok: true, text: `${storedText(ref, outcomes)}. ${before(made.stats)}. Find it in Build → ${m.as === 'figure' ? 'Figures' : 'Things'}, on the shelf “${m.shelf || own}”.`, ...(done.id ? { piece: { group, id: done.id } } : {}) });
     forget();
     host.repaint();
   } catch (e) {

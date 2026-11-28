@@ -676,6 +676,8 @@ export class Board {
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
     canvas.addEventListener('pointerup', (e) => this.onUp(e));
     canvas.addEventListener('pointercancel', (e) => { this.pointers.delete(e.pointerId); this.abortGesture(); });
+    // The app went to the background mid-touch: those fingers never come up for us.
+    addEventListener('blur', () => { if (this.pointers.size) { this.pointers.clear(); this.abortGesture(); } });
     canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this.hideGhost(); });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     // Wheel and trackpad zoom glide to their target instead of jumping a step per notch.
@@ -2261,6 +2263,10 @@ export class Board {
   // ---- pointer input -----------------------------------------------------------
 
   private onDown(e: PointerEvent): void {
+    // A first finger coming down means no other finger is on the glass. One we still count was
+    // lifted where we could not see it (over a page that had opened, or taken by the phone):
+    // forget it, or every touch from now on would read as a second finger and move only the camera.
+    if (e.isPrimary && this.pointers.size) { this.pointers.clear(); this.abortGesture(); }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.zoomGoal = this.glide = null; // a finger on the table always wins over a camera move
     if (this.pointers.size > 1) {
@@ -2677,8 +2683,14 @@ export class Board {
   /** Where held dice hover for this pointer: above the surface under it (and above the fingertip). */
   private holdPoint(e: PointerEvent, g: Gesture): THREE.Vector3 | null {
     this.aim(e, g.touch ? TOUCH_LIFT : 0);
-    const p = this.pickSurface()?.point ?? this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, 0), new THREE.Vector3());
-    if (!p || p.distanceTo(this.camera.position) > 120) return null;
+    let p = this.pickSurface()?.point ?? this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, 0), new THREE.Vector3());
+    if (!p || p.distanceTo(this.camera.position) > 120) {
+      // A finger on the sky, or far past the table with the camera low: the dice must still come to
+      // hand, so they hover out that way, as far as an arm would reach.
+      const cam = this.camera.position, d = this.ray.ray.direction, flat = new THREE.Vector3(d.x, 0, d.z);
+      if (flat.lengthSq() < 1e-6) return null;
+      p = new THREE.Vector3(cam.x, 0, cam.z).addScaledVector(flat.normalize(), 40);
+    }
     const at = p.clone().setY(Math.max(0, p.y) + 1.5);
     g.throwing!.push({ t: performance.now(), p: at });
     if (g.throwing!.length > 24) g.throwing!.shift();

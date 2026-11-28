@@ -354,7 +354,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderPlayers(): void {
     const g = gms(store);
     const all = [{ id: meId, name, color: myColor }, ...[...net.peers].map(([pk, p]) => ({ id: pid(pk), ...p }))];
-    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}${esc(p.name)}</span>`).join('');
+    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}<i>${esc(p.name)}</i></span>`).join('');
   }
   renderPlayers();
 
@@ -433,6 +433,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $<HTMLCanvasElement>('c').style.cursor = total ? 'grabbing' : '';
     if (total) void import('cannon-es'); // warm up the physics engine before the throw
     if (total) armBoulder(false); // dice in hand: the boulder is put back
+    if (ui.ready) renderRing(); // a selected piece's ring comes and goes with the dice
   }
   function pickUp(sides: number, n = 1): boolean {
     asked = null;
@@ -612,6 +613,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       $('logToggle').classList.remove('unread');
       $('msgs').scrollTop = $('msgs').scrollHeight;
     }
+    renderStart();
   }
   $('logToggle').onclick = () => openSheet($('log').classList.contains('closed') ? 'log' : null);
   for (const b of document.querySelectorAll<HTMLElement>('[data-close]')) b.onclick = () => openSheet(null);
@@ -712,9 +714,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const theme = (kind: string, ids: string[] = []): Shelf[] => (mine && ids.length ? [[MINE, `${mine.icon} ${mine.name}`, keys(kind, ids)]] : []);
     if (c === 'land') return [['Terrain', 'Ground', keys('b', themed(BLOCK_SHELVES.Terrain ?? []))]];
     if (c === 'walls') return [['Structures', 'Structures', keys('p', PROP_SHELVES.Structures)], ['Building', 'Building blocks', keys('b', themed(BLOCK_SHELVES.Building ?? []))]];
-    if (c === 'things') return [...theme('p', mine?.pieces.props), ...Object.keys(PROP_SHELVES).filter((n) => n !== 'Structures').map((n): Shelf => [n, n, keys('p', PROP_SHELVES[n])])];
-    if (c === 'figures') return [...theme('m', mine?.pieces.minis), ...Object.keys(MINI_SHELVES).map((n): Shelf => [n, n, keys('m', MINI_SHELVES[n])])];
+    if (c === 'things') return [...theme('p', mine?.pieces.props), ...shelfNames(PROP_SHELVES).filter((n) => n !== 'Structures').map((n): Shelf => [n, n, keys('p', PROP_SHELVES[n])])];
+    if (c === 'figures') return [...theme('m', mine?.pieces.minis), ...shelfNames(MINI_SHELVES).map((n): Shelf => [n, n, keys('m', MINI_SHELVES[n])])];
     return [];
+  };
+  /** The shelves of a kind, the table's own first (shelves made only of pack pieces): what a GM brought in should not be the last thing in a long row. */
+  const shelfNames = (shelves: Record<string, string[]>): string[] => {
+    const own = (n: string) => shelves[n].length > 0 && shelves[n].every((id) => id.includes(':'));
+    const names = Object.keys(shelves);
+    return [...names.filter(own), ...names.filter((n) => !own(n))];
   };
   /** Picked in the library, perhaps by searching: the tray turns to a shelf the piece is on. */
   const showShelfOf = (key: string) => {
@@ -832,7 +840,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const mine = gameTheme();
         if (mine?.pieces.props.length) chip(`${mine.icon} ${mine.name}`, thingShelf === MINE, () => { thingShelf = MINE; board.brush = mine.pieces.props[0]; });
         else if (thingShelf === MINE) thingShelf = 'Nature';
-        for (const name of Object.keys(PROP_SHELVES)) {
+        for (const name of shelfNames(PROP_SHELVES)) {
           if (name !== 'Structures') chip(name, thingShelf === name && board.brush !== 'pour', () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
         turn();
@@ -848,7 +856,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const mine = gameTheme();
         if (mine?.pieces.minis.length) chip(`${mine.icon} ${mine.name}`, miniShelf === MINE, () => { miniShelf = MINE; miniKind = mine.pieces.minis[0]; });
         else if (miniShelf === MINE) miniShelf = 'Heroes';
-        for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
+        for (const name of shelfNames(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
         minis(miniIds());
       } else {
@@ -1076,7 +1084,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   registerBuiltinPrepPages();
   // Rules in Prep is the same picker the menu's Rules sheet shows (ui/sheet.ts).
   registerPrepPage({ id: 'rules', title: 'Rules', icon: 'list', order: 40, hint: 'The game system and its character sheets', render: renderSystemPicker, update: renderSystemPicker });
-  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name });
+  const prep = initPrep({
+    store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name,
+    // Straight from an import to the table: Prep closes, and the new piece is in hand on its own shelf.
+    place: (group, id) => {
+      if (!full() || !registry.known[group === 'minis' ? 'mini' : 'prop'](id)) return;
+      prep.close();
+      cat = group === 'minis' ? 'figures' : 'things';
+      showShelfOf(`${group === 'minis' ? 'm' : 'p'}_${id}`);
+      if (group === 'minis') miniKind = id; else board.brush = id;
+      setCat(cat);
+      trayOpen = false;
+      renderPalette();
+    },
+  });
   registerSoundPage(tableSounds, { store, full, emotes: Object.keys(EMOTES), soundOn: () => { if (!sound.enabled) $('soundOn').click(); } });
   // Make your own theme (ui/themeEditor.ts): the Theme page's gallery with Customise, and the editor over the live table.
   const themeEd = initThemeEditor({ scapes: () => tableSounds.scapeNames(), store, board, known, me: meId, color: () => myColor, full, ls, themes: themesOffered, pickTheme, thumb, lookAround: () => setTool('move'), open: (page) => prep.open(page) });
@@ -1086,7 +1107,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
     el.innerHTML = '';
+    // The shipped themes and the table's, then the ones saved on this device: your own are one tap away here too.
     const offered = themesOffered();
+    for (const t of themeEd.saved()) if (!offered.some((o) => o.id === t.id)) offered.push(t);
     $('themeHint').hidden = el.hidden = !offered.length;
     for (const t of offered) {
       const b = document.createElement('button');
@@ -1169,6 +1192,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     rules?.refresh();
     syncScripts();
     if (board.selected) showMiniPanel(board.selected);
+    renderStart();
     if (cutAuto) autoCut();
   }
 
@@ -1235,9 +1259,11 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // What you do to a piece in play sits in a ring around it; the full editor only opens on request.
   let ringMode: 'main' | 'emote' | 'hp' | 'shot' | 'shove' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
   function renderRing(): void {
+    renderStart();
     const el = $('ring'), v = sel();
     el.innerHTML = '';
-    el.hidden = !v || board.tool !== 'move';
+    // With dice in hand the next touch on the table throws them: the ring steps aside so no button is in the way.
+    el.hidden = !v || board.tool !== 'move' || board.hand.length > 0;
     const mine = !!v && canControl(store, meId, v);
     if (!v || el.hidden || !mine) board.aimed = null; // nothing selected to shoot with any more
     if (!v || el.hidden) return;
@@ -1427,6 +1453,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     catch { prompt('Copy this invite link:', invite); }
   };
   $('menuBtn').onclick = () => { $('menu').hidden = !$('menu').hidden; };
+  // A touch anywhere else puts the menu away, as a thumb expects. If that touch was on the table it
+  // only closes the menu: it must not also place a block or pick up a piece.
+  document.addEventListener('pointerdown', (e) => {
+    if ($('menu').hidden) return;
+    const t = e.target as Element;
+    if (t.closest('#menu, #menuBtn')) return;
+    $('menu').hidden = true;
+    if (t.id === 'c') e.stopPropagation();
+  }, true);
   // This device's own choices (not shared): ambient motion (off by default for those who ask for
   // less motion; it also saves battery) and whether the camera follows the turn order.
   const local = {
@@ -1490,8 +1525,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const input = e.target as HTMLInputElement;
     try {
       const data = JSON.parse(await input.files![0].text());
-      for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmfw]:/.test(k)) store.set(k, v);
-        else if (/^(@[\w-]+\/[bmfw]:|bd:)/.test(k)) store.setRaw(k, v);
+      // Everything a table is made of comes back: each board's pieces, loose pieces, scene and atmosphere
+      // (its theme with it), and for whoever may change the table its sounds, its rules and its default look.
+      // All of it is read strictly wherever it is used, as anything another player wrote would be.
+      for (const [k, v] of data.rows as [string, unknown][]) if (/^(?:[bmfwl]:|at:|gen$)/.test(k)) store.set(k, v);
+        else if (/^(?:@[\w-]+\/(?:[bmfwl]:|at:|gen$)|bd:)/.test(k)) store.setRaw(k, v);
+        else if (full() && /^(?:snd:|set:(?:system|theme|sky|season|glow|amb)$)/.test(k)) store.set(k, v);
         else if (k.startsWith(packs.PACK_KEY) && full() && packs.parsePack(v, k.slice(3))) store.set(k, v); // the table's own packs (their files stay in the blob cache and on the servers)
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';
@@ -1597,6 +1636,27 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   };
 
   /** A starter scene: a cottage in a clearing, with something to fight. */
+  // ---- an empty table: say where to begin ----
+  // Whoever may change the table sees four ways to start, above the dock, until the board has
+  // anything on it or they say "not now". It never covers the table and never stacks on a sheet.
+  let startOff = false;
+  function renderStart(): void {
+    const empty = () => { for (const p of ['b:', 'm:', 'w:', 'l:']) for (const _ of store.keys(p)) return false; return true; };
+    const show = ui.ready && !startOff && full() && !building() && !prep.isOpen && !document.querySelector('.sheet:not(.closed)') && !board.selected && !board.hand.length && empty();
+    if ($('start').hidden === !show) return;
+    $('start').hidden = !show;
+  }
+  $('startX').onclick = () => { startOff = true; renderStart(); };
+  new MutationObserver(renderStart).observe($('prepPages'), { attributes: true, attributeFilter: ['hidden'] });
+  for (const b of $('start').querySelectorAll<HTMLButtonElement>('[data-start]')) {
+    b.onclick = () => {
+      const a = b.dataset.start;
+      if (a === 'meadow') meadow();
+      else if (a === 'gen') { renderGen(); openSheet('gen'); } else if (a === 'theme') prep.open('theme');
+      else $('invite').click();
+      renderStart();
+    };
+  }
   function meadow(): void {
     const put = (x: number, y: number, z: number, i: string, r = 0) => store.set(`b:${x},${y},${z}`, r ? { i, r } : { i });
     const rnd = (x: number, z: number) => (Math.imul(x * 73856093 ^ z * 19349663, 0x9e3779b1) >>> 8) / 0x1000000;

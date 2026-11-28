@@ -436,6 +436,9 @@ await a.click('#ring [title="Stand up"]');
   await a.click('#rulesList button:has-text("No rules")');
   assert(await ok(b, () => !document.body.classList.contains('sys') && !window.__ct.rules.system()), 'clearing the rules puts the table back as it was');
   await a.click('#rules [data-close]');
+  // Leave the piece as the checks after this one expect it: selected, its ring one step in.
+  await a.evaluate((id) => window.__ct.board.select(id), id);
+  await a.click('#ring [title="Emote"]');
 }
 // Breaking: the GM smashes a statue. It is one edit (rubble is left, undo restores it), and the
 // debris and the rocking are worked out on each device; under fog a player gets none of it.
@@ -931,6 +934,28 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const [cx, cy] = [viewport.width / 2, viewport.height / 2];
   const settle = () => p.waitForTimeout(120);
 
+  // An empty table says where to begin: four full-size ways to start above the dock, which step aside for everything else.
+  {
+    const card = () => p.evaluate(() => {
+      const e = document.querySelector('#start'), r = e.getBoundingClientRect(), d = document.querySelector('#tools').getBoundingClientRect(), t = document.querySelector('#top').getBoundingClientRect();
+      return {
+        shown: !e.hidden, within: r.left >= 0 && r.right <= innerWidth && r.top >= t.bottom && r.bottom <= innerHeight,
+        clear: r.bottom <= d.top || r.left >= d.right || r.right <= d.left, small: [...e.querySelectorAll('button')].filter((b) => { const q = b.getBoundingClientRect(); return q.width < 43.5 || q.height < 43.5; }).length,
+      };
+    });
+    const first = await card();
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-start.png` });
+    await p.tap('#logToggle');
+    const under = (await card()).shown;
+    await p.tap('#logToggle');
+    await p.tap('[data-mode="build"]');
+    const building = (await card()).shown;
+    await p.tap('[data-mode="play"]');
+    const back = (await card()).shown;
+    await p.tap('#startX');
+    const gone = (await card()).shown;
+    assert(first.shown && first.within && first.clear && !first.small && !under && !building && back && !gone, `an empty table offers ways to start, clear of the dock, and steps aside for a sheet, for Build and for "not now" ${JSON.stringify({ first, under, building, back, gone })}`);
+  }
   await p.tap('[data-mode="build"]');
   const shelf = await p.evaluate(() => document.querySelector('#palette').getBoundingClientRect().height);
   await p.tap('#palette [title="Grass"]');
@@ -1637,7 +1662,14 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(!let2.held && let2.playing === 0 && let2.hand === 3, `a second finger cancels the hold without throwing ${JSON.stringify(let2)}`);
   // Hold with one finger (the sheet gets out of the way), flick, release.
   await touch('touchStart', [[cx - 40, cy - 60]]);
-  await p.waitForFunction(() => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'));
+  if (!await ok(p, () => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'), undefined, 8000)) {
+    // Say what was under the finger and what the table thought it was doing.
+    const seen = await p.evaluate(([x, y]) => {
+      const e = document.elementFromPoint(x, y), { board, ui } = window.__ct, log = document.querySelector('#log');
+      return { under: `${e?.tagName}#${e?.id}.${e?.className}`, within: e?.closest('[id]')?.id, held: !!board.dice.held, hand: board.hand.length, log: [log.classList.contains('closed'), log.dataset.h ?? 'half', Math.round(log.getBoundingClientRect().top)], selected: board.selected, tool: board.tool, prep: ui.prep.isOpen, aimed: !!board.aimed, shoving: board.shoving ?? null, boulder: !!board.boulderArmed };
+    }, [cx - 40, cy - 60]);
+    assert(false, `a finger on the table holds the dice and the sheet gets out of the way ${JSON.stringify(seen)}`);
+  }
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice-held.png` });
   for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 40 + i * 10, cy - 60 - i * 6]]); await p.waitForTimeout(16); }
   await touch('touchEnd', []);
@@ -1735,17 +1767,19 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForFunction(() => { const t = window.__ct.board.controls.target; return Math.hypot(t.x - 40.5, t.z - 0.5) < 0.05 && !window.__ct.board.glide; });
   assert(true, 'the camera glides to the mini whose turn it is when it is out of view');
   // A finger already on the table (somewhere clear of the turn strip and the dock): the camera stays put.
+  if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn'); // (an open menu would take the touch: it closes on a touch elsewhere)
   const bare = await p.evaluate(() => {
-    for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if (document.elementFromPoint(x, y)?.id === 'c') return [x, y];
+    for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if ([-40, 0, 40].every((d) => document.elementFromPoint(x, y + d)?.id === 'c')) return [x, y]; // (well clear of any button: a phone hands a near miss to the nearest one, such as an open sheet's handle)
     return null;
   });
   await touch('touchStart', [bare]);
+  const fingers = await p.evaluate(([x, y]) => { const { board } = window.__ct, e = document.elementFromPoint(x, y); return { pointers: board.pointers.size, hand: board.hand.length, under: `${e?.tagName}#${e?.id}`, menu: !document.querySelector('#menu').hidden, follow: board.followTurns, sel: board.selected, focus: document.hasFocus() }; }, bare);
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 1 }));
   await p.waitForFunction(() => window.__ct.board.turnId === 'far2');
   await p.waitForTimeout(200);
   const held = await target();
   await touch('touchEnd', []);
-  assert(Math.abs(held[0] - 40.5) < 0.05 && (await p.evaluate(() => !window.__ct.board.glide)), 'the camera does not move while a finger is on the table');
+  assert(Math.abs(held[0] - 40.5) < 0.05 && (await p.evaluate(() => !window.__ct.board.glide)), `the camera does not move while a finger is on the table ${JSON.stringify({ bare, fingers, held })}`);
   // A glide under way (frames held still so it cannot finish first) is dropped the moment a finger lands.
   await p.evaluate(() => window.__ct.board.renderer.setAnimationLoop(null));
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 2 })); // (in view already: no move)
@@ -1780,7 +1814,9 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     await p.tap('[data-act="gm"]');
   }
   if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn');
-  if (await p.evaluate(() => document.querySelector('#log').classList.contains('closed'))) await p.tap('#logToggle'); // (it may be open still)
+  // (The dice sheet may be shut, or folded to its first row by a touch on the table: open it afresh.)
+  if (await p.evaluate(() => !document.querySelector('#log').classList.contains('closed'))) await p.tap('#logToggle');
+  await p.tap('#logToggle');
   bad = await layout();
   await p.tap('#boulder');
   assert(await p.evaluate(() => window.__ct.board.boulderArmed && document.querySelector('#log').classList.contains('closed')) && !bad.length, `the GM picks up a boulder from the dice sheet ${bad.join('; ')}`);
@@ -1887,6 +1923,15 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForFunction(() => window.__ct.packs.listPacks()[0]?.name === 'Horde' && document.querySelector('.pkHead b')?.textContent === 'Horde');
   assert(await p.evaluate(() => window.__ct.packs.listPacks()[0].pieces.length === 1 && document.querySelectorAll('.pkPiece').length === 1) && !bad.length, `Packs shows the pack with its pieces; removing asks first, in the page; a pack can be renamed ${bad.join('; ')}`);
   await p.evaluate(() => window.__ct.ui.prep.close());
+  // From an import to the table in one tap: "Place it" closes Prep with the new piece in hand, on its own shelf.
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="import"]');
+  await p.waitForSelector('.impPlace');
+  bad = await layout();
+  await p.tap('.impPlace');
+  const inHand = await p.evaluate(() => ({ prep: window.__ct.ui.prep.isOpen, tool: window.__ct.board.tool, cur: document.querySelector('#palette .cur')?.textContent, shelf: document.querySelector('#palette .chip.on:not(.cur):not([title="Search the library"])')?.textContent }));
+  assert(!inHand.prep && inHand.tool === 'mini' && inHand.cur === 'Orc' && inHand.shelf === 'Horde' && !bad.length, `"Place it" after an import puts the piece in hand on its shelf ${JSON.stringify(inHand)} ${bad.join('; ')}`);
+  await p.tap('[data-mode="play"]');
   // And in Build the piece is on its shelf, with its picture, like any other.
   await p.tap('[data-mode="build"]');
   await p.tap('[data-cat="figures"]');
@@ -2265,9 +2310,16 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(await a.evaluate(standIns, [orc.id, idol.id]) && await a.evaluate(() => !document.querySelector('.pkPack')), 'with the pack removed its pieces are stand-ins again, for everyone');
   // And importing the saved table brings the pack back: the pictures are still where they were stored.
   await a.evaluate(() => window.__ct.ui.prep.close());
-  await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows })) });
+  // A saved table is the whole table: its look, a loose piece, its rules and a sound of its own come back with it.
+  const whole = [...rows, ['at:sky', 'dusk'], ['at:theme', { v: 1, id: 'saved:look', name: 'Saved look' }], ['l:x1', { i: 'stone', p: [50, 0, 50], q: [0, 0, 0, 1000] }],
+    ['set:system', JSON.parse(require('node:fs').readFileSync('public/systems/three-hearts.json', 'utf8'))],
+    ['snd:saved1', { v: 1, name: 'Saved drone', kind: 'ambience', scape: { name: 'Saved drone', drones: [{ wave: 'sine', freq: 60, gain: 0.1 }] } }]];
+  await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows: whole })) });
   await b.waitForFunction(drawn, [orc.id, idol.id]);
   assert(await a.evaluate(drawn, [orc.id, idol.id]), 'importing the table brings its packs back, pictures and all');
+  assert(await ok(b, () => { const { store, rules, sounds } = window.__ct; return store.get('at:sky') === 'dusk' && store.get('at:theme')?.id === 'saved:look' && !!store.get('l:x1') && rules.system()?.id === 'three-hearts' && !!sounds.get('saved1'); }),
+    'and its atmosphere, loose pieces, rules and sounds');
+  await a.evaluate(() => { const s = window.__ct.store; for (const k of ['at:sky', 'at:theme', 'l:x1', 'set:system', 'snd:saved1']) s.set(k, null); });
   await a.context().close();
   await b.context().close();
 }
