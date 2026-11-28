@@ -110,6 +110,15 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
   assert(await drawer() === 'table' && await p.evaluate(() => document.querySelector('#app .drawer .body').firstElementChild.matches('.cmd-q')), 'Table opens with a search field at the top');
   assert(await sections() && !(await rows()).length, 'with nothing typed the drawer shows its sections');
   await fits('table, nothing typed');
+  // What e2e2.mjs asks of this drawer still holds with the field above it: the list of pages, and a tap on one.
+  assert(await p.evaluate(() => [...document.querySelectorAll('.drawer .rowlink')].filter((b) => b.offsetParent).length >= 4), 'the sections still list the pages for getting a table ready');
+  await p.tap('.drawer .rowlink:has-text("Theme")');
+  await settle(300);
+  assert(await p.evaluate(() => !document.querySelector('#prepPages').hidden), 'and a tap on one still opens it');
+  await p.tap('#prepPageBack');
+  await settle(300);
+  if (await p.evaluate(() => !document.querySelector('#prepPages').hidden)) { await p.tap('#prepPageBack'); await settle(300); }
+  await slot('table');
   assert(await type('barrel'), 'typing keeps the focus and the caret in the field, letter by letter');
   let found = await rows();
   assert(found.length > 0 && found.length <= 30 && !(await sections()), `results take the place of the sections (${found.length} rows)`);
