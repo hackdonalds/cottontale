@@ -1662,7 +1662,14 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(!let2.held && let2.playing === 0 && let2.hand === 3, `a second finger cancels the hold without throwing ${JSON.stringify(let2)}`);
   // Hold with one finger (the sheet gets out of the way), flick, release.
   await touch('touchStart', [[cx - 40, cy - 60]]);
-  await p.waitForFunction(() => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'));
+  if (!await ok(p, () => window.__ct.board.dice.held && document.querySelector('#log').classList.contains('closed'), undefined, 8000)) {
+    // Say what was under the finger and what the table thought it was doing.
+    const seen = await p.evaluate(([x, y]) => {
+      const e = document.elementFromPoint(x, y), { board, ui } = window.__ct, log = document.querySelector('#log');
+      return { under: `${e?.tagName}#${e?.id}.${e?.className}`, within: e?.closest('[id]')?.id, held: !!board.dice.held, hand: board.hand.length, log: [log.classList.contains('closed'), log.dataset.h ?? 'half', Math.round(log.getBoundingClientRect().top)], selected: board.selected, tool: board.tool, prep: ui.prep.isOpen, aimed: !!board.aimed, shoving: board.shoving ?? null, boulder: !!board.boulderArmed };
+    }, [cx - 40, cy - 60]);
+    assert(false, `a finger on the table holds the dice and the sheet gets out of the way ${JSON.stringify(seen)}`);
+  }
   await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-dice-held.png` });
   for (let i = 1; i <= 6; i++) { await touch('touchMove', [[cx - 40 + i * 10, cy - 60 - i * 6]]); await p.waitForTimeout(16); }
   await touch('touchEnd', []);
