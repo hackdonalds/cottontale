@@ -136,6 +136,9 @@ Still render-on-demand; no per-instance geometry or materials; selection highlig
 - **Step 6, lobby and roles — done** (`node scripts/e2e2-lobby.mjs`). The new lobby (`src/ui/lobby.ts`): Start a table, Join a table, Back to your table; an invite link shows only name, colour and Join; code and relays under Advanced. Whoever starts a table that turns out to be new is its GM (`session.claimNew`). `set:free` ("Everyone can build", Table → People, GM only) gives players Build and nothing else of the GM's (`canBuild` in `rules.ts`). First run (`src/ui/firstRun.ts`): "Start with…" (theme cards → a generated scene with Another, starter scene, empty table, invite) and "Pick your character" (the figures the GM set to "Moved by: everyone"). Hints once per device (`src/ui/hints.ts`).
 - **Still to do:** drag-to-reorder in the fight, room/region fog reveal and "see as players", select-area in Build, a pinned hotbar row, search over actions and settings, tools a role cannot use shown disabled with the reason, the TV display role (step 7), and the switch-over with the old chrome removed (step 8).
 
+- **Steps 6–7 and the rest of 3–5 — done**, each with its own phone check (`scripts/e2e2-*.mjs`): fight reorder, fog by the room and See as players, area select, the hotbar and pinning, search in Table, the new lobby with creator-is-GM / everyone-can-build / first run / hints, and the table screen.
+- **Step 8 — half done.** The new chrome is the default. The old one is kept behind `?ui=1` because `scripts/e2e.mjs` (400 checks of the engine: sync, dice, packs, imports, themes, sounds, rules) still drives it. What is left: carry those checks over to the new chrome, then delete the old `play()` in `main.ts`, the `#hud` markup and its CSS.
+
 ## Build order (one branch, switched over at the end)
 
 1. **Shell**: new `index.html` and base CSS (portrait phone first), `dockFor` with tests, notices, Undo/Redo pair. Old chrome still the default; new one behind `?ui=2`.

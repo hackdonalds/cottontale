@@ -86,10 +86,12 @@ first, then enhance for larger screens.
 - Board-specific keys (`b:` `m:` `f:` `w:` `l:` `at:` `turn`) are scoped per board by the store;
   everything else is table-wide. Live messages carry the board id (`bd`).
 
-## The redesign (in progress, behind `?ui=2`)
+## The new chrome (the default) and the old one (`?ui=1`)
 
-The chrome is being rebuilt from scratch beside the old one (`reports/Redesign plan.md` has the target and the build
-order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes over, `main.ts` is the old chrome and must keep working.
+The chrome was rebuilt from scratch (`reports/Redesign plan.md` has the design; `reports/Mobile first VTT UX research.md` the reasons)
+and is what everyone gets. The chrome it replaced is the `play()` in `src/main.ts` with the `#hud` markup in `index.html`: it stays
+reachable with `?ui=1` only so that `scripts/e2e.mjs`, which drives it, keeps covering the engine underneath (sync, dice, packs,
+imports, themes, sounds, rules) until those checks are carried over. Do not add features to it.
 
 - `src/session.ts` one seat at one table with no chrome: identity, store, net, board, sound, files, and everything a player
   or GM can do (dice, boards, fights, scenes…). It never touches the DOM; the chrome is told things through `SessionHooks`
@@ -127,7 +129,7 @@ order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes ov
 
 ## Commands
 
-- `npm run dev` · `npm test` · `npm run build && npm run e2e` · `npm run e2e:new` (the redesigned chrome)
+- `npm run dev` · `npm test` · `npm run build && npm run e2e` · `npm run e2e:new` (the new chrome; `npm run e2e` drives the old one behind `?ui=1`)
 - `npm run relay` — local in-memory relay (used by e2e)
 - `npm run blossom` — local in-memory Blossom file server (used by e2e; `MAX_SIZE`/`REJECT_MIME` make it picky)
 - `npm run thumbs` — re-render the library pictures (`public/ui/thumbs.webp`, indexed by `src/thumbs.json`) after the kit changes

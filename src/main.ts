@@ -103,8 +103,9 @@ $<HTMLInputElement>('code').value = hash.get('room') ?? ls.get('lastRoom') ?? ra
 $<HTMLTextAreaElement>('relays').value = (hash.get('relays')?.split(',') ?? JSON.parse(ls.get('relays') ?? 'null') ?? DEFAULT_RELAYS).join('\n');
 swatches($('colors'), () => myColor, (c) => { myColor = c; });
 $('newcode').onclick = () => { $<HTMLInputElement>('code').value = randomCode(); };
-// A table screen (`?ui=2&display=1`, src/ui/display.ts) is not a player: nothing is asked or remembered. With a room in its link it goes straight in.
-const query = new URLSearchParams(location.search), asDisplay = query.get('ui') === '2' && query.get('display') === '1';
+// A table screen (`?display=1`, src/ui/display.ts) is not a player: nothing is asked or remembered. With a room in its link it goes straight in.
+// The redesigned chrome (src/app.ts) is what everyone gets; the one it replaces is still here behind `?ui=1` until its end-to-end checks have been carried over.
+const query = new URLSearchParams(location.search), NEW = query.get('ui') !== '1', asDisplay = NEW && query.get('display') === '1';
 function openDisplay(code: string, relays: string[]): void {
   $('lobby').hidden = true;
   void import('./app').then((m) => m.play('', code, relays, '', { display: true }));
@@ -122,8 +123,7 @@ $<HTMLFormElement>('lobby').onsubmit = (e) => {
   ls.set('lastRoom', code);
   ls.set('relays', JSON.stringify(relays));
   ($('join') as HTMLButtonElement).disabled = true;
-  // The redesigned chrome (src/app.ts) is built beside this one until it takes over.
-  if (new URLSearchParams(location.search).get('ui') === '2') void import('./app').then((m) => m.play(name, code, relays, myColor));
+  if (NEW) void import('./app').then((m) => m.play(name, code, relays, myColor));
   else void play(name, code, relays);
 };
 if (asDisplay) {
@@ -131,8 +131,8 @@ if (asDisplay) {
   if (hash.get('room')) $('lobby').dispatchEvent(new Event('submit', { cancelable: true }));
 }
 
-// The redesigned lobby (src/ui/lobby.ts) takes this form's place behind `?ui=2`.
-if (query.get('ui') === '2' && !asDisplay) { $('lobby').hidden = true; void import('./ui/lobby').then((m) => m.mountLobby()); } // (a table screen is not asked who it is)
+// The redesigned lobby (src/ui/lobby.ts) takes this form's place.
+if (NEW && !asDisplay) { $('lobby').hidden = true; void import('./ui/lobby').then((m) => m.mountLobby()); } // (a table screen is not asked who it is)
 
 // ---- game ----------------------------------------------------------------------
 
@@ -148,7 +148,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   const [{ tag }] = await Promise.all([deriveRoom(code), loadKit('./kit').catch(() => {})]);
 
   const customRelays = relays.join() !== DEFAULT_RELAYS.join();
-  const invite = `${location.origin}${location.pathname}#room=${encodeURIComponent(code)}${customRelays ? `&relays=${relays.join(',')}` : ''}`;
+  const invite = `${location.origin}${location.pathname}${location.search}#room=${encodeURIComponent(code)}${customRelays ? `&relays=${relays.join(',')}` : ''}`;
   history.replaceState(null, '', invite);
 
   const sound = new Sound();

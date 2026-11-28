@@ -33,7 +33,8 @@ for (let i = 0; i < 120; i++) {
 await new Promise((r) => setTimeout(r, 1000));
 
 const browser = await chromium.launch({ channel, args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const url = (room) => `http://localhost:${PORT}/#room=${room}&relays=ws://localhost:${RELAY}`;
+// (This script drives the chrome that the redesign replaced, kept behind `?ui=1` until these checks are carried over to the new one.)
+const url = (room) => `http://localhost:${PORT}/?ui=1#room=${room}&relays=ws://localhost:${RELAY}`;
 async function join(name, room = 'test-room-1234', ctxOptions = { viewport: { width: 1280, height: 800 } }) {
   const page = await (await browser.newContext(ctxOptions)).newPage();
   page.setDefaultTimeout(30000 * SLOW);
