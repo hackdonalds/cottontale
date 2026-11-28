@@ -1,0 +1,37 @@
+/* The new chrome (src/app.ts). The table is the product and chrome rents space from it:
+   base rules are a phone held upright, where the only thing always on screen is one row of
+   slots along the bottom. Nothing is pinned to the top. Landscape phones turn the row into a
+   rail on the thumb side, so the short axis is never spent on chrome. */
+#app { position: fixed; inset: 0; pointer-events: none; --dock: 52px; }
+#app > * { pointer-events: auto; }
+
+/* ---- the dock: one row, at most six slots, never a second row ---- */
+.dock { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--dock) + var(--sb)); padding: 0 var(--sr) var(--sb) var(--sl); display: grid; grid-template-columns: repeat(var(--n, 6), minmax(0, 1fr)); background: #241b16; border-top: 1px solid #120d0a; box-shadow: inset 0 1px 0 rgba(255, 226, 190, .12); }
+.dock .slot { min-width: 0; min-height: var(--dock); padding: 4px 2px 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: none; box-shadow: none; border: 0; border-radius: 0; font-size: 11px; line-height: 1.1; color: #e9dccb; }
+.dock .slot svg, .undo svg { width: 24px; height: 24px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.dock .slot span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock .slot:active { background: rgba(255, 226, 190, .14); transform: none; }
+.dock .slot.on { color: var(--acc); box-shadow: inset 0 3px 0 var(--acc); }
+.dock .slot[aria-disabled="true"] { opacity: .32; }
+/* A swapped dock says so: selection and brush states carry the accent along their top edge. */
+.dock[data-state="sel"], .dock[data-state="armed"] { border-top-color: var(--acc); }
+
+/* ---- undo / redo: a small pair above the dock, only while it has something to do ---- */
+.undo { position: absolute; right: calc(6px + var(--sr)); bottom: calc(var(--dock) + var(--sb) + 6px); display: flex; border-radius: 22px; background: rgba(36, 27, 22, .88); }
+.undo button { padding: 0; width: var(--tap); height: var(--tap); background: none; box-shadow: none; border-radius: 22px; }
+.undo button:disabled { opacity: .3; }
+
+/* ---- notices: one line, fading, never in the way of a touch ---- */
+#app > .notice { position: absolute; left: 50%; top: calc(10px + var(--st)); transform: translate(-50%, -8px); max-width: min(92vw, 520px); padding: 7px 14px; border-radius: 999px; background: rgba(20, 16, 13, .9); color: #f3ebe0; font-size: 14px; text-align: center; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; }
+#app > .notice.show { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) { #app > .notice { transition: none; } }
+
+/* ---- a phone held sideways: the dock is a rail on the thumb side ---- */
+@media (orientation: landscape) and (max-height: 520px) {
+  #app { --dock: 60px; }
+  .dock { left: auto; top: 0; width: calc(var(--dock) + var(--sr)); height: auto; padding: var(--st) var(--sr) var(--sb) 0; grid-template-columns: none; grid-template-rows: repeat(var(--n, 6), minmax(0, 1fr)); border-top: 0; border-left: 1px solid #120d0a; box-shadow: inset 1px 0 0 rgba(255, 226, 190, .12); }
+  .dock .slot { min-height: 0; }
+  .dock .slot.on { box-shadow: inset 3px 0 0 var(--acc); }
+  .dock[data-state="sel"], .dock[data-state="armed"] { border-left-color: var(--acc); }
+  .undo { right: calc(var(--dock) + var(--sr) + 6px); bottom: calc(6px + var(--sb)); }
+}
