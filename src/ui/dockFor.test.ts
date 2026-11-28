@@ -50,6 +50,8 @@ describe('the dock', () => {
 
   it('shows what state the table is in', () => {
     expect(dockFor({ role: 'gm', mode: 'build', sel: 'piece', placing: true })[0].on).toBe(true);
+    expect(ids({ role: 'gm', mode: 'build', sel: 'none', area: true })).toEqual(['area', 'done']); // dragging out an area: only a way out
+    expect(ids({ role: 'player', mode: 'play', sel: 'none', area: true })).not.toContain('area');
     const hide = dockFor({ role: 'gm', mode: 'play', sel: 'mini', hidden: true }).find((s) => s.id === 'hide')!;
     expect([hide.on, hide.label]).toEqual([true, 'Hidden']);
   });

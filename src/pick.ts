@@ -114,30 +114,89 @@ export function turnEdits(store: Store, keys: string[]): Picked | null {
   return edits.length ? { edits, keys: out } : null;
 }
 
+/**
+ * Turn a whole selection a quarter about the middle of its footprint, as one thing: every piece
+ * goes round to its new cell, a prop turns a quarter with it, a mini two eighths, a wall changes
+ * side, a loose piece rolls round. Null if the turned selection would leave the table or land on
+ * something that is not part of it.
+ */
+export function turnAreaEdits(store: Store, keys: string[]): Picked | null {
+  const from = present(store, keys), b = boundsOf(store, from);
+  if (!b) return null;
+  // A point (px, pz) of the footprint, measured from its low corner, goes to (pz, w - px):
+  // the same way round as a prop's `r` counts.
+  const w = b.max[0] - b.min[0] + 1, d = b.max[2] - b.min[2] + 1;
+  const x0 = b.min[0], z0 = b.min[2], nx = x0 + Math.trunc((w - d) / 2), nz = z0 + Math.trunc((d - w) / 2); // (trunc: four turns come back to where it began)
+  const cell = (x: number, z: number): [number, number] => [nx + (z - z0), nz + w - 1 - (x - x0)];
+  const leaving = new Set(from), to: Edit[] = [];
+  for (const key of from) {
+    const v = store.get<unknown>(key), kind = kindOf(key);
+    let next: Edit, at: Cell;
+    if (kind === 'cell') {
+      const [x, y, z] = cellOf(key), [tx, tz] = cell(x, z);
+      at = [tx, y, tz];
+      let val = v as CellVal;
+      if (PROPS[val.i]) { const { r, ...rest } = val, turn = ((r ?? 0) + 1) % 4; val = turn ? { ...rest, r: turn } : rest; }
+      next = [ck(...at), val];
+    } else if (kind === 'wall') {
+      // The low-z side of a cell becomes the low-x side of where the cell goes; its low-x side, the low-z side of the cell after.
+      const [x, y, z, s] = parseEdge(key), [tx, tz] = cell(x, z);
+      at = s === 'n' ? [tx, y, tz] : [tx, y, tz + 1];
+      next = [ek(at[0], y, at[2], s === 'n' ? 'w' : 'n'), v];
+    } else if (kind === 'mini') {
+      const m = v as MiniVal, [tx, tz] = cell(m.x, m.z);
+      at = [tx, m.y, tz];
+      next = [key, { ...m, x: tx, z: tz, r: ((m.r || 0) + 2) % 8 }];
+    } else {
+      const l = v as LooseVal, p: Cell = [nx * 100 + (l.p[2] - z0 * 100), l.p[1], nz * 100 + w * 100 - (l.p[0] - x0 * 100)];
+      at = [Math.floor(p[0] / 100), Math.floor(p[1] / 100), Math.floor(p[2] / 100)];
+      // A quarter about the upright axis, in front of how it already lies: (0, √½, 0, √½) × q.
+      const [qx, qy, qz, qw] = l.q, q = [qx + qz, qy + qw, qz - qx, qw - qy], len = Math.hypot(...q) || 1;
+      next = [key, { ...l, p, q: q.map((c) => Math.round((c / len) * 1000)) }];
+    }
+    if (!inside(...at) || !free(store, next, leaving)) return null;
+    to.push(next);
+  }
+  const arriving = new Set(to.map(([k]) => k));
+  return { edits: [...from.filter((k) => !arriving.has(k)).map((k): Edit => [k, null]), ...to], keys: to.map(([k]) => k) };
+}
+
 // Where a copy is tried: beside the original first, then further out.
-const NEAR: [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1], [2, 0], [0, 2], [-2, 0], [0, -2]];
+const WAYS: [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+const GAPS = 12;
 
 /**
- * Copy a selection onto the nearest free spot beside it. Minis and loose pieces get new ids
+ * Copy a selection onto the nearest free spot beside it: a whole footprint over, so the copy of
+ * an area lands clear of the original, never on top of it. Minis and loose pieces get new ids
  * from `id` (a mini's copy starts outside any fight). The result's keys are the copies.
  */
 export function copyEdits(store: Store, keys: string[], id: () => string): Picked | null {
-  const from = present(store, keys);
-  if (!from.length) return null;
-  const none = new Set<string>();
-  for (const [dx, dz] of NEAR) {
-    const edits: Edit[] = [];
+  const from = present(store, keys), b = boundsOf(store, from);
+  if (!b) return null;
+  const w = b.max[0] - b.min[0] + 1, d = b.max[2] - b.min[2] + 1, none = new Set<string>(), own = new Set(from);
+  /** The selection `dx, dz` away, if all of it could come to be there. */
+  const fits = (dx: number, dz: number): Edit[] | null => {
+    const out: Edit[] = [];
     for (const key of from) {
       const next = shifted(store, key, [dx, 0, dz]);
-      if (!next || !free(store, next, none)) { edits.length = 0; break; }
-      const kind = kindOf(key);
-      if (kind === 'mini') {
-        const { ini: _, fx: __, ...m } = next[1] as MiniVal & { fx?: unknown };
-        edits.push([`m:${id()}`, { ...m, y: restY(store, m.x, m.y, m.z) }]);
-      } else if (kind === 'loose') edits.push([`l:${id()}`, next[1]]);
-      else edits.push(next);
+      if (!next || !free(store, next, none)) return null;
+      out.push(next);
     }
-    if (edits.length) return { edits, keys: edits.map(([k]) => k) };
+    return out;
+  };
+  for (let gap = 0; gap < GAPS; gap++) for (const [sx, sz] of WAYS) {
+    const moved = fits(sx * (w + gap), sz * (d + gap));
+    if (!moved) continue;
+    const edits = moved.map((next, i): Edit => {
+      const kind = kindOf(from[i]);
+      if (kind === 'mini') {
+        const was = store.get<MiniVal>(from[i])!, { ini: _, fx: __, ...m } = next[1] as MiniVal & { fx?: unknown };
+        // It comes to rest on the ground there, unless what it stands on is copied with it.
+        return [`m:${id()}`, own.has(ck(was.x, was.y - 1, was.z)) ? m : { ...m, y: restY(store, m.x, m.y, m.z) }];
+      }
+      return kind === 'loose' ? [`l:${id()}`, next[1]] : next;
+    });
+    return { edits, keys: edits.map(([k]) => k) };
   }
   return null;
 }
@@ -158,4 +217,27 @@ export function boundsOf(store: Store, keys: string[]): { min: Cell; max: Cell }
     max = max ? [Math.max(max[0], c[0]), Math.max(max[1], c[1]), Math.max(max[2], c[2])] : [...c];
   }
   return min && max ? { min, max } : null;
+}
+
+/** The most pieces one selection holds: more than this is a scene, and a scene is rebuilt, not carried. */
+export const AREA_MAX = 4000;
+
+/**
+ * Everything standing in the columns `x0..x1, z0..z1` from level `y0` up: blocks and props, walls
+ * (by the cell they are a side of), loose pieces and minis. `hidden` leaves out what the device
+ * is not showing (above the cutaway). Null if that is more than a selection holds.
+ */
+export function areaKeys(store: Store, x0: number, x1: number, z0: number, z1: number, y0: number, hidden: (x: number, y: number, z: number) => boolean = () => false): string[] | null {
+  const out: string[] = [];
+  for (const prefix of ['b:', 'w:', 'l:', 'm:']) {
+    for (const key of store.keys(prefix)) {
+      const c = whereIs(store, key);
+      if (!c || c[0] < x0 || c[0] > x1 || c[2] < z0 || c[2] > z1 || hidden(...c)) continue;
+      // A coin that has sunk a hair into the floor still lies on it.
+      const y = prefix === 'l:' ? Math.floor((store.get<LooseVal>(key)!.p[1] + 50) / 100) : c[1];
+      if (y < y0) continue;
+      if (out.push(key) > AREA_MAX) return null;
+    }
+  }
+  return out;
 }

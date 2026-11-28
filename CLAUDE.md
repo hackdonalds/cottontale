@@ -102,7 +102,9 @@ order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes ov
   `dock.ts` maps slot ids to them. Half height keeps the table ≥ 45% of the screen (e2e2 measures it); `full` is for lists and forms
 - `src/pick.ts` editing what is already placed, pure (move, turn, copy, remove a selection of store keys) — unit-test here.
   The board's `pick` tool is Build with nothing in hand: tap selects, a finger on the selection carries it, anything else is
-  the camera. `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build
+  the camera. Select area (`board.pickArea`, armed from Make or More; `areaKeys`) lets one finger drag a rectangle: what stands in it
+  is picked, and is then moved, turned about its middle (`turnAreaEdits`), copied a footprint over or removed as one step
+  (`node scripts/e2e2-area.mjs`). `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build
 - Rules of the new chrome: no top bar; a new state swaps the dock's slots and never adds a row; no ring and no hidden
   gestures (long-press is only ever a shortcut); nothing is confirmed with a dialog — it is done, said in a notice, and Undo takes it back
 - `node scripts/e2e2.mjs` (after a build) checks it on phone viewports, including the screen budget: every dock state goes through its `layout()`
