@@ -50,6 +50,21 @@ function draw(el: HTMLElement, ctx: PrepCtx): void {
     page.append(add);
   }
   page.insertAdjacentHTML('beforeend', '<p class="hint">Packs travel with the table: everyone here sees these pieces, and “Save table” keeps the list. The pictures themselves stay on the phones and servers that hold them.</p>');
+  // Where the table's own files are kept: the GM's choice, for the whole table (`set:blossom`, see blob.ts).
+  const off = Array.isArray(ctx.app.store.get('set:blossom')) && (ctx.app.store.get<unknown[]>('set:blossom') ?? []).length === 0;
+  const where = document.createElement('div');
+  where.className = 'pkWhere';
+  where.innerHTML = '<b>Where files are kept</b><div class="choices" role="group" aria-label="Where files are kept"><button data-where="servers">Public servers too</button><button data-where="players">Only our devices</button></div><p class="hint"></p>';
+  where.querySelector('.hint')!.textContent = off
+    ? 'New files stay on the devices at this table and pass directly between them. A player gets a file only while someone who has it is at the table, and large files may not get through every home network.'
+    : 'New files are encrypted with the table code, then also offered to public file servers, so players get them even when you are away. The servers see only scrambled data.';
+  for (const b of where.querySelectorAll<HTMLButtonElement>('[data-where]')) {
+    b.classList.toggle('on', (b.dataset.where === 'players') === off);
+    b.setAttribute('aria-pressed', String((b.dataset.where === 'players') === off));
+    b.disabled = !full;
+    b.onclick = () => { ctx.app.store.set('set:blossom', b.dataset.where === 'players' ? [] : null); draw(el, ctx); };
+  }
+  page.append(where);
   el.scrollTop = at;
 }
 

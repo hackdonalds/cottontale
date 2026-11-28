@@ -64,8 +64,8 @@ table ready, all usable on a phone:
 
 Your own files are encrypted with the table code before they leave the device. They are offered to public
 [Blossom](https://github.com/hzrd149/blossom) servers (`nostr.download` and `blossom.data.haus` by default) and
-passed directly between players when no server has them; a table can also run with no servers at all
-(set `set:blossom` to an empty list). *Export table* saves everything but the files themselves.
+passed directly between players when no server has them; a table can also keep them to its own devices
+(Prep → Packs → *Where files are kept*). *Export table* saves everything but the files themselves.
 
 With no GM the table is free play: everyone can do everything. These rules
 decide what each player's app shows — everyone at the table holds the same key,
