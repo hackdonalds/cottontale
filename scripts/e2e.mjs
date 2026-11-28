@@ -1767,17 +1767,19 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForFunction(() => { const t = window.__ct.board.controls.target; return Math.hypot(t.x - 40.5, t.z - 0.5) < 0.05 && !window.__ct.board.glide; });
   assert(true, 'the camera glides to the mini whose turn it is when it is out of view');
   // A finger already on the table (somewhere clear of the turn strip and the dock): the camera stays put.
+  if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn'); // (an open menu would take the touch: it closes on a touch elsewhere)
   const bare = await p.evaluate(() => {
     for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if (document.elementFromPoint(x, y)?.id === 'c') return [x, y];
     return null;
   });
   await touch('touchStart', [bare]);
+  const fingers = await p.evaluate(([x, y]) => { const { board } = window.__ct, e = document.elementFromPoint(x, y); return { pointers: board.pointers.size, hand: board.hand.length, under: `${e?.tagName}#${e?.id}`, menu: !document.querySelector('#menu').hidden, follow: board.followTurns, sel: board.selected, focus: document.hasFocus() }; }, bare);
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 1 }));
   await p.waitForFunction(() => window.__ct.board.turnId === 'far2');
   await p.waitForTimeout(200);
   const held = await target();
   await touch('touchEnd', []);
-  assert(Math.abs(held[0] - 40.5) < 0.05 && (await p.evaluate(() => !window.__ct.board.glide)), 'the camera does not move while a finger is on the table');
+  assert(Math.abs(held[0] - 40.5) < 0.05 && (await p.evaluate(() => !window.__ct.board.glide)), `the camera does not move while a finger is on the table ${JSON.stringify({ bare, fingers, held })}`);
   // A glide under way (frames held still so it cannot finish first) is dropped the moment a finger lands.
   await p.evaluate(() => window.__ct.board.renderer.setAnimationLoop(null));
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far1', round: 2 })); // (in view already: no move)
@@ -1812,7 +1814,9 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     await p.tap('[data-act="gm"]');
   }
   if (await p.evaluate(() => !document.querySelector('#menu').hidden)) await p.tap('#menuBtn');
-  if (await p.evaluate(() => document.querySelector('#log').classList.contains('closed'))) await p.tap('#logToggle'); // (it may be open still)
+  // (The dice sheet may be shut, or folded to its first row by a touch on the table: open it afresh.)
+  if (await p.evaluate(() => !document.querySelector('#log').classList.contains('closed'))) await p.tap('#logToggle');
+  await p.tap('#logToggle');
   bad = await layout();
   await p.tap('#boulder');
   assert(await p.evaluate(() => window.__ct.board.boulderArmed && document.querySelector('#log').classList.contains('closed')) && !bad.length, `the GM picks up a boulder from the dice sheet ${bad.join('; ')}`);
