@@ -48,6 +48,25 @@ places minis, and moves everything; players move the minis the GM hands them
   they run only on the GM's device, boxed into a sandbox with no access to the app or the network, and only
   after the GM allows them.
 
+**Making the table your own (Prep).** Next to Play and Build, *Prep* opens full-screen pages for getting a
+table ready, all usable on a phone:
+
+- **Theme** — pick one (cosy, pirates, dark fantasy, vampires…) to set sky, season, light, haze, colour, dice and
+  soundscape in one tap and bring its pieces to the front of the library. *Customise* makes a copy you can change
+  with the table as the live preview, share as a text code, and save on your device. Each board keeps its own.
+- **Import** — take a photo or choose pictures to make standing figures, things and map tiles (crop, tap away the
+  background, name it), or bring a 3D model (`.glb`), which is shrunk to a phone's budget on the device. *Place it
+  on the table* puts the new piece straight in your hand.
+- **Packs** — the table's own pieces: what they weigh, rename, remove.
+- **Rules** — the game system (see above).
+- **Sound** — add your own music, ambience and effects, mix a soundscape from rain, wind, drones and chimes, and
+  tap effects from a soundboard during play.
+
+Your own files are encrypted with the table code before they leave the device. They are offered to public
+[Blossom](https://github.com/hzrd149/blossom) servers (`nostr.download` and `blossom.data.haus` by default) and
+passed directly between players when no server has them; a table can also run with no servers at all
+(set `set:blossom` to an empty list). *Export table* saves everything but the files themselves.
+
 With no GM the table is free play: everyone can do everything. These rules
 decide what each player's app shows — everyone at the table holds the same key,
 so they keep honest players from spoilers rather than stop a determined cheat.
