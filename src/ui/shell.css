@@ -35,3 +35,81 @@
   .dock[data-state="sel"], .dock[data-state="armed"] { border-left-color: var(--acc); }
   .undo { right: calc(var(--dock) + var(--sr) + 6px); bottom: calc(6px + var(--sb)); }
 }
+
+/* Prep's pages take the whole screen: the dock and its drawers step aside. */
+#hud.prepping ~ #app { display: none; }
+.dock[data-state="tool"] { border-top-color: var(--acc); }
+/* Dice in hand, or lines not read yet. */
+.dock .slot[data-n] { position: relative; }
+.dock .slot[data-n]::after { content: attr(data-n); position: absolute; top: 3px; left: calc(50% + 6px); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--acc); color: #201a05; font-size: 11px; font-weight: 700; line-height: 16px; }
+
+/* ---- the drawer: one sheet, on top of the dock; half the screen at most unless it is a list or a form ---- */
+.drawer { position: absolute; left: 0; right: 0; bottom: calc(var(--dock) + var(--sb) + var(--kb)); max-height: 44%; display: flex; flex-direction: column; background: #2b211b; border-top: 1px solid #120d0a; border-radius: 14px 14px 0 0; box-shadow: 0 -6px 16px rgba(0, 0, 0, .4); padding: 0 calc(8px + var(--sr)) 0 calc(8px + var(--sl)); }
+.drawer[data-h="full"] { max-height: none; top: calc(var(--st) + 28px); }
+.drawer > header { flex: none; display: flex; align-items: center; gap: 8px; min-height: var(--tap); padding-left: 6px; font-size: 15px; }
+.drawer > header button { padding: 0; background: none; box-shadow: none; }
+.drawer .body { flex: 1 1 auto; min-height: 0; overflow: hidden auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; padding: 0 0 10px; }
+.drawer .body > * { flex: none; }
+.drawer svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.drawer button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.drawer h3 { margin: 6px 2px 0; font-size: 12px; font-weight: 600; opacity: .65; text-transform: none; }
+.drawer select { font: inherit; font-size: 16px; color: inherit; background: rgba(0, 0, 0, .3); border: 1px solid var(--line); border-radius: 10px; min-height: var(--tap); padding: 0 8px; width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips.big button { flex: 1; min-height: 52px; font-weight: 700; }
+.chips.sticky { position: sticky; bottom: 0; background: #2b211b; padding: 6px 0 2px; }
+.drawer .hurt { background: rgba(229, 72, 77, .28); }
+.drawer .heal { background: rgba(88, 214, 141, .24); }
+.line { display: flex; align-items: center; gap: 6px; }
+.line > input { flex: 1; }
+.line > small { font-size: 11px; opacity: .7; flex: none; }
+.line.now > input, .fighter.now .who { border-color: var(--acc); }
+.rowlink { justify-content: flex-start !important; gap: 12px !important; text-align: left; padding: 8px 10px; }
+.rowlink span { display: flex; flex-direction: column; min-width: 0; }
+.rowlink small { font-size: 12px; opacity: .65; }
+.person { padding: 6px 10px; border-radius: 999px; border: 2px solid var(--c); font-size: 14px; }
+/* the library */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 8px 2px; justify-items: center; align-content: start; }
+.tiles h3, .tiles .hint { grid-column: 1 / -1; justify-self: start; }
+.tiles .tile span { font-size: 11px; max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile svg.cube { width: 46px; height: 46px; stroke: none; }
+/* dice and chat */
+.msgs { max-height: 96px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; font-size: 14px; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.drawer[data-h="full"] .msgs { max-height: none; }
+.msgs .sys { opacity: .65; } .msgs .tot { color: var(--acc); font-weight: 700; }
+.dice { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; }
+/* the number pad */
+.readout { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 0 6px; }
+.readout b { font-size: 30px; color: var(--acc); }
+.keys { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.keys button { min-height: 46px; font-size: 18px; font-weight: 600; }
+/* the fight */
+.fighter .ini { flex: 0 0 58px; text-align: center; padding: 8px 2px; }
+.fighter .who { justify-content: flex-start; gap: 8px; min-width: 0; border: 1px solid transparent; }
+.fighter .who i, .turn .who i { flex: none; width: 14px; height: 14px; border-radius: 50%; }
+.fighter .who span { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fighter.picked .who { background: rgba(255, 209, 102, .22); }
+.fighter.out { opacity: .7; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+/* ---- the turn strip: who is up and Next, on the edge, only during a fight ---- */
+.turn { position: absolute; left: calc(6px + var(--sl)); bottom: calc(var(--dock) + var(--sb) + 6px); max-width: calc(100% - 120px - var(--sl) - var(--sr)); display: flex; border-radius: 22px; background: rgba(36, 27, 22, .9); }
+.turn button { background: none; box-shadow: none; }
+.turn .who { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 2px 6px 2px 12px; text-align: left; }
+.turn .who span { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.turn .who b, .turn .who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn .who small { font-size: 11px; opacity: .7; }
+.turn .next { flex: none; width: var(--tap); padding: 0; color: var(--acc); }
+.turn svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* A drawer takes the place of the strip and the Undo pair's spot. */
+#app:has(.drawer:not([hidden])) .turn { display: none; }
+#app:has(.drawer:not([hidden])) .undo { bottom: auto; top: calc(var(--st) + 6px); }
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .dock[data-state="tool"] { border-left-color: var(--acc); }
+  .dock .slot[data-n]::after { top: 4px; }
+  /* Sideways, the drawer is a panel beside the rail: the short axis stays the table's. */
+  .drawer, .drawer[data-h="full"] { left: auto; top: 0; bottom: var(--kb); right: calc(var(--dock) + var(--sr)); width: min(280px, 44%); max-height: none; border-radius: 14px 0 0 14px; border-top: 0; border-left: 1px solid #120d0a; padding: var(--st) 8px var(--sb); }
+  .turn { bottom: calc(6px + var(--sb)); max-width: 44%; }
+  #app:has(.drawer:not([hidden])) .undo { top: auto; bottom: calc(6px + var(--sb)); right: calc(var(--dock) + var(--sr) + min(280px, 44%) + 6px); }
+  .keys { grid-template-columns: repeat(3, 1fr); }
+}

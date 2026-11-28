@@ -19,6 +19,8 @@ export interface DockState {
   sheets?: boolean;
   /** The selected mini is hidden from the players. */
   hidden?: boolean;
+  /** A tool of Play is out: the ruler (and which template), or the GM's fog brush (hiding or revealing). */
+  tool?: { ruler: 'line' | 'circle' | 'cone'; blast?: boolean } | { fog: 'hide' | 'reveal' };
 }
 
 export interface Slot {
@@ -51,10 +53,24 @@ export function dockFor(s: DockState): Slot[] {
   }
   if (s.sel === 'mini') {
     return [
-      slot('hp', 'HP', 'heart'), slot('conditions', 'Conditions', 'flag'),
+      slot('hp', 'HP', 'heart'), ...(s.sheets ? [slot('conditions', 'Conditions', 'flag')] : []), // conditions are what the table's rules say they are
       ...(gm ? [slot('hide', s.hidden ? 'Hidden' : 'Hide', s.hidden ? 'eyeoff' : 'eye', { on: !!s.hidden })] : []),
       ...(s.sheets ? [slot('sheet', 'Sheet', 'sheet')] : []),
       slot('more', 'More', 'more'), DONE,
+    ];
+  }
+  // A tool of Play is out: its choices, and Done to put it away.
+  if (s.mode === 'play' && s.tool && 'ruler' in s.tool) {
+    const m = s.tool.ruler;
+    return [
+      slot('line', 'Distance', 'line', { on: m === 'line' }), slot('circle', 'Radius', 'circle', { on: m === 'circle' }), slot('cone', 'Cone', 'cone', { on: m === 'cone' }),
+      ...(gm ? [slot('blast', 'Blast', 'spark', { off: !s.tool.blast })] : []), DONE,
+    ];
+  }
+  if (gm && s.mode === 'play' && s.tool && 'fog' in s.tool) {
+    return [
+      slot('fogHide', 'Hide', 'fog', { on: s.tool.fog === 'hide' }), slot('fogShow', 'Reveal', 'eye', { on: s.tool.fog === 'reveal' }),
+      slot('revealAll', 'Reveal all', 'sun'), DONE,
     ];
   }
   if (!gm) {

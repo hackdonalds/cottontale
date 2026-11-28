@@ -127,7 +127,11 @@ Still render-on-demand; no per-instance geometry or materials; selection highlig
 - **Step 1, shell — done.** `src/session.ts` (the table without chrome), `src/app.ts`, the dock (`src/ui/dockFor.ts`, tested, and `src/ui/dock.ts`), notices, the Undo / Redo pair, portrait row and landscape rail. Reached with `?ui=2`; the old chrome is untouched and still the default.
 - **Step 2, board work — done.** The `pick` tool (select first), move by drag or by Move-then-tap, turn, duplicate, delete (`src/pick.ts`, tested), mini placement and moves on the undo stack, distance while a mini is carried, pick-from-scene.
 - Checked by `node scripts/e2e2.mjs` on 360 × 640 and 640 × 360: every dock state fits the screen budget.
-- **Not built yet** (their slots say so when tapped): Pieces library, Make, Shape, More (steps 3); Fight, Dice, Quick, Tools, HP, Conditions, Sheet (step 4); Table pages (step 5); the new lobby and roles (step 6); the display role (step 7).
+- **Steps 3–5, first pass — done.** Every dock slot now opens something real, in a drawer (`src/ui/drawer.ts`) that swaps and never stacks:
+  - Build: the library with one search over every piece and recents (`src/ui/buildSheets.ts`), Make (rooms, scenes with reroll and room locks, scatter, copy/paste, slab codes), Shape, and More for a piece.
+  - Play (`src/ui/playSheets.ts`): the Fight tracker with the turn strip, hit points by number pad for one or several figures, dice and chat with an unread badge, figure details, Tools (ruler and fog bring their own dock), the quick board.
+  - Table (`src/ui/tableSheet.ts`): people and invite, boards, the Prep pages (theme, sound, import, packs, rules), device settings, save/load/clear, help. Character sheets and rules scripts are wired in.
+- **Still to do:** drag-to-reorder in the fight, room/region fog reveal and "see as players", select-area in Build, a pinned hotbar row, search over actions and settings, the new lobby and creator-is-GM (step 6), the TV display role (step 7), and the switch-over with the old chrome removed (step 8).
 
 ## Build order (one branch, switched over at the end)
 
