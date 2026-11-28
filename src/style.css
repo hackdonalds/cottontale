@@ -59,6 +59,15 @@ input:focus, textarea:focus { outline: 2px solid var(--acc); outline-offset: -1p
 #menu .hint { padding: 6px 4px 2px; }
 
 #dock { position: absolute; left: calc(8px + var(--sl)); right: calc(8px + var(--sr)); bottom: calc(8px + var(--sb)); display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+/* An empty table says where to begin: four full-size buttons above the dock, gone with the first piece. */
+#start { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+#start[hidden] { display: none; }
+#start .row { align-items: center; }
+#start .row b { font-size: 15px; padding-left: 4px; }
+#start .choices { grid-template-columns: repeat(2, 1fr); }
+#start button { min-height: var(--tap); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+#start .choices button { justify-content: flex-start; padding: 4px 12px; white-space: normal; text-align: left; }
+#startX { flex: none; width: var(--tap); padding: 0; }
 #tools { display: flex; gap: 2px; padding: 5px; }
 #tools button { flex: 1 1 0; min-width: 0; height: 52px; padding: 0; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; font-size: 10.5px; font-weight: 600; letter-spacing: .01em; }
 #tools button.on { background: var(--acc); border-color: var(--acc); color: #201a05; }
@@ -335,6 +344,7 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
   #players { flex: none; }
   #dock { display: contents; }
   #tools { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); flex-direction: column; gap: 6px; padding: 6px; }
+  #start { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); width: 420px; }
   #tools button { flex: none; width: 46px; height: 46px; }
   #tools .sep { width: auto; height: 1px; margin: 2px 4px; }
   #logToggle { display: none; }

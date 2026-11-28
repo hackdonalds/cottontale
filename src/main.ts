@@ -612,6 +612,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
       $('logToggle').classList.remove('unread');
       $('msgs').scrollTop = $('msgs').scrollHeight;
     }
+    renderStart();
   }
   $('logToggle').onclick = () => openSheet($('log').classList.contains('closed') ? 'log' : null);
   for (const b of document.querySelectorAll<HTMLElement>('[data-close]')) b.onclick = () => openSheet(null);
@@ -1188,6 +1189,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     rules?.refresh();
     syncScripts();
     if (board.selected) showMiniPanel(board.selected);
+    renderStart();
     if (cutAuto) autoCut();
   }
 
@@ -1254,6 +1256,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // What you do to a piece in play sits in a ring around it; the full editor only opens on request.
   let ringMode: 'main' | 'emote' | 'hp' | 'shot' | 'shove' = 'main', moreOpen = false, ringFor: string | null = null, shownFor: string | null = null;
   function renderRing(): void {
+    renderStart();
     const el = $('ring'), v = sel();
     el.innerHTML = '';
     el.hidden = !v || board.tool !== 'move';
@@ -1616,6 +1619,27 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   };
 
   /** A starter scene: a cottage in a clearing, with something to fight. */
+  // ---- an empty table: say where to begin ----
+  // Whoever may change the table sees four ways to start, above the dock, until the board has
+  // anything on it or they say "not now". It never covers the table and never stacks on a sheet.
+  let startOff = false;
+  function renderStart(): void {
+    const empty = () => { for (const p of ['b:', 'm:', 'w:', 'l:']) for (const _ of store.keys(p)) return false; return true; };
+    const show = ui.ready && !startOff && full() && !building() && !prep.isOpen && !document.querySelector('.sheet:not(.closed)') && !board.selected && empty();
+    if ($('start').hidden === !show) return;
+    $('start').hidden = !show;
+  }
+  $('startX').onclick = () => { startOff = true; renderStart(); };
+  new MutationObserver(renderStart).observe($('prepPages'), { attributes: true, attributeFilter: ['hidden'] });
+  for (const b of $('start').querySelectorAll<HTMLButtonElement>('[data-start]')) {
+    b.onclick = () => {
+      const a = b.dataset.start;
+      if (a === 'meadow') meadow();
+      else if (a === 'gen') { renderGen(); openSheet('gen'); } else if (a === 'theme') prep.open('theme');
+      else $('invite').click();
+      renderStart();
+    };
+  }
   function meadow(): void {
     const put = (x: number, y: number, z: number, i: string, r = 0) => store.set(`b:${x},${y},${z}`, r ? { i, r } : { i });
     const rnd = (x: number, z: number) => (Math.imul(x * 73856093 ^ z * 19349663, 0x9e3779b1) >>> 8) / 0x1000000;
