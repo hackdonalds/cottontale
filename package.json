@@ -11,7 +11,7 @@
     "blossom": "node scripts/blossom.mjs",
     "test": "vitest run --dir src",
     "e2e": "node scripts/e2e.mjs",
-    "e2e:new": "node scripts/e2e2.mjs",
+    "e2e:new": "for f in e2e2 e2e2-fight e2e2-fog e2e2-area e2e2-hotbar e2e2-search e2e2-lobby e2e2-display; do node scripts/$f.mjs || exit 1; done",
     "kit": "node scripts/kit.mjs",
     "thumbs": "/Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup -P assets/blender/thumbs.py -- sample public/ui/thumbs.webp src/thumbs.json"
   },
