@@ -227,7 +227,9 @@ WAITING.onBeforeRender = (_r, _s, _c, geometry) => { if (typeof geometry.userDat
 export const isWaiting = (m: unknown): boolean => m === WAITING;
 
 function standIn(p: Piece): PropDef | MiniDef {
-  if (!p.wait) { p.wait = WAIT[p.group].clone(); p.wait.userData.piece = p.id; }
+  // (A tag of its own: a cloned geometry shares its `userData` with the one it was cloned from, and a
+  // shared tag would have every stand-in ask for the file of whichever piece was tagged last.)
+  if (!p.wait) { p.wait = WAIT[p.group].clone(); p.wait.userData = { piece: p.id }; }
   const def = { name: p.entry.name, icon: p.entry.icon ?? '🖼️', mesh: { geometry: p.wait, material: WAITING } };
   return p.group === 'minis' ? { ...def, height: STANDIN_HEIGHT } : def;
 }

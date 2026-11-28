@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { MINIS, MINI_SHELVES, PROPS, PROP_SHELVES, makeMini } from './catalog';
+import { MINIS, MINI_SHELVES, PROPS, PROP_SHELVES, makeMini, makeProp } from './catalog';
 import { known } from './registry';
 import { Store } from './store';
 import {
@@ -290,6 +290,19 @@ describe('packs at the table', () => {
     want('u-gm01:robot'); // too soon to try again
     await tick(20);
     expect(t.built).toEqual([]);
+  });
+
+  it('every stand-in asks for its own file, however many pieces of a kind a pack holds', () => {
+    // (Being drawn is what fetches a piece: its stand-in carries the piece's id. With one shared tag,
+    // two figures in a pack both asked for the second one's file and the first stayed a cone for good.)
+    const t = table();
+    addPiece(t.ns, 'minis', 'pirate', box('Pirate'));
+    addPiece(t.ns, 'minis', 'goblin', box('Goblin', 'b'));
+    addPiece(t.ns, 'props', 'keg', box('Keg', 'c'));
+    addPiece(t.ns, 'props', 'crate', box('Crate', 'd'));
+    const tag = (meshes: THREE.Object3D[]) => (meshes[0] as THREE.Mesh).geometry.userData.piece;
+    expect([tag(makeMini('u-gm01:pirate')), tag(makeMini('u-gm01:goblin'))]).toEqual(['u-gm01:pirate', 'u-gm01:goblin']);
+    expect([tag(makeProp('u-gm01:keg').children), tag(makeProp('u-gm01:crate').children)]).toEqual(['u-gm01:keg', 'u-gm01:crate']);
   });
 
   it('builds a piece once, tells the registry, and takes it down when the pack goes', async () => {
