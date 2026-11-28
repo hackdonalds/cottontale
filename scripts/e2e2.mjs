@@ -159,7 +159,7 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
   const moved = await get('m:start-knight'), after = await st();
   assert((moved.x !== knight.x || moved.z !== knight.z) && !(await p.evaluate(() => window.__ct.board.rulers.has('drag'))), `it lands where it was put, and the distance goes (${knight.x},${knight.z} to ${moved.x},${moved.z})`);
   assert(after.undo && after.selected === 'start-knight', 'in Play the Undo pair appears after a move, and the mini is selected');
-  await p.tap('#app .undo [data-u="undo"]'); // (at once: in Play the pair only stays a few seconds)
+  await p.evaluate(() => { const b = document.querySelector('#app .undo [data-u="undo"]'); if (b.offsetParent) b.click(); }); // (in Play the pair only stays a few seconds: no waiting between seeing it and using it)
   await settle();
   const back = await get('m:start-knight');
   assert(back.x === knight.x && back.z === knight.z, 'Undo puts the mini back');
@@ -353,7 +353,7 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
   await settle();
   assert(await p.evaluate(() => window.__ct.session.fight().order.length === 0 && document.querySelector('#app .turn').hidden), 'End fight ends it at once');
   await p.tap('.drawer header button');
-  await p.tap('#app .undo [data-u="undo"]');
+  await p.evaluate(() => { const b = document.querySelector('#app .undo [data-u="undo"]'); if (b.offsetParent) b.click(); }); // (in Play the pair only stays a few seconds: no waiting between seeing it and using it)
   await settle();
   assert(await p.evaluate(() => window.__ct.session.fight().order.length === 3), 'and Undo brings the fight back');
   await p.evaluate(() => window.__ct.session.endFight());
