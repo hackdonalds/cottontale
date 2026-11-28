@@ -83,7 +83,7 @@ export function mountFirstRun(ctx: Ctx): FirstRun {
   function update(): void {
     // (What a player may take is only worked out while it could still matter: it asks what they can see.)
     const full = s.full(), asking = synced && !full && !offered.includes('character'), owns = asking && s.myMinis().length > 0;
-    const step = stepFor({ synced, gm: s.amGM(), full, empty: s.emptyBoard(), owns, free: asking && !owns ? s.claimable().length : 0, busy: drawer.id !== null, offered });
+    const step = stepFor({ synced, gm: s.amGM(), full, empty: s.emptyBoard(), owns, free: asking && !owns ? s.claimable().length : 0, busy: drawer.id !== null || s.board.tool !== 'move', offered });
     if (step) {
       offered.push(step);
       if (step === 'start') drawer.open('start', startSheet(ctx));

@@ -447,6 +447,8 @@ export class Board {
   private asPlayers = false;
   /** May this player change the scene? The GM may, and everyone where the table says so (`canBuild` in rules.ts). */
   private build = true;
+  /** The same, before "see as players" sets it aside. */
+  private builds = true;
   private turnId: string | null = null;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -749,7 +751,8 @@ export class Board {
     this.powers = full;
     this.asPlayers &&= full;
     this.full = full && !this.asPlayers;
-    this.build = build;
+    this.builds = build;
+    this.build = build && !this.asPlayers; // looking as the players do, nothing is built either
     if (!this.full) this.offer(null);
     this.refresh();
   }
@@ -764,7 +767,7 @@ export class Board {
     on &&= this.powers;
     if (on === this.asPlayers) return;
     this.asPlayers = on;
-    this.setRole(this.me, this.powers);
+    this.setRole(this.me, this.powers, this.builds);
   }
   get previewing(): boolean { return this.asPlayers; }
 
