@@ -1512,8 +1512,12 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const input = e.target as HTMLInputElement;
     try {
       const data = JSON.parse(await input.files![0].text());
-      for (const [k, v] of data.rows as [string, unknown][]) if (/^[bmfw]:/.test(k)) store.set(k, v);
-        else if (/^(@[\w-]+\/[bmfw]:|bd:)/.test(k)) store.setRaw(k, v);
+      // Everything a table is made of comes back: each board's pieces, loose pieces, scene and atmosphere
+      // (its theme with it), and for whoever may change the table its sounds, its rules and its default look.
+      // All of it is read strictly wherever it is used, as anything another player wrote would be.
+      for (const [k, v] of data.rows as [string, unknown][]) if (/^(?:[bmfwl]:|at:|gen$)/.test(k)) store.set(k, v);
+        else if (/^(?:@[\w-]+\/(?:[bmfwl]:|at:|gen$)|bd:)/.test(k)) store.setRaw(k, v);
+        else if (full() && /^(?:snd:|set:(?:system|theme|sky|season|glow|amb)$)/.test(k)) store.set(k, v);
         else if (k.startsWith(packs.PACK_KEY) && full() && packs.parsePack(v, k.slice(3))) store.set(k, v); // the table's own packs (their files stay in the blob cache and on the servers)
     } catch { alert('That file is not a Cottontale table.'); }
     input.value = '';

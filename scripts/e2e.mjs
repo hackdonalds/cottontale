@@ -2268,9 +2268,16 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   assert(await a.evaluate(standIns, [orc.id, idol.id]) && await a.evaluate(() => !document.querySelector('.pkPack')), 'with the pack removed its pieces are stand-ins again, for everyone');
   // And importing the saved table brings the pack back: the pictures are still where they were stored.
   await a.evaluate(() => window.__ct.ui.prep.close());
-  await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows })) });
+  // A saved table is the whole table: its look, a loose piece, its rules and a sound of its own come back with it.
+  const whole = [...rows, ['at:sky', 'dusk'], ['at:theme', { v: 1, id: 'saved:look', name: 'Saved look' }], ['l:x1', { i: 'stone', p: [50, 0, 50], q: [0, 0, 0, 1000] }],
+    ['set:system', JSON.parse(require('node:fs').readFileSync('public/systems/three-hearts.json', 'utf8'))],
+    ['snd:saved1', { v: 1, name: 'Saved drone', kind: 'ambience', scape: { name: 'Saved drone', drones: [{ wave: 'sine', freq: 60, gain: 0.1 }] } }]];
+  await a.setInputFiles('#file', { name: 'table.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ cottontale: 1, rows: whole })) });
   await b.waitForFunction(drawn, [orc.id, idol.id]);
   assert(await a.evaluate(drawn, [orc.id, idol.id]), 'importing the table brings its packs back, pictures and all');
+  assert(await ok(b, () => { const { store, rules, sounds } = window.__ct; return store.get('at:sky') === 'dusk' && store.get('at:theme')?.id === 'saved:look' && !!store.get('l:x1') && rules.system()?.id === 'three-hearts' && !!sounds.get('saved1'); }),
+    'and its atmosphere, loose pieces, rules and sounds');
+  await a.evaluate(() => { const s = window.__ct.store; for (const k of ['at:sky', 'at:theme', 'l:x1', 'set:system', 'snd:saved1']) s.set(k, null); });
   await a.context().close();
   await b.context().close();
 }
