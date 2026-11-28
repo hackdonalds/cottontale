@@ -1451,6 +1451,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     catch { prompt('Copy this invite link:', invite); }
   };
   $('menuBtn').onclick = () => { $('menu').hidden = !$('menu').hidden; };
+  // A touch anywhere else puts the menu away, as a thumb expects. If that touch was on the table it
+  // only closes the menu: it must not also place a block or pick up a piece.
+  document.addEventListener('pointerdown', (e) => {
+    if ($('menu').hidden) return;
+    const t = e.target as Element;
+    if (t.closest('#menu, #menuBtn')) return;
+    $('menu').hidden = true;
+    if (t.id === 'c') e.stopPropagation();
+  }, true);
   // This device's own choices (not shared): ambient motion (off by default for those who ask for
   // less motion; it also saves battery) and whether the camera follows the turn order.
   const local = {
