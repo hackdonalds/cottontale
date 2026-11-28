@@ -85,9 +85,28 @@ first, then enhance for larger screens.
 - Board-specific keys (`b:` `m:` `f:` `w:` `l:` `at:` `turn`) are scoped per board by the store;
   everything else is table-wide. Live messages carry the board id (`bd`).
 
+## The redesign (in progress, behind `?ui=2`)
+
+The chrome is being rebuilt from scratch beside the old one (`reports/Redesign plan.md` has the target and the build
+order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes over, `main.ts` is the old chrome and must keep working.
+
+- `src/session.ts` one seat at one table with no chrome: identity, store, net, board, sound, files, and everything a player
+  or GM can do (dice, boards, fights, scenes…). It never touches the DOM; the chrome is told things through `SessionHooks`
+  (`notice`, `log`, `rolled`, `changed`) and reads the rest off the session. New table logic goes here, never into a UI module
+- `src/app.ts` wires a session to the new chrome (`#app`, styles in `src/ui/shell.css`). It only wires
+- `src/ui/dockFor.ts` what the dock shows, pure: one function from the table's state to at most six slots — add a state here
+  first, with a test (`dockFor.test.ts`). `src/ui/dock.ts` draws it, with the Undo / Redo pair; `src/ui/notice.ts` is the
+  one fading line that replaces system messages in the log
+- `src/pick.ts` editing what is already placed, pure (move, turn, copy, remove a selection of store keys) — unit-test here.
+  The board's `pick` tool is Build with nothing in hand: tap selects, a finger on the selection carries it, anything else is
+  the camera. `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build
+- Rules of the new chrome: no top bar; a new state swaps the dock's slots and never adds a row; no ring and no hidden
+  gestures (long-press is only ever a shortcut); nothing is confirmed with a dialog — it is done, said in a notice, and Undo takes it back
+- `node scripts/e2e2.mjs` (after a build) checks it on phone viewports, including the screen budget: every dock state goes through its `layout()`
+
 ## Commands
 
-- `npm run dev` · `npm test` · `npm run build && npm run e2e`
+- `npm run dev` · `npm test` · `npm run build && npm run e2e` · `npm run e2e:new` (the redesigned chrome)
 - `npm run relay` — local in-memory relay (used by e2e)
 - `npm run blossom` — local in-memory Blossom file server (used by e2e; `MAX_SIZE`/`REJECT_MIME` make it picky)
 - `npm run thumbs` — re-render the library pictures (`public/ui/thumbs.webp`, indexed by `src/thumbs.json`) after the kit changes

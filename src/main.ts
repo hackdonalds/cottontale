@@ -115,7 +115,9 @@ $<HTMLFormElement>('lobby').onsubmit = (e) => {
   ls.set('lastRoom', code);
   ls.set('relays', JSON.stringify(relays));
   ($('join') as HTMLButtonElement).disabled = true;
-  void play(name, code, relays);
+  // The redesigned chrome (src/app.ts) is built beside this one until it takes over.
+  if (new URLSearchParams(location.search).get('ui') === '2') void import('./app').then((m) => m.play(name, code, relays, myColor));
+  else void play(name, code, relays);
 };
 
 // ---- game ----------------------------------------------------------------------

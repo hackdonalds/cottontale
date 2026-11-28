@@ -16,6 +16,7 @@ import { RISE, SQUASH, TOPPLE, hopAt, hopPlan, nearestDir, riseAt, squashAt, top
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { heading, land } from './forces';
+import { boundsOf, copyEdits, kindOf, moveEdits, present, removeEdits, turnEdits, whereIs, type Picked } from './pick';
 import { Look } from './look';
 import { onRegistry } from './registry';
 import { standees } from './standee';
@@ -26,7 +27,8 @@ import { TABLE_SPAN, tableTexture } from './table';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 export type { CellVal, MiniVal };
-export type Tool = 'move' | 'build' | 'mini' | 'ruler' | 'fog';
+/** `pick` is Build with nothing in hand: a tap selects what is there, a drag on anything else moves the camera. */
+export type Tool = 'move' | 'build' | 'mini' | 'ruler' | 'fog' | 'pick';
 export type Vec = [number, number, number];
 export type RulerMode = 'line' | 'circle' | 'cone';
 export interface Ruler { a: Vec; b: Vec; m: RulerMode }
@@ -66,6 +68,8 @@ export interface BoardHooks {
   onFall(id: string, cells: number): void;
   /** The player pointed which way to shove a mini (`sx`, `sz` each -1, 0 or 1; both 0 = never mind). */
   onShove(id: string, sx: number, sz: number): void;
+  /** The pieces selected with the pick tool changed (none = an empty list), or a move of them ended. */
+  onPick?(keys: string[]): void;
 }
 
 const LIMIT = 96;
@@ -224,6 +228,8 @@ interface Gesture {
   /** Drawing a wall: the edge the finger started on. The run stays in line with it. */
   edge?: Edge | null;
   press?: ReturnType<typeof setTimeout>;
+  /** Carrying the selected pieces to another spot. */
+  piece?: boolean;
 }
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
 const LONG_PRESS = 550;
@@ -402,6 +408,13 @@ export class Board {
   /** Fog tool: true paints fog, false reveals. */
   fogHide = true;
   selected: string | null = null;
+  /** The pieces selected with the pick tool, by store key (a selected mini is `selected`, as in play). */
+  picked: string[] = [];
+  /** Pick from the scene: the next tap with a brush in hand takes what it lands on (`onSample`) instead of building. */
+  sampling = false;
+  onSample: (key: string) => void = () => {};
+  /** Armed by the chrome's Move: the next touch on the table says where the selection goes. */
+  placing = false;
   readonly dice: DiceView;
   readonly shots: ShotsView;
   /** Set while a shot is being aimed: the next tap in play names its target (a mini, or a spot in half cells) instead of selecting. */
@@ -468,6 +481,9 @@ export class Board {
   /** Pieces rocking after a knock, by mini id or prop cell. Not shared: every device works them out alike. */
   private wobbles = new Map<string, Wobble>();
   private marquee: THREE.Mesh;
+  /** The outline around the picked pieces: one box, whatever is in it. */
+  private pickBox: THREE.LineSegments;
+  private lastDrag = '';
   private pointers = new Map<number, { x: number; y: number }>();
   private gesture: Gesture | null = null;
   private twist = 0;
@@ -496,6 +512,8 @@ export class Board {
   private undoStack: Undo[][] = [];
   private redoStack: Undo[][] = [];
   private batch: Undo[] | null = null;
+  /** Goes up with every undoable edit made here: how the chrome knows there is something new to take back. */
+  stamp = 0;
   private dirty = true;
   /** Frames drawn so far (for the checks: an idle table must not add to it). */
   frames = 0;
@@ -608,7 +626,14 @@ export class Board {
     this.marquee.visible = false;
     this.ghost.layers.set(OVERLAY);
     this.marquee.layers.set(OVERLAY);
-    this.scene.add(this.ghost, this.marquee);
+    this.pickBox = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5)),
+      new THREE.LineBasicMaterial({ color: '#ffe066', depthTest: false, transparent: true }),
+    );
+    this.pickBox.visible = false;
+    this.pickBox.renderOrder = 14;
+    this.pickBox.layers.set(OVERLAY);
+    this.scene.add(this.ghost, this.marquee, this.pickBox);
 
     this.camera.position.set(7, 9, 11);
     this.controls = new OrbitControls(this.camera, canvas);
@@ -859,6 +884,9 @@ export class Board {
     this.shots.clear();
     this.boulder.clear();
     this.undoStack.length = this.redoStack.length = 0;
+    this.picked = [];
+    this.placing = false;
+    this.pickBox.visible = false;
     this.fogDirty = this.visDirty = true;
     this.touched();
   }
@@ -1722,6 +1750,7 @@ export class Board {
   // ---- selection / editing -------------------------------------------------
 
   select(id: string | null): void {
+    if (id && this.picked.length) this.pick([]);
     if (id !== this.shoving) this.shoving = null;
     if (this.selected) this.minis.get(this.selected)?.group.remove(this.ring);
     this.selected = id && this.minis.has(id) ? id : null;
@@ -1730,6 +1759,87 @@ export class Board {
     this.invalidate();
     this.hooks.onSelect(this.selected);
   }
+  /** Select pieces with the pick tool (an empty list lets go of them). Only whoever may build can. */
+  pick(keys: string[]): void {
+    const next = this.full ? present(this.store, keys) : [];
+    if (next.length && this.selected) this.select(null);
+    this.picked = next;
+    if (!next.length) this.placing = false;
+    this.showPick();
+    this.hooks.onPick?.(this.picked);
+  }
+  /** What the selection tools act on: the picked pieces, or else the selected mini. */
+  selection(): string[] {
+    return this.picked.length ? this.picked : this.selected ? [`m:${this.selected}`] : [];
+  }
+  private showPick(): void {
+    const b = boundsOf(this.store, this.picked);
+    this.pickBox.visible = !!b;
+    if (b) {
+      // A wall or a coin is thinner than its cell, but the cell is what a finger aims at.
+      this.pickBox.position.set(b.min[0] - 0.03, b.min[1] - 0.03, b.min[2] - 0.03);
+      this.pickBox.scale.set(b.max[0] - b.min[0] + 1.06, b.max[1] - b.min[1] + 1.06, b.max[2] - b.min[2] + 1.06);
+    }
+    this.invalidate();
+  }
+  /** How far the pointer would carry the selection, in cells: a single prop or mini follows the ground, anything else slides on its own level. */
+  private carry(): Vec | null {
+    const keys = this.selection(), from = keys.length ? whereIs(this.store, keys[0]) : null;
+    if (!from) return null;
+    const kind = kindOf(keys[0]), v = this.store.get<CellVal>(keys[0]);
+    let to: Vec | null = null;
+    if (keys.length === 1 && kind === 'mini') to = this.standing();
+    else if (keys.length === 1 && kind === 'cell' && PROPS[v?.i ?? '']) to = this.pickSurface()?.place ?? null;
+    else {
+      const pt = this.onLevel(from[1] + (kind === 'cell' ? 0.5 : 0));
+      to = pt && [Math.floor(pt.x), from[1], Math.floor(pt.z)];
+    }
+    return to && [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+  }
+  /** Show where the selection would land: white where it fits, red where it does not. */
+  private carryGhost(): void {
+    const d = this.carry(), b = boundsOf(this.store, this.selection());
+    if (!d || !b) { this.hideGhost(); return; }
+    (this.ghost.material as THREE.MeshBasicMaterial).color.set(moveEdits(this.store, this.selection(), d) ? '#ffffff' : '#ff5a5a');
+    const w = b.max[0] - b.min[0] + 1, h = b.max[1] - b.min[1] + 1, dp = b.max[2] - b.min[2] + 1;
+    this.ghost.scale.set(w, h, dp);
+    this.ghost.position.set(b.min[0] + d[0] + w / 2, b.min[1] + d[1], b.min[2] + d[2] + dp / 2);
+    this.ghost.visible = true;
+    this.invalidate();
+  }
+  /** Write what a selection tool worked out, as one step of undo, and keep hold of the result. */
+  private took(out: Picked | null): boolean {
+    if (!out || !this.full) return false;
+    const mini = this.selected;
+    this.write(out.edits);
+    if (mini && out.keys.length === 1 && out.keys[0].startsWith('m:')) this.select(out.keys[0].slice(2));
+    else this.pick(out.keys);
+    return true;
+  }
+  /** Move the selection by whole cells. False if the table has no room there. */
+  movePicked(d: Vec): boolean { return this.took(moveEdits(this.store, this.selection(), d)); }
+  /** Turn each selected piece a step where it stands. */
+  turnPicked(): boolean { return this.took(turnEdits(this.store, this.selection())); }
+  /** Copy the selection onto the nearest free spot; the copy becomes the selection. */
+  copyPicked(): boolean { return this.took(copyEdits(this.store, this.selection(), () => crypto.randomUUID().replace(/-/g, '').slice(0, 12))); }
+  /** Take the selection off the table. */
+  removePicked(): boolean {
+    const out = removeEdits(this.store, this.selection());
+    if (!out || !this.full) return false;
+    this.write(out.edits);
+    this.select(null);
+    this.pick([]);
+    return true;
+  }
+  /** The piece under the pointer that a tap would select: a wall, a thing, a loose piece, or the block touched. */
+  private pickTarget(): string | null {
+    const t = this.eraseTarget();
+    if (!t?.startsWith('b:')) return t;
+    // A finger that lands on the ground a thing stands on meant the thing: small props are hard to hit.
+    const s = this.pickSurface(), above = s ? ck(...s.place) : '';
+    return PROPS[this.store.get<CellVal>(above)?.i ?? ''] ? above : t;
+  }
+
   private attachRing(m: Mini): void {
     this.ring.scale.setScalar(m.val.s || 1);
     m.group.add(this.ring);
@@ -1928,17 +2038,19 @@ export class Board {
     this.tool = t;
     this.offer(null);
     this.hideGhost();
-    if (t !== 'move') this.select(null);
+    if (t !== 'move' && t !== 'pick') this.select(null);
+    if (t !== 'pick' && this.picked.length) this.pick([]);
+    this.placing = false;
     if (t !== 'ruler' && this.rulers.has('me')) {
       this.showRuler('me', null, '');
       this.hooks.onRuler(null);
     }
     // In every tool but Move, one finger is the tool and two fingers are the camera.
-    this.controls.touches.ONE = t === 'move' ? THREE.TOUCH.ROTATE : (-1 as THREE.TOUCH);
+    this.controls.touches.ONE = t === 'move' || t === 'pick' ? THREE.TOUCH.ROTATE : (-1 as THREE.TOUCH);
     // Ruler, fog and the copy marquee are drag tools for the mouse as well (right-drag and wheel still move the camera).
     this.controls.mouseButtons.LEFT = t === 'ruler' || t === 'fog' || this.copying || this.rooming ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
     this.marquee.visible = false;
-    this.canvas.style.cursor = t === 'move' ? 'grab' : 'crosshair';
+    this.canvas.style.cursor = t === 'move' || t === 'pick' ? 'grab' : 'crosshair';
   }
 
   /**
@@ -1982,25 +2094,37 @@ export class Board {
   }
 
   /** Undo the last edit; a whole painted stroke counts as one. */
-  undo(): void { this.replay(this.undoStack, this.redoStack); }
-  redo(): void { this.replay(this.redoStack, this.undoStack); }
-  private replay(from: Undo[][], to: Undo[][]): void {
-    const group = from.pop();
-    if (!group) return;
+  /** Undo the last step. Returns how many things it changed (0: there was nothing to undo), for whoever wants to say so. */
+  undo(): number { return this.replay(this.undoStack, this.redoStack); }
+  redo(): number { return this.replay(this.redoStack, this.undoStack); }
+  get canUndo(): boolean { return this.undoStack.some((g) => g.length > 0); }
+  get canRedo(): boolean { return this.redoStack.some((g) => g.length > 0); }
+  private replay(from: Undo[][], to: Undo[][]): number {
+    let group = from.pop();
+    while (group && !group.length) group = from.pop(); // a stroke that changed nothing is not a step
+    if (!group) return 0;
     const inverse: Undo[] = [];
     for (const u of [...group].reverse()) {
       inverse.push({ k: u.k, prev: this.store.get(u.k) });
       this.store.set(u.k, u.prev);
     }
     to.push(inverse);
+    this.showPick();
+    return new Set(group.map((u) => u.k)).size;
   }
   /**
    * Edits made by something on the table rather than a brush (a trap going off). They join one
    * undo step: pass back the step this returned to add later edits to it.
    */
   commit(edits: [key: string, value: unknown][], step: Undo[] = []): Undo[] {
-    if (!this.full || !edits.length) return step;
+    return this.full ? this.write(edits, step) : step;
+  }
+  /** As `commit`, for edits anyone may make to what is theirs (a player moving or changing their own mini). */
+  write(edits: [key: string, value: unknown][], step: Undo[] = []): Undo[] {
+    if (!edits.length) return step;
     if (!this.undoStack.includes(step)) this.undoStack.push(step);
+    if (this.undoStack.length > 200) this.undoStack.shift();
+    this.stamp++;
     this.redoStack.length = 0;
     for (const [k, v] of edits) {
       step.push({ k, prev: this.store.get(k) });
@@ -2015,6 +2139,7 @@ export class Board {
     else this.undoStack.push([u]);
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack.length = 0;
+    this.stamp++;
     this.store.set(k, v);
     if (this.gesture?.touch) buzz(6);
   }
@@ -2301,14 +2426,29 @@ export class Board {
     }
     this.aim(e);
     switch (this.tool) {
-      case 'move': {
+      case 'move': case 'pick': {
+        if (this.placing && this.selection().length) { // Move was tapped: this touch says where the selection goes
+          g.piece = true;
+          this.controls.enabled = false;
+          this.canvas.setPointerCapture(e.pointerId);
+          this.carryGhost();
+          break;
+        }
         const id = this.shoving ? null : this.pickMini(); // waiting for a direction: this touch points, it does not pick up
         if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
           g.mini = id;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
         } else if (id) g.tapMini = id; // someone else's: tap to look at it, but it stays put
-        else {
+        else if (this.tool === 'pick') {
+          // A finger on the selection carries it; anywhere else it is the camera's (and a tap selects).
+          const t = this.picked.length ? this.pickTarget() : null;
+          if (t && this.picked.includes(t)) {
+            g.piece = true;
+            this.controls.enabled = false;
+            this.canvas.setPointerCapture(e.pointerId);
+          }
+        } else {
           // Press and hold on the table to ping the spot for everyone.
           const at = { clientX: e.clientX, clientY: e.clientY };
           g.press = setTimeout(() => {
@@ -2408,13 +2548,25 @@ export class Board {
       if (!pos || !m) return;
       this.dragPos = pos;
       m.target.set(pos[0] + 0.5, pos[1] + 0.3, pos[2] + 0.5);
+      // How far it has come, shown while it is carried: no ruler needed to count a move.
+      if (this.lastDrag !== pos.join()) {
+        this.lastDrag = pos.join();
+        const far = pos[0] !== m.val.x || pos[2] !== m.val.z;
+        this.showRuler('drag', far ? { a: [m.val.x + 0.5, m.val.y, m.val.z + 0.5], b: [pos[0] + 0.5, pos[1], pos[2] + 0.5], m: 'line' } : null, m.val.c);
+      }
       if (performance.now() - this.lastLive > 180) {
         this.lastLive = performance.now();
         this.hooks.onLiveMove(g.mini, pos);
       }
       return;
     }
-    if (!g.drags || g.button !== 0) return;
+    if (g.piece) {
+      if (!g.moved && !this.placing) return;
+      this.aim(e, g.touch && g.moved ? TOUCH_LIFT : 0);
+      this.carryGhost();
+      return;
+    }
+    if (!g.drags || g.button !== 0 || this.sampling) return;
     this.aim(e);
     if (this.tool === 'ruler') this.stretchRuler(g, false);
     else if (this.tool === 'fog') { if (g.moved) this.paintFog(); }
@@ -2575,11 +2727,25 @@ export class Board {
         this.landing = g.mini;
         // Set down over a drop, it falls.
         const l = land(this.store, { ...m.val, x: p[0], y: p[1], z: p[2] });
-        this.store.set(`m:${g.mini}`, l.v);
+        this.write([[`m:${g.mini}`, l.v]]);
         if (l.fell) this.hooks.onFall(g.mini, l.fell);
       }
       else if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
+      this.endDrag();
       this.select(g.mini);
+      return;
+    }
+    if (g.piece) {
+      this.controls.enabled = true;
+      const placing = this.placing;
+      this.placing = false;
+      if (g.moved || placing) {
+        this.aim(e, g.touch && g.moved ? TOUCH_LIFT : 0);
+        const d = this.carry();
+        if (!d || !this.movePicked(d)) buzz(20); // no room there: it stays where it was
+      }
+      this.hideGhost();
+      this.hooks.onPick?.(this.picked);
       return;
     }
     if (g.button !== 0) return;
@@ -2619,6 +2785,13 @@ export class Board {
         break;
       }
       case 'build': {
+        if (this.sampling) {
+          const t = this.pickMini();
+          const key = t ? `m:${t}` : this.pickTarget();
+          this.sampling = false;
+          if (key) this.onSample(key);
+          break;
+        }
         if (this.pasting) {
           const at = this.pickSurface()?.place;
           if (at) this.pasteAt(at);
@@ -2655,7 +2828,14 @@ export class Board {
         const p = this.standing();
         if (!p || !this.full) break;
         const id = crypto.randomUUID().slice(0, 12);
-        this.store.set(`m:${id}`, { ...this.hooks.newMini(), x: p[0], y: p[1], z: p[2] });
+        this.edit(`m:${id}`, { ...this.hooks.newMini(), x: p[0], y: p[1], z: p[2] });
+        break;
+      }
+      case 'pick': {
+        if (g.tapMini) { this.select(g.tapMini); break; }
+        const t = this.full ? this.pickTarget() : null;
+        this.select(null);
+        this.pick(t ? [t] : []);
         break;
       }
     }
@@ -2677,7 +2857,14 @@ export class Board {
     clearTimeout(g?.press);
     const m = g?.mini ? this.minis.get(g.mini) : null;
     if (m) m.target.set(m.val.x + 0.5, m.val.y, m.val.z + 0.5);
+    this.endDrag();
     if (g?.throwing) { this.dice.endHold(); this.boulder.endHold(); } // back in the hand
+  }
+
+  /** A carried mini was set down or let go of: its distance line goes. */
+  private endDrag(): void {
+    this.lastDrag = '';
+    if (this.rulers.has('drag')) this.showRuler('drag', null, '');
   }
 
   /** Where held dice hover for this pointer: above the surface under it (and above the fingertip). */
