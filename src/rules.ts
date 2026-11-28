@@ -27,6 +27,8 @@ export interface MiniVal {
   hp?: number; mhp?: number;
   /** Initiative score; minis that have one are in the turn order. */
   ini?: number;
+  /** Place among minis with the same initiative, lowest first (absent = 0). Written only when the order is rearranged by hand. */
+  io?: number;
   /** Hidden by the GM: players do not see it at all. */
   h?: boolean;
   /** Flying height above the surface it stands over, in cells. */
@@ -182,14 +184,45 @@ export function eyesOf(store: Store, me: string): MiniVal[] | null {
   return out;
 }
 
-/** Everyone with an initiative score, highest first. */
+const tieOf = (v: MiniVal): number => (typeof v.io === 'number' && Number.isFinite(v.io) ? v.io : 0);
+const byTurn = (a: { id: string; v: MiniVal }, b: { id: string; v: MiniVal }): number =>
+  b.v.ini! - a.v.ini! || tieOf(a.v) - tieOf(b.v) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** Everyone with an initiative score, highest first. Equal scores go by `io` (set when rearranged by hand), then by id. */
 export function turnOrder(store: Store): { id: string; v: MiniVal }[] {
   const out: { id: string; v: MiniVal }[] = [];
   for (const k of store.keys('m:')) {
     const v = store.get<MiniVal>(k)!;
     if (typeof v.ini === 'number') out.push({ id: k.slice(2), v });
   }
-  return out.sort((a, b) => b.v.ini! - a.v.ini! || (a.id < b.id ? -1 : 1));
+  return out.sort(byTurn);
+}
+
+/**
+ * Move one mini to place `to` of the turn order (0 = first), as edits. Initiative stays what
+ * the table reads, so the mover's score changes only as far as it must: it is pulled to the
+ * score of the neighbour it passed. Among equal scores the order is then spelled out in `io`,
+ * and only for those minis whose place it changes. Nothing to do: no edits.
+ */
+export function moveInOrder(store: Store, id: string, to: number): [string, MiniVal][] {
+  const order = turnOrder(store), from = order.findIndex((o) => o.id === id);
+  if (from < 0 || !Number.isFinite(to)) return [];
+  to = Math.max(0, Math.min(order.length - 1, Math.round(to)));
+  if (to === from) return [];
+  const seq = order.filter((o) => o.id !== id), above = seq[to - 1], below = seq[to];
+  const ini = Math.max(below?.v.ini ?? -Infinity, Math.min(above?.v.ini ?? Infinity, order[from].v.ini!));
+  const { io: _, ...bare } = order[from].v;
+  const moved = { id, v: { ...bare, ini } as MiniVal };
+  seq.splice(to, 0, moved);
+  // Those sharing the score, in the order wanted. If id order already gives it, no `io` is needed.
+  const group = seq.filter((o) => o.v.ini === ini);
+  const edits: [string, MiniVal][] = [];
+  if ([...group].sort(byTurn).every((o, i) => o === group[i])) return [[`m:${id}`, moved.v]];
+  group.forEach((o, i) => {
+    const { io: _, ...rest } = o.v, v = (i ? { ...rest, io: i } : rest) as MiniVal;
+    if (o === moved || tieOf(o.v) !== i) edits.push([`m:${o.id}`, v]);
+  });
+  return edits;
 }
 
 export function nextTurn(store: Store): Turn | null {

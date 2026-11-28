@@ -754,7 +754,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   function next(): void { const t = nextTurn(store); if (t) store.set('turn', t); }
   /** Everyone leaves the turn order. One step of undo for the GM. */
   function endFight(): void {
-    const edits: [string, unknown][] = turnOrder(store).map((o) => { const { ini: _, ...rest } = o.v; return [`m:${o.id}`, rest]; });
+    const edits: [string, unknown][] = turnOrder(store).map((o) => { const { ini: _, io: __, ...rest } = o.v; return [`m:${o.id}`, rest]; });
     board.commit([...edits, ['turn', null]]);
     sys('The fight is over. Undo brings it back.');
   }
