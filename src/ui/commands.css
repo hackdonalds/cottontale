@@ -1,0 +1,23 @@
+/* The search of the Table drawer (ui/tableSearch.ts): a field that stays at the top while the
+   list under it scrolls, and results one to a row. While something is typed the results take
+   the place of the drawer's sections; nothing is added beside them. */
+.cmd-q { position: sticky; top: 0; z-index: 1; display: flex; gap: 6px; background: #2b211b; padding-bottom: 2px; }
+.cmd-q input { flex: 1 1 0; font-size: 16px; }
+.cmd-q input::-webkit-search-cancel-button { display: none; } /* one way to clear it: the button beside it, which is big enough for a thumb */
+.cmd-q button { flex: none; width: var(--tap); padding: 0; }
+.cmd-list { display: none; flex-direction: column; gap: 6px; }
+.cmd-list.on { display: flex; }
+.drawer .body:has(> .cmd-list.on) > :not(.cmd-q):not(.cmd-list) { display: none !important; }
+
+/* A result: picture or icon, what it is called, and a small line saying what kind of thing it is. */
+.drawer .cmd { justify-content: flex-start; gap: 12px; width: 100%; min-width: 0; min-height: 48px; padding: 6px 10px; text-align: left; }
+.cmd > span { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; }
+.cmd b, .cmd small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmd b { font-weight: 600; }
+.cmd small { font-size: 12px; opacity: .65; }
+.cmd > svg { margin: 0 6px; }
+.cmd > i { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background-repeat: no-repeat; font-style: normal; font-size: 22px; line-height: 1; }
+.drawer .cmd svg.cube { width: 28px; height: 28px; stroke: none; }
+/* Not for this seat: still there, with the reason on its second line. */
+.cmd:disabled { cursor: default; background: none; box-shadow: none; border-color: var(--line); }
+.cmd:disabled > :first-child, .cmd:disabled b { opacity: .4; }
