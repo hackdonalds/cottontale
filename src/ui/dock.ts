@@ -56,6 +56,7 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
         name: s.inHand().name.slice(0, 10), turns: board.tool === 'build' && turns(b), sized: board.tool === 'build' && LAND.has(b),
         erasing: board.tool === 'build' && b === 'erase', sampling: board.sampling, size: board.reach * 2 + 1,
       } : undefined,
+      area: board.areaPick,
       placing: board.placing,
       hidden: !!m?.h,
       sheets: !!s.system(),
@@ -68,7 +69,8 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
   const acts: Record<string, () => void> = {
     build: () => { drawer.close(); s.setMode('build'); },
     play: () => { drawer.close(); s.setMode('play'); },
-    done: () => { drawer.close(); if (board.tool === 'ruler' || board.tool === 'fog') s.setTool('move'); else if (s.armed()) s.disarm(); else s.deselect(); },
+    done: () => { drawer.close(); if (board.tool === 'ruler' || board.tool === 'fog') s.setTool('move'); else if (s.armed()) s.disarm(); else if (board.areaPick) s.selectArea(false); else s.deselect(); },
+    area: () => s.selectArea(false),
     // the selection
     move: () => s.place(),
     turn: () => s.turnSel(),
@@ -148,7 +150,7 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
     clearTimeout(hideTimer);
     if (!undo.hidden && st.mode !== 'build') hideTimer = setTimeout(render, Math.max(0, until - Date.now()) + 50);
     // Say what was just selected, once.
-    const name = selName(), id = `${board.selected ?? ''}|${board.picked.join()}`;
+    const name = selName(), n = board.picked.length, id = `${board.selected ?? ''}|${n}|${board.picked[0] ?? ''}|${board.picked[n - 1] ?? ''}`; // (an area is thousands of keys: its ends name it well enough)
     if (id !== named) { named = id; if (name) notice.say(name, 1600); }
     document.body.dataset.mode = st.mode;
   }

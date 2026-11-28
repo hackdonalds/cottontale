@@ -131,6 +131,7 @@ Still render-on-demand; no per-instance geometry or materials; selection highlig
   - Build: the library with one search over every piece and recents (`src/ui/buildSheets.ts`), Make (rooms, scenes with reroll and room locks, scatter, copy/paste, slab codes), Shape, and More for a piece.
   - Play (`src/ui/playSheets.ts`): the Fight tracker with the turn strip, hit points by number pad for one or several figures, dice and chat with an unread badge, figure details, Tools (ruler and fog bring their own dock), the quick board.
   - Table (`src/ui/tableSheet.ts`): people and invite, boards, the Prep pages (theme, sound, import, packs, rules), device settings, save/load/clear, help. Character sheets and rules scripts are wired in.
+- **Select area in Build — done.** Make → "Select an area" (or More → "Select area") swaps the dock for `Area · Done`; one finger drags the marquee and everything standing in it is selected (the ground under it joins with More → "With the ground"). Move, Turn (the whole area about its middle), Duplicate (a footprint over) and Delete each take one Undo. Checked by `node scripts/e2e2-area.mjs`.
 - **Still to do:** drag-to-reorder in the fight, room/region fog reveal and "see as players", select-area in Build, a pinned hotbar row, search over actions and settings, the new lobby and creator-is-GM (step 6), the TV display role (step 7), and the switch-over with the old chrome removed (step 8).
 
 ## Build order (one branch, switched over at the end)

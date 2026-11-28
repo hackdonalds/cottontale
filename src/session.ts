@@ -27,7 +27,7 @@ import { SHOTS, readShot } from './shots';
 import { LOOSE, MAX_LOOSE, type LooseVal } from './loose';
 import { pour } from './pour';
 import { MAX_BLAST, blast, fellLine, shove, type Fall } from './forces';
-import { kindOf } from './pick';
+import { AREA_MAX, areaKeys, boundsOf, kindOf } from './pick';
 import { authority } from './system';
 import type { SystemUI } from './ui/sheet';
 
@@ -94,6 +94,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   const board = new Board(canvas, store, {
     onSelect: (id) => { rules?.follow(id); if (cutAuto) autoCut(); later(); },
     onPick: () => later(),
+    onArea: (n) => { if (!n) sys(n === null ? `Too much for one selection (over ${AREA_MAX} pieces): drag a smaller area.` : 'Nothing stands there. Drag over the pieces to select.'); later(); },
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
     onLand: (mine) => { sound.knock(); if (mine) buzz(8); },
     onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
@@ -554,6 +555,21 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     board.pick([]);
     later();
   }
+  /** Select by area: one finger drags a rectangle on the table, and everything standing in it is selected. */
+  function selectArea(on = true): void {
+    if (on && !full()) return;
+    if (on && board.tool !== 'pick') setTool('pick');
+    board.pickArea(on);
+    if (board.areaPick) sys('Drag over the pieces to select.');
+    later();
+  }
+  /** Take the ground under the selected pieces as well: everything in their columns, from the bottom up. */
+  function selectGround(): void {
+    const b = boundsOf(store, board.picked), keys = b && areaKeys(store, b.min[0], b.max[0], b.min[2], b.max[2], 0, (x, y, z) => y > b.max[1]);
+    if (b && !keys) sys(`Too much for one selection (over ${AREA_MAX} pieces).`);
+    else if (keys) board.pick(keys);
+    later();
+  }
   /** Move was tapped: the next touch on the table says where the selection goes (tap again to call it off). */
   function place(on = !board.placing): void {
     board.placing = on && board.selection().length > 0;
@@ -561,7 +577,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     later();
   }
   const blocked = (ok: boolean, why: string) => { if (!ok) { buzz(20); sys(why); } later(); };
-  const turnSel = () => blocked(board.turnPicked(), 'That cannot be turned.');
+  const turnSel = () => blocked(board.turnPicked(), board.picked.length > 1 ? 'No room to turn it here.' : 'That cannot be turned.');
   const copySel = () => blocked(board.copyPicked(), 'No room beside it for a copy.');
   const removeSel = () => blocked(board.removePicked(), 'Nothing to remove.');
   function emote(kind: string): void {
@@ -947,7 +963,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     mini: { get kind() { return miniKind; }, get color() { return miniColor; }, set color(c: string) { miniColor = c; later(); } },
     scatter: { get kind() { return pourKind; }, set kind(k: string) { pourKind = k; later(); }, get count() { return pourCount; }, set count(n: number) { pourCount = n; later(); } },
     // the selection
-    sel, mine, patch, setOpt, hurt, deselect, place, turnSel, copySel, removeSel, emote, aim,
+    sel, mine, patch, setOpt, hurt, deselect, selectArea, selectGround, place, turnSel, copySel, removeSel, emote, aim,
     // dice and chat
     dice: { pickUp, empty: emptyHand, text: handText, count: () => handKinds().length, get secret() { return secret; }, set secret(on: boolean) { secret = on && full(); later(); }, get shake() { return shakeOn; }, setShake, canShake, armShake },
     hold: (kinds: Kind[], text: string, landed: (t: Throw) => void) => { hand.clear(); handMod = 0; asked = { kinds, text, landed }; syncHand(); hooks.grabbed(); },

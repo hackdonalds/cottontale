@@ -16,7 +16,7 @@ import { RISE, SQUASH, TOPPLE, hopAt, hopPlan, nearestDir, riseAt, squashAt, top
 import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { heading, land } from './forces';
-import { boundsOf, copyEdits, kindOf, moveEdits, present, removeEdits, turnEdits, whereIs, type Picked } from './pick';
+import { areaKeys, boundsOf, copyEdits, kindOf, moveEdits, present, removeEdits, turnAreaEdits, turnEdits, whereIs, type Picked } from './pick';
 import { Look } from './look';
 import { onRegistry } from './registry';
 import { standees } from './standee';
@@ -70,6 +70,8 @@ export interface BoardHooks {
   onShove(id: string, sx: number, sz: number): void;
   /** The pieces selected with the pick tool changed (none = an empty list), or a move of them ended. */
   onPick?(keys: string[]): void;
+  /** An area was dragged out with the pick tool: how many pieces it took (0 = none there), or null when it held too many to take. */
+  onArea?(n: number | null): void;
 }
 
 const LIMIT = 96;
@@ -230,6 +232,8 @@ interface Gesture {
   press?: ReturnType<typeof setTimeout>;
   /** Carrying the selected pieces to another spot. */
   piece?: boolean;
+  /** Dragging out an area to select (the pick tool, with `areaPick` on). */
+  area?: boolean;
 }
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
 const LONG_PRESS = 550;
@@ -415,6 +419,10 @@ export class Board {
   onSample: (key: string) => void = () => {};
   /** Armed by the chrome's Move: the next touch on the table says where the selection goes. */
   placing = false;
+  /** Armed by the chrome's Select area (`pickArea`): one finger drags a rectangle, and what stands in it is picked. */
+  areaPick = false;
+  /** Where a finger took hold of several picked pieces (a cell on their lowest level): they keep their place under it. */
+  private grab: Vec | null = null;
   readonly dice: DiceView;
   readonly shots: ShotsView;
   /** Set while a shot is being aimed: the next tap in play names its target (a mini, or a spot in half cells) instead of selecting. */
@@ -1788,6 +1796,18 @@ export class Board {
     if (!from) return null;
     const kind = kindOf(keys[0]), v = this.store.get<CellVal>(keys[0]);
     let to: Vec | null = null;
+    if (keys.length > 1) {
+      // Several pieces slide on their own level, as one: by as far as the finger has come since it
+      // took hold, or (Move, then a touch) with their middle on the column the finger points at.
+      const b = boundsOf(this.store, keys);
+      if (!b) return null;
+      if (!this.grab) {
+        const c = this.pickSurface()?.place;
+        return c ? [c[0] - ((b.min[0] + b.max[0] + 1) >> 1), 0, c[2] - ((b.min[2] + b.max[2] + 1) >> 1)] : null;
+      }
+      const pt = this.onLevel(b.min[1]);
+      return pt && [Math.floor(pt.x) - this.grab[0], 0, Math.floor(pt.z) - this.grab[2]];
+    }
     if (keys.length === 1 && kind === 'mini') to = this.standing();
     else if (keys.length === 1 && kind === 'cell' && PROPS[v?.i ?? '']) to = this.pickSurface()?.place ?? null;
     else {
@@ -1796,10 +1816,15 @@ export class Board {
     }
     return to && [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
   }
+  private carried = '';
   /** Show where the selection would land: white where it fits, red where it does not. */
   private carryGhost(): void {
-    const d = this.carry(), b = boundsOf(this.store, this.selection());
+    const d = this.carry();
+    // (A big selection is only measured again when the finger reaches another cell.)
+    if (d && this.ghost.visible && this.carried === d.join()) return;
+    const b = d && boundsOf(this.store, this.selection());
     if (!d || !b) { this.hideGhost(); return; }
+    this.carried = d.join();
     (this.ghost.material as THREE.MeshBasicMaterial).color.set(moveEdits(this.store, this.selection(), d) ? '#ffffff' : '#ff5a5a');
     const w = b.max[0] - b.min[0] + 1, h = b.max[1] - b.min[1] + 1, dp = b.max[2] - b.min[2] + 1;
     this.ghost.scale.set(w, h, dp);
@@ -1818,8 +1843,12 @@ export class Board {
   }
   /** Move the selection by whole cells. False if the table has no room there. */
   movePicked(d: Vec): boolean { return this.took(moveEdits(this.store, this.selection(), d)); }
-  /** Turn each selected piece a step where it stands. */
-  turnPicked(): boolean { return this.took(turnEdits(this.store, this.selection())); }
+  /** Turn each selected piece a step where it stands; pieces spread over several cells go round their middle together. */
+  turnPicked(): boolean {
+    const keys = this.selection(), b = boundsOf(this.store, keys);
+    const wide = !!b && (b.max[0] > b.min[0] || b.max[2] > b.min[2]);
+    return this.took(wide ? turnAreaEdits(this.store, keys) : turnEdits(this.store, keys));
+  }
   /** Copy the selection onto the nearest free spot; the copy becomes the selection. */
   copyPicked(): boolean { return this.took(copyEdits(this.store, this.selection(), () => crypto.randomUUID().replace(/-/g, '').slice(0, 12))); }
   /** Take the selection off the table. */
@@ -2034,8 +2063,45 @@ export class Board {
     this.hooks.onSlab(this.slab);
   }
 
+  /**
+   * Select by area (the pick tool): while on, one finger drags a rectangle and everything standing
+   * in it is picked. Two fingers are the camera, as with every tool. It turns itself off once
+   * something is picked.
+   */
+  pickArea(on: boolean): void {
+    on = on && this.full && this.tool === 'pick';
+    if (on) { this.select(null); this.pick([]); }
+    this.areaPick = on;
+    if (this.tool !== 'pick') return;
+    this.controls.touches.ONE = on ? (-1 as THREE.TOUCH) : THREE.TOUCH.ROTATE;
+    this.controls.mouseButtons.LEFT = on ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
+    this.marquee.visible = false;
+    this.canvas.style.cursor = on ? 'crosshair' : 'grab';
+    this.invalidate();
+  }
+  /** Stretch the marquee from the column the finger started on; on release, pick what stands in it, from the level touched up. */
+  private stretchArea(g: Gesture, done: boolean): void {
+    const s = this.pickSurface(), a = g.first, b = s && (s.cell ?? s.place);
+    if (!a || !b) { if (done) this.marquee.visible = false; return; }
+    const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), z0 = Math.min(a[2], b[2]), z1 = Math.max(a[2], b[2]);
+    this.marquee.position.set(x0, a[1], z0);
+    this.marquee.scale.set(x1 - x0 + 1, Math.max(1, this.maxHeight() - a[1]) + 0.05, z1 - z0 + 1);
+    this.marquee.visible = !done;
+    this.invalidate();
+    if (!done) return;
+    const found = areaKeys(this.store, x0, x1, z0, z1, a[1], (x, y, z) => this.cellHidden(x, y, z));
+    if (found?.length) {
+      this.pickArea(false);
+      // One figure alone is a figure selected, as a tap on it would have.
+      if (found.length === 1 && found[0].startsWith('m:')) this.select(found[0].slice(2));
+      else this.pick(found);
+    }
+    this.hooks.onArea?.(found ? found.length : null);
+  }
+
   setTool(t: Tool): void {
     this.tool = t;
+    this.areaPick = false;
     this.offer(null);
     this.hideGhost();
     if (t !== 'move' && t !== 'pick') this.select(null);
@@ -2109,7 +2175,9 @@ export class Board {
       this.store.set(u.k, u.prev);
     }
     to.push(inverse);
-    this.showPick();
+    // The picked pieces went with the step (a move or a copy taken back): what it put back is picked instead.
+    if (this.picked.some((k) => this.store.get(k) === null)) this.pick([...new Set(group.map((u) => u.k))]);
+    else this.showPick();
     return new Set(group.map((u) => u.k)).size;
   }
   /**
@@ -2427,7 +2495,15 @@ export class Board {
     this.aim(e);
     switch (this.tool) {
       case 'move': case 'pick': {
+        if (this.areaPick && this.tool === 'pick') { // an area is being dragged out: the finger picks nothing up
+          const s = this.pickSurface();
+          g.area = true;
+          g.first = s && s.place;
+          this.canvas.setPointerCapture(e.pointerId);
+          break;
+        }
         if (this.placing && this.selection().length) { // Move was tapped: this touch says where the selection goes
+          this.grab = null;
           g.piece = true;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
@@ -2435,7 +2511,8 @@ export class Board {
           break;
         }
         const id = this.shoving ? null : this.pickMini(); // waiting for a direction: this touch points, it does not pick up
-        if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
+        if (id && this.picked.includes(`m:${id}`)) this.holdPicked(g, e); // one of the picked: they all come along
+        else if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
           g.mini = id;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
@@ -2443,11 +2520,7 @@ export class Board {
         else if (this.tool === 'pick') {
           // A finger on the selection carries it; anywhere else it is the camera's (and a tap selects).
           const t = this.picked.length ? this.pickTarget() : null;
-          if (t && this.picked.includes(t)) {
-            g.piece = true;
-            this.controls.enabled = false;
-            this.canvas.setPointerCapture(e.pointerId);
-          }
+          if (t && (this.picked.includes(t) || this.overPicked())) this.holdPicked(g, e);
         } else {
           // Press and hold on the table to ping the spot for everyone.
           const at = { clientX: e.clientX, clientY: e.clientY };
@@ -2494,6 +2567,20 @@ export class Board {
         if (this.erasing) { const t = this.eraseTarget(); g.wipe = !!t?.startsWith('l:'); g.first = t && !/^[wl]:/.test(t) ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
+  }
+
+  /** A finger came down on the picked pieces: it carries them. */
+  private holdPicked(g: Gesture, e: PointerEvent): void {
+    const b = boundsOf(this.store, this.picked), pt = b && this.onLevel(b.min[1]);
+    this.grab = pt ? [Math.floor(pt.x), 0, Math.floor(pt.z)] : null;
+    g.piece = true;
+    this.controls.enabled = false;
+    this.canvas.setPointerCapture(e.pointerId);
+  }
+  /** Several pieces are picked and the pointer is on the ground among them: an area is held by any part of it. */
+  private overPicked(): boolean {
+    const b = this.picked.length > 1 ? boundsOf(this.store, this.picked) : null, c = this.pickSurface()?.place;
+    return !!b && !!c && c[0] >= b.min[0] && c[0] <= b.max[0] && c[2] >= b.min[2] && c[2] <= b.max[2] && c[1] >= b.min[1] && c[1] <= b.max[1] + 1;
   }
 
   /** Replay the other fingers' pointerdown to OrbitControls (it ignores pointers that land while it is disabled). */
@@ -2562,10 +2649,11 @@ export class Board {
     }
     if (g.piece) {
       if (!g.moved && !this.placing) return;
-      this.aim(e, g.touch && g.moved ? TOUCH_LIFT : 0);
+      this.aim(e, g.touch && g.moved && this.selection().length === 1 ? TOUCH_LIFT : 0); // (one piece floats clear of the fingertip; an area stays under it)
       this.carryGhost();
       return;
     }
+    if (g.area) { this.aim(e); this.stretchArea(g, false); return; }
     if (!g.drags || g.button !== 0 || this.sampling) return;
     this.aim(e);
     if (this.tool === 'ruler') this.stretchRuler(g, false);
@@ -2740,7 +2828,7 @@ export class Board {
       const placing = this.placing;
       this.placing = false;
       if (g.moved || placing) {
-        this.aim(e, g.touch && g.moved ? TOUCH_LIFT : 0);
+        this.aim(e, g.touch && g.moved && this.selection().length === 1 ? TOUCH_LIFT : 0);
         const d = this.carry();
         if (!d || !this.movePicked(d)) buzz(20); // no room there: it stays where it was
       }
@@ -2750,6 +2838,7 @@ export class Board {
     }
     if (g.button !== 0) return;
     this.aim(e);
+    if (g.area) { this.stretchArea(g, true); return; }
     if (this.tool === 'ruler') {
       // A drag measures and leaves the ruler out; a tap puts it away.
       if (g.moved) this.stretchRuler(g, true);

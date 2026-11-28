@@ -108,6 +108,8 @@ export function makeSheet({ s, drawer, notice }: Ctx): DrawerOpts {
     render(body) {
       const row = (...kids: Node[]) => h('div', { class: 'chips' }, ...kids);
       body.append(
+        h('p', { class: 'hint', text: 'Work on what is already there: drag over it, then move, turn, duplicate or delete it all' }),
+        row(btn('Select an area', go(() => s.selectArea()), { icon: 'grid' })),
         h('p', { class: 'hint', text: 'A room in one drag: floor, walls, windows and a doorway' }),
         row(btn('Stone room', go(() => { board.roomTimber = false; s.arm('room'); notice.say('Drag out the floor of the room.'); }), { icon: 'house' }), btn('Timber room', go(() => { board.roomTimber = true; s.arm('room'); notice.say('Drag out the floor of the room.'); }), { icon: 'house' })),
       );
@@ -177,6 +179,10 @@ export function pieceMoreSheet({ s, drawer, notice }: Ctx): DrawerOpts {
       body.append(h('div', { class: 'chips' },
         btn('Up a level', lift(1), { icon: 'up' }), btn('Down a level', lift(-1), { icon: 'down' }),
         btn('Use as brush', () => { const k = board.picked[0]; drawer.close(); if (k) board.onSample(k); }, { icon: 'pick', title: 'Take this piece in hand to place more of it' }),
+      ));
+      body.append(h('div', { class: 'chips' },
+        btn('Select area', () => { drawer.close(); s.selectArea(); }, { icon: 'grid', title: 'Drag over the table to select everything in an area' }),
+        btn('With the ground', () => s.selectGround(), { icon: 'hill', title: 'Select the ground under these pieces as well' }),
       ));
     },
   };

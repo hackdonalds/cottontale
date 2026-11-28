@@ -13,6 +13,8 @@ export interface DockState {
   sel: Sel;
   /** A brush is in hand (Build): its name, and what kind of brush it is. */
   armed?: { name: string; turns: boolean; sized: boolean; erasing: boolean; sampling: boolean; size: number };
+  /** Select area is armed (Build): one finger drags a rectangle over the pieces to select. */
+  area?: boolean;
   /** Move was tapped: the next touch says where the selection goes. */
   placing?: boolean;
   /** The table plays by a rules system, so there are character sheets. */
@@ -44,6 +46,8 @@ export function dockFor(s: DockState): Slot[] {
   const gm = s.role === 'gm';
   // A mini that is not ours: look, do not touch.
   if (s.sel === 'theirs') return [slot('details', 'Details', 'list'), DONE];
+  // An area is being dragged out: nothing else to do until it is, but call it off.
+  if (gm && s.mode === 'build' && s.area) return [slot('area', 'Area', 'grid', { on: true }), DONE];
   // Build with something selected: what you can do to it, where it stands.
   if (gm && s.mode === 'build' && s.sel !== 'none') {
     return [
