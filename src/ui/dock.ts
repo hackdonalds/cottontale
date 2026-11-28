@@ -100,7 +100,7 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
     chat: () => drawer.toggle('dice', diceSheet(ctx, log)),
     quick: () => drawer.toggle('quick', quickSheet(ctx)),
     tools: () => drawer.toggle('tools', toolsSheet(ctx)),
-    table: () => drawer.toggle('table', tableSheet(ctx, prep)),
+    table: () => drawer.toggle('table', tableSheet(ctx, prep, (id) => acts[id]?.())), // its search runs any of these by id
     ruler: () => { drawer.close(); s.setTool('ruler'); notice.say('Drag on the table to measure.'); },
     line: () => { board.rulerMode = 'line'; s.touch(); },
     circle: () => { board.rulerMode = 'circle'; s.touch(); },
