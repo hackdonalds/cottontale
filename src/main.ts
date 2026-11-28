@@ -103,13 +103,20 @@ $<HTMLInputElement>('code').value = hash.get('room') ?? ls.get('lastRoom') ?? ra
 $<HTMLTextAreaElement>('relays').value = (hash.get('relays')?.split(',') ?? JSON.parse(ls.get('relays') ?? 'null') ?? DEFAULT_RELAYS).join('\n');
 swatches($('colors'), () => myColor, (c) => { myColor = c; });
 $('newcode').onclick = () => { $<HTMLInputElement>('code').value = randomCode(); };
+// A table screen (`?ui=2&display=1`, src/ui/display.ts) is not a player: nothing is asked or remembered. With a room in its link it goes straight in.
+const query = new URLSearchParams(location.search), asDisplay = query.get('ui') === '2' && query.get('display') === '1';
+function openDisplay(code: string, relays: string[]): void {
+  $('lobby').hidden = true;
+  void import('./app').then((m) => m.play('', code, relays, '', true));
+}
 
 $<HTMLFormElement>('lobby').onsubmit = (e) => {
   e.preventDefault();
   const name = $<HTMLInputElement>('name').value.trim();
   const code = $<HTMLInputElement>('code').value.trim();
   const relays = $<HTMLTextAreaElement>('relays').value.split(/[\s,]+/).filter((r) => /^wss?:\/\//.test(r));
-  if (!name || code.length < 6 || !relays.length) return;
+  if (asDisplay && code.length >= 6 && relays.length) return openDisplay(code, relays);
+  if (asDisplay || !name || code.length < 6 || !relays.length) return;
   ls.set('name', name);
   ls.set('color', myColor);
   ls.set('lastRoom', code);
@@ -119,6 +126,10 @@ $<HTMLFormElement>('lobby').onsubmit = (e) => {
   if (new URLSearchParams(location.search).get('ui') === '2') void import('./app').then((m) => m.play(name, code, relays, myColor));
   else void play(name, code, relays);
 };
+if (asDisplay) {
+  $('name').closest('label')!.hidden = true;
+  if (hash.get('room')) $('lobby').dispatchEvent(new Event('submit', { cancelable: true }));
+}
 
 // ---- game ----------------------------------------------------------------------
 

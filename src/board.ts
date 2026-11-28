@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, STANDIN_HEIGHT, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, setWind, withDetail, type Season } from './kit';
-import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, safeArea, type Ambience } from './glide';
+import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, readView, safeArea, type Ambience } from './glide';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { BoulderView } from './boulder';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
@@ -530,6 +530,10 @@ export class Board {
   /** Glide to the mini whose turn it has become, if it is out of view. Local, not shared. */
   followTurns = true;
   private glide: Glide | null = null;
+  /** With a glide under way: what the camera moves besides (a new angle or distance, see `flyTo`). */
+  private swing: Glide | null = null;
+  /** The camera moved (by hand or by itself). Never called while the view is still. */
+  onCamera: () => void = () => {};
   /** Is there anything on the table that sways or flickers? Looked up again only once the table is at rest. */
   private alive = false;
   private lifeDirty = true;
@@ -652,6 +656,7 @@ export class Board {
     this.controls.maxDistance = 90;
     this.controls.target.set(0, 0, 0);
     this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
+    this.controls.addEventListener('change', () => this.onCamera());
 
     const hidden = (x: number, y: number, z: number) => this.cellHidden(x, y, z);
     // Ground under the smooth surface is not drawn as cubes as well.
@@ -2290,6 +2295,24 @@ export class Board {
   private glideBy(d: THREE.Vector3): void {
     if (d.lengthSq() < 1e-4 || d.length() > 2 * LIMIT) return;
     this.glide = new Glide([d.x, d.y, d.z], this.calm ? 0 : 0.5);
+    this.swing = null;
+    this.invalidate();
+  }
+  /** Where the camera stands and what it looks at, to the centimetre. */
+  view(): { p: Vec; t: Vec } {
+    const r = (v: THREE.Vector3): Vec => [Math.round(v.x * 100) / 100, Math.round(v.y * 100) / 100, Math.round(v.z * 100) / 100];
+    return { p: r(this.camera.position), t: r(this.controls.target) };
+  }
+  /** Take up another view, smoothly: stand at `p`, look at `t`. As with any glide, a touch on the table stops it where it is. */
+  flyTo(p: unknown, t: unknown): void {
+    const v = readView(p, t, LIMIT, this.controls.minDistance, this.controls.maxDistance);
+    if (!v || this.handsOn()) return;
+    const dt = new THREE.Vector3(...v.t).sub(this.controls.target), dp = new THREE.Vector3(...v.p).sub(this.camera.position).sub(dt);
+    if (dt.lengthSq() + dp.lengthSq() < 1e-4) return;
+    const seconds = this.calm ? 0 : 0.6;
+    this.zoomGoal = null;
+    this.glide = new Glide([dt.x, dt.y, dt.z], seconds);
+    this.swing = new Glide([dp.x, dp.y, dp.z], seconds);
     this.invalidate();
   }
   /** The turn has passed to a mini: go to it, but only if it is out of view and the player is not busy. */
@@ -2332,9 +2355,10 @@ export class Board {
   /** Hand out this frame's share of a camera move. True while one is under way. */
   private slide(dt: number): boolean {
     const s = this.glide?.step(dt);
-    if (!s) { this.glide = null; return false; }
+    if (!s) { this.glide = this.swing = null; return false; }
+    const c = this.swing?.step(dt) ?? [0, 0, 0];
     this.controls.target.x += s[0]; this.controls.target.y += s[1]; this.controls.target.z += s[2];
-    this.camera.position.x += s[0]; this.camera.position.y += s[1]; this.camera.position.z += s[2];
+    this.camera.position.x += s[0] + c[0]; this.camera.position.y += s[1] + c[1]; this.camera.position.z += s[2] + c[2];
     return true;
   }
 

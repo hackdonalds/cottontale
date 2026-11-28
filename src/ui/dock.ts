@@ -49,7 +49,7 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
   function state(): DockState {
     const full = s.full(), m = s.sel(), b = board.brush, r = s.ruler();
     return {
-      role: full ? 'gm' : 'player',
+      role: s.display ? 'display' : full ? 'gm' : 'player',
       mode: s.mode(),
       sel: board.picked.length ? 'piece' : m ? (s.mine(m) ? 'mini' : 'theirs') : 'none',
       armed: s.armed() ? {

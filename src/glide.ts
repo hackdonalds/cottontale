@@ -90,3 +90,23 @@ export function flicker(seconds: number, i = 0): number {
   const t = seconds + i * 7.3;
   return 1 + 0.045 * Math.sin(t * 2.3) + 0.03 * Math.sin(t * 7.1 + 1.3) + 0.02 * Math.sin(t * 13.7 + i);
 }
+
+// ---- a view shown to the table screen -------------------------------------------
+
+export type View = { p: [number, number, number]; t: [number, number, number] };
+/**
+ * A camera sent by the GM to the table screen (`cam`, src/ui/display.ts): where it stands (`p`)
+ * and what it looks at (`t`). It comes from another device, so it is read strictly: six finite
+ * numbers, the target on the table (within `limit`, not under it), the camera above what it
+ * looks at and between `near` and `far` away from it. Anything else is no view at all.
+ */
+export function readView(p: unknown, t: unknown, limit: number, near: number, far: number): View | null {
+  const three = (a: unknown): a is [number, number, number] => Array.isArray(a) && a.length === 3 && a.every((n) => typeof n === 'number' && Number.isFinite(n));
+  if (!three(p) || !three(t)) return null;
+  const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+  const at: View['t'] = [clamp(t[0], -limit, limit), clamp(t[1], 0, limit), clamp(t[2], -limit, limit)];
+  const d = [p[0] - t[0], p[1] - t[1], p[2] - t[2]], len = Math.hypot(d[0], d[1], d[2]);
+  if (!(len >= 1e-3) || d[1] <= 0) return null; // looking up from under the table is not a view of it
+  const k = clamp(len, near, far) / len;
+  return { p: [at[0] + d[0] * k, at[1] + d[1] * k, at[2] + d[2] * k], t: at };
+}

@@ -92,10 +92,20 @@ export const pid = (pubkey: string) => pubkey.slice(0, 10);
 export function gms(store: Store): string[] {
   return [...store.keys('gm:')].map((k) => k.slice(3));
 }
+/**
+ * The seat of a table screen (src/ui/display.ts): not a player's id, so it never has powers,
+ * not even in free play. It looks on with the whole party: what any player's mini sees, it sees.
+ */
+export const PARTY = '*party';
 /** With no GM the table is free play: everyone can do everything. */
 export function fullPowers(store: Store, me: string): boolean {
   const g = gms(store);
-  return !g.length || g.includes(me);
+  return me !== PARTY && (!g.length || g.includes(me));
+}
+/** Is this mini one of `me`'s own to see with? For the party: any mini that has an owner who is not a GM. */
+function owns(store: Store, me: string, v: MiniVal): boolean {
+  if (me === PARTY) return !!v.o && !gms(store).includes(v.o);
+  return v.o === me || v.o === '*';
 }
 export const fogged = (store: Store, x: number, z: number) => store.get(`f:${x},${z}`) === true;
 export const setting = <T>(store: Store, name: string, fallback: T) => store.get<T>(`set:${name}`) ?? fallback;
@@ -162,12 +172,12 @@ export type Shown = 'yes' | 'ghost' | 'no';
  * How a mini appears to player `me`. The GM (and everyone in free play) sees
  * all, with hidden minis ghosted. Players never see hidden minis or ones under
  * fog, and with line of sight on they see others only through the eyes of the
- * minis they control.
+ * minis they control. The table screen (`PARTY`) sees through every player's.
  */
 export function miniShown(store: Store, me: string, v: MiniVal, eyes: MiniVal[] | null): Shown {
   if (fullPowers(store, me)) return v.h ? 'ghost' : 'yes';
   if (v.h) return 'no';
-  if (v.o === me || v.o === '*') return 'yes';
+  if (owns(store, me, v)) return 'yes';
   if (fogged(store, v.x, v.z)) return 'no';
   if (!eyes || !eyes.length) return 'yes'; // line of sight off, or a spectator with no mini
   return eyes.some((e) => sees(store, e, v)) ? 'yes' : 'no';
@@ -179,7 +189,7 @@ export function eyesOf(store: Store, me: string): MiniVal[] | null {
   const out: MiniVal[] = [];
   for (const k of store.keys('m:')) {
     const v = store.get<MiniVal>(k)!;
-    if (!v.h && (v.o === me || v.o === '*')) out.push(v);
+    if (!v.h && owns(store, me, v)) out.push(v);
   }
   return out;
 }
