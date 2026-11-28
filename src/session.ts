@@ -120,6 +120,14 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     },
     onView: () => {},
     onLight: (name) => sys(`Light: ${name}`),
+    onFog: (cells, hide, room) => {
+      const n = `${cells} cell${cells === 1 ? '' : 's'}`;
+      if (board.previewing) sys('This is what the players see. Tap As players to go on.');
+      else if (!cells) sys(hide ? 'Already hidden.' : 'Nothing hidden here.');
+      else if (room) sys(hide ? `Room hidden — ${n}. Undo reveals it.` : `Room revealed — ${n}. Undo hides it again.`);
+      else sys(`Open ground: one cell ${hide ? 'hidden' : 'revealed'}. Drag to paint more.`);
+      later();
+    },
     onSlab: (slab) => {
       board.brush = 'paste';
       board.setTool('build');
@@ -763,9 +771,21 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   function revealAll(): void {
     const keys = [...store.keys('f:')];
-    if (!keys.length) return;
+    if (!keys.length || board.previewing) return;
     board.commit(keys.map((k) => [k, null]));
     sys('Everything is revealed. Undo covers it again.');
+  }
+
+  /**
+   * See as players, for the GM with the fog tool out: the table as the players have it (fog
+   * solid, hidden figures gone, line of sight if it is on). Only this device's view; putting
+   * the tool away ends it.
+   */
+  function asPlayers(on: boolean): void {
+    if (board.tool !== 'fog' || !full()) on = false;
+    board.preview(on);
+    if (on) sys('This is what the players see. Nothing can be changed until you tap it again.');
+    later();
   }
 
   // ---- cutaway: hide everything above a floor to look inside buildings ----
@@ -953,7 +973,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     hold: (kinds: Kind[], text: string, landed: (t: Throw) => void) => { hand.clear(); handMod = 0; asked = { kinds, text, landed }; syncHand(); hooks.grabbed(); },
     chat, armBoulder, blastHere, ruler: () => myRuler,
     // a fight, fog, floors
-    fight, next, endFight, revealAll, cut, cutState: () => ({ auto: cutAuto, level: board.cut }),
+    fight, next, endFight, revealAll, asPlayers, seeingAsPlayers: () => board.previewing, cut, cutState: () => ({ auto: cutAuto, level: board.cut }),
     // boards
     here: () => here, boardList, boardName, activeBoard, newBoard, renameBoard, lookAtBoard, bringEveryone, deleteBoard,
     // atmosphere and themes

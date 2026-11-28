@@ -182,6 +182,64 @@ export function eyesOf(store: Store, me: string): MiniVal[] | null {
   return out;
 }
 
+/**
+ * What the players see of a mini between them, for the GM's "See as players": what any one of
+ * them could see. Hidden and fogged minis are gone; with line of sight on, the rest show only
+ * to the eyes of the minis that players control (`playerEyes`).
+ */
+export function shownToPlayers(store: Store, v: MiniVal, eyes: MiniVal[] | null): Shown {
+  if (v.h) return 'no';
+  if (v.o) return 'yes';
+  if (fogged(store, v.x, v.z)) return 'no';
+  if (!eyes || !eyes.length) return 'yes';
+  return eyes.some((e) => sees(store, e, v)) ? 'yes' : 'no';
+}
+
+/** The minis the players see through, all of them together, or null when line of sight is switched off. */
+export function playerEyes(store: Store): MiniVal[] | null {
+  if (!setting(store, 'los', false)) return null;
+  const out: MiniVal[] = [];
+  for (const k of store.keys('m:')) {
+    const v = store.get<MiniVal>(k)!;
+    if (!v.h && v.o) out.push(v);
+  }
+  return out;
+}
+
+/** The most cells a tap of the fog tool takes for one room: a hall of 20 by 20. */
+export const REGION_MAX = 400;
+
+/**
+ * The room or region a cell belongs to, for fog by the room: the floor connected to cell
+ * (x, y, z) on its own level, as columns. `y` is the level one stands on (the cell above the
+ * floor, the level its walls are stored at). A step to a neighbouring cell is stopped by
+ * anything standing on the edge between them, by a block in that cell, and by there being no
+ * floor under it (level 0 is the table itself, floor everywhere). Walls of every kind stop it,
+ * a doorway and a window too: a room ends at its door, or one tap would take the corridor and
+ * everything beyond with it. Furniture and other props do not.
+ *
+ * Null when there is no such region: the cell itself is solid or has no floor, or the area is
+ * open ground, more than `cap` cells of it. The caller then does what it did before there were
+ * rooms (one column), instead of flooding the whole table.
+ */
+export function regions(store: Store, x: number, y: number, z: number, cap = REGION_MAX): [x: number, z: number][] | null {
+  const solid = (cx: number, cy: number, cz: number) => { const v = store.get<CellVal>(`b:${cx},${cy},${cz}`); return !!v && !!BLOCKS[v.i]; };
+  const open = (cx: number, cz: number) => !solid(cx, y, cz) && (y === 0 || solid(cx, y - 1, cz));
+  if (![x, y, z].every(Number.isInteger) || y < 0 || !open(x, z)) return null;
+  const out: [number, number][] = [[x, z]], seen = new Set([`${x},${z}`]);
+  for (let i = 0; i < out.length; i++) {
+    const [cx, cz] = out[i];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx, nz = cz + dz, k = `${nx},${nz}`;
+      if (seen.has(k) || store.get(edgeBetween(y, cx, cz, nx, nz)) || !open(nx, nz)) continue;
+      if (out.length >= cap) return null;
+      seen.add(k);
+      out.push([nx, nz]);
+    }
+  }
+  return out;
+}
+
 /** Everyone with an initiative score, highest first. */
 export function turnOrder(store: Store): { id: string; v: MiniVal }[] {
   const out: { id: string; v: MiniVal }[] = [];

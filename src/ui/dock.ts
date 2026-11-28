@@ -59,7 +59,7 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
       placing: board.placing,
       hidden: !!m?.h,
       sheets: !!s.system(),
-      tool: board.tool === 'ruler' ? { ruler: board.rulerMode, blast: r?.m === 'circle' } : board.tool === 'fog' ? { fog: board.fogHide ? 'hide' : 'reveal' } : undefined,
+      tool: board.tool === 'ruler' ? { ruler: board.rulerMode, blast: r?.m === 'circle' } : board.tool === 'fog' ? { fog: board.fogHide ? 'hide' : 'reveal', asPlayers: s.seeingAsPlayers() } : undefined,
     };
   }
 
@@ -109,6 +109,7 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
     fogHide: () => { board.fogHide = true; s.touch(); },
     fogShow: () => { board.fogHide = false; s.touch(); },
     revealAll: () => s.revealAll(),
+    asPlayers: () => s.asPlayers(!s.seeingAsPlayers()),
   };
   el.onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-slot]');
@@ -139,14 +140,16 @@ export function mountDock(root: HTMLElement, ctx: Ctx, log: Log, prep: () => Pre
     if (dice) { const n = s.dice.count() || (drawer.id === 'dice' ? 0 : log.unread); if (n) dice.dataset.n = String(Math.min(99, n)); else delete dice.dataset.n; }
     // A drawer about the selection goes when the selection does.
     if (drawer.id && ABOUT_SEL.has(drawer.id) && st.sel === 'none') drawer.close();
-    // Undo and Redo: always there in Build; in Play, for a few seconds after something they could take back.
+    // Undo and Redo: always there in Build and with the fog out (a tap there is a whole room); in Play, for a few seconds
+    // after something they could take back. Never while seeing as players, which is only a view.
     if (board.stamp !== stamp) { stamp = board.stamp; until = Date.now() + UNDO_MS; }
     const live = board.canUndo || board.canRedo, covered = drawer.id !== null && drawer.el.dataset.h === 'full';
-    undo.hidden = !(live && !covered && (st.mode === 'build' || Date.now() < until));
+    const fog = board.tool === 'fog';
+    undo.hidden = !(live && !covered && !s.seeingAsPlayers() && (st.mode === 'build' || fog || Date.now() < until));
     undo.querySelector<HTMLButtonElement>('[data-u="undo"]')!.disabled = !board.canUndo;
     undo.querySelector<HTMLButtonElement>('[data-u="redo"]')!.disabled = !board.canRedo;
     clearTimeout(hideTimer);
-    if (!undo.hidden && st.mode !== 'build') hideTimer = setTimeout(render, Math.max(0, until - Date.now()) + 50);
+    if (!undo.hidden && st.mode !== 'build' && !fog) hideTimer = setTimeout(render, Math.max(0, until - Date.now()) + 50);
     // Say what was just selected, once.
     const name = selName(), id = `${board.selected ?? ''}|${board.picked.join()}`;
     if (id !== named) { named = id; if (name) notice.say(name, 1600); }

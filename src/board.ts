@@ -13,7 +13,7 @@ import { SHOTS, ShotsView, shotPath, type Shot } from './shots';
 import { buzz } from './haptics';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { RISE, SQUASH, TOPPLE, hopAt, hopPlan, nearestDir, riseAt, squashAt, toppleAt } from './feel';
-import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
+import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, playerEyes, regions, resurface, roomEdges, sculpt, shownToPlayers, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { heading, land } from './forces';
 import { boundsOf, copyEdits, kindOf, moveEdits, present, removeEdits, turnEdits, whereIs, type Picked } from './pick';
@@ -70,6 +70,8 @@ export interface BoardHooks {
   onShove(id: string, sx: number, sz: number): void;
   /** The pieces selected with the pick tool changed (none = an empty list), or a move of them ended. */
   onPick?(keys: string[]): void;
+  /** A tap of the fog tool hid or revealed this many columns (0: nothing changed); `room`: a whole room or region, not one column. */
+  onFog?(cells: number, hide: boolean, room: boolean): void;
 }
 
 const LIMIT = 96;
@@ -432,6 +434,9 @@ export class Board {
 
   private me = '';
   private full = true;
+  /** The powers this player really has, and whether they are set aside to see as players (`preview`): `full` is the one without the other. */
+  private powers = true;
+  private asPlayers = false;
   private turnId: string | null = null;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -726,10 +731,26 @@ export class Board {
   /** Who is looking: their player id, and whether they have GM powers (always true in free play). */
   setRole(me: string, full: boolean): void {
     this.me = me;
-    this.full = full;
-    if (!full) this.offer(null);
+    this.powers = full;
+    this.asPlayers &&= full;
+    this.full = full && !this.asPlayers;
+    if (!this.full) this.offer(null);
     this.refresh();
   }
+
+  /**
+   * See as players: draw the table as someone without the GM's powers would see it (fog solid,
+   * hidden minis gone, line of sight if it is on). Only a view: nothing shared changes, and
+   * while it is on no brush of this device edits anything. It belongs to the fog tool and
+   * goes when the tool does.
+   */
+  preview(on: boolean): void {
+    on &&= this.powers;
+    if (on === this.asPlayers) return;
+    this.asPlayers = on;
+    this.setRole(this.me, this.powers);
+  }
+  get previewing(): boolean { return this.asPlayers; }
 
   /** Re-evaluate everything that depends on role, fog, cutaway or line-of-sight settings. */
   refresh(): void {
@@ -851,9 +872,9 @@ export class Board {
   /** Decide which minis this player sees (hidden, fogged, out of sight, above the cutaway). */
   private refreshMinis(): void {
     this.visDirty = false;
-    const eyes = this.full ? null : eyesOf(this.store, this.me);
+    const eyes = this.asPlayers ? playerEyes(this.store) : this.full ? null : eyesOf(this.store, this.me);
     for (const [id, m] of this.minis) {
-      const show = m.val.y < this.cut && miniShown(this.store, this.me, m.val, eyes) !== 'no';
+      const show = m.val.y < this.cut && (this.asPlayers ? shownToPlayers(this.store, m.val, eyes) : miniShown(this.store, this.me, m.val, eyes)) !== 'no';
       m.group.visible = show;
       if (!show && this.selected === id) this.select(null);
     }
@@ -2041,6 +2062,7 @@ export class Board {
     if (t !== 'move' && t !== 'pick') this.select(null);
     if (t !== 'pick' && this.picked.length) this.pick([]);
     this.placing = false;
+    if (t !== 'fog') this.preview(false);
     if (t !== 'ruler' && this.rulers.has('me')) {
       this.showRuler('me', null, '');
       this.hooks.onRuler(null);
@@ -2601,6 +2623,19 @@ export class Board {
     this.edit(key, this.fogHide ? true : null);
   }
 
+  /**
+   * A tap with the fog tool hides or reveals the whole room under the finger (`regions`), as
+   * one step of undo. On open ground, where there is no room to speak of, it is one column.
+   */
+  private tapFog(): void {
+    const s = this.pickSurface();
+    if (!s || !this.full) { this.hooks.onFog?.(0, this.fogHide, false); return; }
+    const room = regions(this.store, ...s.place), c = s.cell ?? s.place;
+    const keys = (room ?? [[c[0], c[2]]]).map(([x, z]) => `f:${x},${z}`).filter((k) => (this.store.get(k) === true) !== this.fogHide);
+    if (keys.length) this.editAll(keys.map((k) => [k, this.fogHide ? true : null]));
+    this.hooks.onFog?.(keys.length, this.fogHide, !!room);
+  }
+
   /** Dragging a finger paints (or erases) a flat layer at the height of the first cell. */
   private paint(g: Gesture): void {
     if (!g.first) return;
@@ -2757,7 +2792,8 @@ export class Board {
       return;
     }
     if (this.tool === 'fog') {
-      this.paintFog(); // a tap fogs one column; a drag has been painting all along
+      if (g.moved) this.paintFog(); // a drag has been painting all along
+      else this.tapFog(); // a tap takes the whole room
       this.batch = null;
       return;
     }

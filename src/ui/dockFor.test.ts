@@ -44,7 +44,9 @@ describe('the dock', () => {
   it('gives a tool of Play its own dock, with a way out', () => {
     expect(ids({ role: 'gm', mode: 'play', sel: 'none', tool: { ruler: 'circle', blast: true } })).toEqual(['line', 'circle', 'cone', 'blast', 'done']);
     expect(ids({ role: 'player', mode: 'play', sel: 'none', tool: { ruler: 'line' } })).toEqual(['line', 'circle', 'cone', 'done']);
-    expect(ids({ role: 'gm', mode: 'play', sel: 'none', tool: { fog: 'hide' } })).toEqual(['fogHide', 'fogShow', 'revealAll', 'done']);
+    expect(ids({ role: 'gm', mode: 'play', sel: 'none', tool: { fog: 'hide' } })).toEqual(['fogHide', 'fogShow', 'revealAll', 'asPlayers', 'done']);
+    const look = dockFor({ role: 'gm', mode: 'play', sel: 'none', tool: { fog: 'hide', asPlayers: true } });
+    expect(look.map((s) => [s.id, !!s.on, !!s.off])).toEqual([['fogHide', false, true], ['fogShow', false, true], ['revealAll', false, true], ['asPlayers', true, false], ['done', false, false]]); // only a view: the brushes wait
     expect(ids({ role: 'player', mode: 'play', sel: 'none', tool: { fog: 'hide' } })).not.toContain('fogHide'); // fog is the GM's
   });
 
