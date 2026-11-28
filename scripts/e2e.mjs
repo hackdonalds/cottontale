@@ -934,6 +934,28 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   const [cx, cy] = [viewport.width / 2, viewport.height / 2];
   const settle = () => p.waitForTimeout(120);
 
+  // An empty table says where to begin: four full-size ways to start above the dock, which step aside for everything else.
+  {
+    const card = () => p.evaluate(() => {
+      const e = document.querySelector('#start'), r = e.getBoundingClientRect(), d = document.querySelector('#tools').getBoundingClientRect(), t = document.querySelector('#top').getBoundingClientRect();
+      return {
+        shown: !e.hidden, within: r.left >= 0 && r.right <= innerWidth && r.top >= t.bottom && r.bottom <= innerHeight,
+        clear: r.bottom <= d.top || r.left >= d.right || r.right <= d.left, small: [...e.querySelectorAll('button')].filter((b) => { const q = b.getBoundingClientRect(); return q.width < 43.5 || q.height < 43.5; }).length,
+      };
+    });
+    const first = await card();
+    await p.screenshot({ path: `${process.env.SHOTDIR ?? '/tmp'}/phone-${label}-start.png` });
+    await p.tap('#logToggle');
+    const under = (await card()).shown;
+    await p.tap('#logToggle');
+    await p.tap('[data-mode="build"]');
+    const building = (await card()).shown;
+    await p.tap('[data-mode="play"]');
+    const back = (await card()).shown;
+    await p.tap('#startX');
+    const gone = (await card()).shown;
+    assert(first.shown && first.within && first.clear && !first.small && !under && !building && back && !gone, `an empty table offers ways to start, clear of the dock, and steps aside for a sheet, for Build and for "not now" ${JSON.stringify({ first, under, building, back, gone })}`);
+  }
   await p.tap('[data-mode="build"]');
   const shelf = await p.evaluate(() => document.querySelector('#palette').getBoundingClientRect().height);
   await p.tap('#palette [title="Grass"]');
@@ -1890,6 +1912,15 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
   await p.waitForFunction(() => window.__ct.packs.listPacks()[0]?.name === 'Horde' && document.querySelector('.pkHead b')?.textContent === 'Horde');
   assert(await p.evaluate(() => window.__ct.packs.listPacks()[0].pieces.length === 1 && document.querySelectorAll('.pkPiece').length === 1) && !bad.length, `Packs shows the pack with its pieces; removing asks first, in the page; a pack can be renamed ${bad.join('; ')}`);
   await p.evaluate(() => window.__ct.ui.prep.close());
+  // From an import to the table in one tap: "Place it" closes Prep with the new piece in hand, on its own shelf.
+  await p.tap('[data-mode="prep"]');
+  await p.tap('.prepRow[data-page="import"]');
+  await p.waitForSelector('.impPlace');
+  bad = await layout();
+  await p.tap('.impPlace');
+  const inHand = await p.evaluate(() => ({ prep: window.__ct.ui.prep.isOpen, tool: window.__ct.board.tool, cur: document.querySelector('#palette .cur')?.textContent, shelf: document.querySelector('#palette .chip.on:not(.cur):not([title="Search the library"])')?.textContent }));
+  assert(!inHand.prep && inHand.tool === 'mini' && inHand.cur === 'Orc' && inHand.shelf === 'Horde' && !bad.length, `"Place it" after an import puts the piece in hand on its shelf ${JSON.stringify(inHand)} ${bad.join('; ')}`);
+  await p.tap('[data-mode="play"]');
   // And in Build the piece is on its shelf, with its picture, like any other.
   await p.tap('[data-mode="build"]');
   await p.tap('[data-cat="figures"]');
