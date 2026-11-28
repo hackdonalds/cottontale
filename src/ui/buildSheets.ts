@@ -7,18 +7,25 @@ import { roomName } from '../gen';
 import { LOOSE, POUR_COUNTS } from '../loose';
 import * as registry from '../registry';
 import { ls, type Session } from '../session';
-import { btn, esc, h } from './dom';
+import { btn, esc, h, ico } from './dom';
 import type { Drawer, DrawerOpts } from './drawer';
 import { face, nameOf } from './face';
-import { pushRecent, searchPieces } from './library';
+import { MAX_FAVS, pushRecent, searchPieces, toggleFav } from './library';
 import type { Notice } from './notice';
 
 export interface Ctx { s: Session; drawer: Drawer; notice: Notice }
 type Cat = 'all' | 'ground' | 'walls' | 'things' | 'figures';
 type Shelf = { name: string; cat: Cat; keys: string[] };
 
-const RECENT = 'recent2';
-const readRecent = (): string[] => { try { const v = JSON.parse(ls.get(RECENT) ?? '[]'); return Array.isArray(v) ? v.filter((k) => typeof k === 'string').slice(0, 12) : []; } catch { return []; } };
+const RECENT = 'recent2', FAVS = 'favs2';
+const readList = (name: string, max: number): string[] => { try { const v = JSON.parse(ls.get(name) ?? '[]'); return Array.isArray(v) ? v.filter((k) => typeof k === 'string').slice(0, max) : []; } catch { return []; } };
+const readRecent = (): string[] => readList(RECENT, 12);
+/** The pieces used last on this device, newest first. They may name pieces this table does not have. */
+export const recents = readRecent;
+/** The pieces pinned on this device, in the order they were pinned. They may name pieces this table does not have. */
+export const favourites = (): string[] => readList(FAVS, MAX_FAVS);
+/** Pin a piece, or take the pin off. */
+export function pinPiece(key: string): void { ls.set(FAVS, JSON.stringify(toggleFav(favourites(), key))); }
 /** A piece went into the hand: it leads the recents. */
 export function usedPiece(key: string): void { ls.set(RECENT, JSON.stringify(pushRecent(readRecent(), key, 12))); }
 /** The piece used last, if this table still has it. */
@@ -33,11 +40,12 @@ export function armKey(s: Session, key: string): void {
 
 /** The library: every piece this table has, by shelf, with one search across all of it. */
 export function piecesSheet({ s, drawer }: Ctx): DrawerOpts {
-  let q = '', cat: Cat = 'all';
+  let q = '', cat: Cat = 'all', pinning = false;
   const shelves = (): Shelf[] => {
     const keys = (kind: string, ids: string[] = []) => ids.map((id) => `${kind}_${id}`).filter((k) => nameOf(k) !== null);
     const t = s.gameTheme(), own = (sh: Record<string, string[]>) => { const n = Object.keys(sh), mine = (x: string) => sh[x].length > 0 && sh[x].every((id) => id.includes(':')); return [...n.filter(mine), ...n.filter((x) => !mine(x))]; };
     const list: Shelf[] = [
+      { name: 'Favourites', cat: 'all', keys: favourites().filter((k) => nameOf(k) !== null) },
       { name: 'Recent', cat: 'all', keys: readRecent().filter((k) => nameOf(k) !== null) },
       ...(t ? [{ name: `${t.icon} ${t.name}`, cat: 'all' as Cat, keys: [...keys('b', t.pieces.blocks), ...keys('p', t.pieces.props), ...keys('m', t.pieces.minis)] }] : []),
       { name: 'Ground', cat: 'ground', keys: keys('b', BLOCK_SHELVES.Terrain) },
@@ -51,9 +59,26 @@ export function piecesSheet({ s, drawer }: Ctx): DrawerOpts {
     title: 'Pieces', height: 'full',
     render(body) {
       const grid = h('div', { class: 'tiles' }), chips = h('div', { class: 'chips' });
-      const tile = (key: string) => h('button', { type: 'button', class: 'tile', title: nameOf(key)!, html: `${face(key)}<span>${esc(nameOf(key)!)}</span>`, onclick: () => { armKey(s, key); drawer.close(); } });
+      // A tap takes a piece in hand; with the star on, it pins the piece instead (or takes the pin off) and the library stays.
+      let pinned = new Set<string>();
+      const tap = (key: string) => {
+        if (!pinning) { armKey(s, key); return drawer.close(); }
+        const was = grid.scrollHeight;
+        pinPiece(key);
+        fill();
+        body.scrollTop += grid.scrollHeight - was; // the shelf of favourites grew or shrank above the finger: what was tapped stays under it
+      };
+      const tile = (key: string) => h('button', { type: 'button', class: `tile${pinned.has(key) ? ' fav' : ''}`, title: nameOf(key)!, 'data-key': key, html: `${face(key)}<span>${esc(nameOf(key)!)}</span>`, onclick: () => tap(key) });
+      const star = h('button', { type: 'button', class: 'pin', html: ico('star'), onclick: () => { pinning = !pinning; fill(); } });
       const fill = () => {
         grid.replaceChildren();
+        pinned = new Set(favourites());
+        grid.classList.toggle('pinning', pinning);
+        star.classList.toggle('on', pinning);
+        star.setAttribute('aria-pressed', String(pinning));
+        star.title = pinning ? 'Done pinning' : 'Pin favourites: tap pieces to pin them';
+        star.setAttribute('aria-label', star.title);
+        if (pinning) grid.append(h('p', { class: 'hint', text: 'Tap a piece to pin it, or to take its pin off. Pinned pieces lead the row above the dock.' }));
         const all = shelves();
         if (q.trim()) {
           const seen = new Set<string>(), items = all.filter((x) => x.cat !== 'all').flatMap((x) => x.keys).filter((k) => !seen.has(k) && seen.add(k)).map((key) => ({ key, name: nameOf(key)! }));
@@ -66,7 +91,7 @@ export function piecesSheet({ s, drawer }: Ctx): DrawerOpts {
         chips.replaceChildren(...(['all', 'ground', 'walls', 'things', 'figures'] as Cat[]).map((c) => btn({ all: 'All', ground: 'Ground', walls: 'Walls', things: 'Things', figures: 'Figures' }[c], () => { cat = c; q = ''; search.value = ''; fill(); }, { on: !q.trim() && cat === c, cls: 'chip' })));
       };
       const search = h('input', { type: 'search', maxlength: 40, placeholder: 'Search every piece', 'aria-label': 'Search every piece', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'search', value: q, oninput: () => { q = search.value; fill(); }, onkeydown: (e) => { if ((e as KeyboardEvent).key === 'Enter') search.blur(); } });
-      body.append(search, chips, grid);
+      body.append(h('div', { class: 'line' }, search, star), chips, grid);
       fill();
     },
   };
@@ -83,6 +108,8 @@ export function makeSheet({ s, drawer, notice }: Ctx): DrawerOpts {
     render(body) {
       const row = (...kids: Node[]) => h('div', { class: 'chips' }, ...kids);
       body.append(
+        h('p', { class: 'hint', text: 'Work on what is already there: drag over it, then move, turn, duplicate or delete it all' }),
+        row(btn('Select an area', go(() => s.selectArea()), { icon: 'grid' })),
         h('p', { class: 'hint', text: 'A room in one drag: floor, walls, windows and a doorway' }),
         row(btn('Stone room', go(() => { board.roomTimber = false; s.arm('room'); notice.say('Drag out the floor of the room.'); }), { icon: 'house' }), btn('Timber room', go(() => { board.roomTimber = true; s.arm('room'); notice.say('Drag out the floor of the room.'); }), { icon: 'house' })),
       );
@@ -152,6 +179,10 @@ export function pieceMoreSheet({ s, drawer, notice }: Ctx): DrawerOpts {
       body.append(h('div', { class: 'chips' },
         btn('Up a level', lift(1), { icon: 'up' }), btn('Down a level', lift(-1), { icon: 'down' }),
         btn('Use as brush', () => { const k = board.picked[0]; drawer.close(); if (k) board.onSample(k); }, { icon: 'pick', title: 'Take this piece in hand to place more of it' }),
+      ));
+      body.append(h('div', { class: 'chips' },
+        btn('Select area', () => { drawer.close(); s.selectArea(); }, { icon: 'grid', title: 'Drag over the table to select everything in an area' }),
+        btn('With the ground', () => s.selectGround(), { icon: 'hill', title: 'Select the ground under these pieces as well' }),
       ));
     },
   };

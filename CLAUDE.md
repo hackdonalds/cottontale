@@ -57,6 +57,7 @@ first, then enhance for larger screens.
   - `sheets.ts` sheet heights. Every `.sheet` has three (`data-h`: peek = its first row, half = as it opens, full = forms) and a grab handle that is a real button (`setSheetHeight(id, 'peek'|'half'|'full')`, `sheetHeight`, `cycleSheetHeight`). One sheet at a time; a sheet sits on top of the dock (`--dock`) and drops to peek when a finger lands on the table; `#hud[data-sheet]` hides what a sheet would cover. Drill down with `pushSheetPage(id, title, render)` (a page with Back in the same sheet), never a second sheet
   - `library.ts` (pure: recents, favourites, search — unit-test here) and `hotbar.ts` (the Recent / Favourites shelves, the `#lib` sheet with search and a grid). Pieces are named by key (`b_grass`, `p_barrel`, `m_knight`) and looked up at draw time, never assumed to exist; long-press pins, but the star in the library is the tap path
   - `prep.ts` Prep, the third mode: full-screen pages with a title bar and Back (button, Escape and the phone's back button share the history). Add a page with `registerPrepPage({ id, title, icon, order, hint, render(el, ctx), update?(el, ctx) })`; `prepPages.ts` has the Theme gallery and placeholders that a page with the same id replaces
+- `src/ui/display.ts` the table screen (`?ui=2&display=1#room=…`: a TV on the table; no lobby, no chrome, changes nothing, its own key `skd`). It sits in the seat `PARTY` (`src/rules.ts`): never any powers, sees what any player-owned mini sees. It says so in presence (`d` in `hi` → `Peer.disp`; `session.screens()`, not in `people()`). The GM's side is Table → People: the link with a QR code (`src/qr.ts`, pure) and "Show this on the table screen" / "Follow me" (live message `cam`, read with `readView` in `src/glide.ts`, taken up only from a GM and only by a screen: `board.flyTo`). Checked by `scripts/e2e2-display.mjs`
 - `src/system.ts` game systems as data (pure, whole numbers only — unit-test in `src/system.test.ts`): the format and
   strict `parseSystem`, the expression language, dice notation (`planRoll` picks the physical dice, `readRoll` reads
   the landed faces), `derive` (sheet from what was entered + condition modifiers), triggers (`fire`), `authority`.
@@ -102,7 +103,24 @@ order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes ov
   `dock.ts` maps slot ids to them. Half height keeps the table ≥ 45% of the screen (e2e2 measures it); `full` is for lists and forms
 - `src/pick.ts` editing what is already placed, pure (move, turn, copy, remove a selection of store keys) — unit-test here.
   The board's `pick` tool is Build with nothing in hand: tap selects, a finger on the selection carries it, anything else is
+  the camera. Select area (`board.pickArea`, armed from Make or More; `areaKeys`) lets one finger drag a rectangle: what stands in it
+  is picked, and is then moved, turned about its middle (`turnAreaEdits`), copied a footprint over or removed as one step
+  (`node scripts/e2e2-area.mjs`). `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build
+- Fog by the room: with the fog tool a tap hides or reveals the whole room under the finger as one step of undo (`regions` in
+  `src/rules.ts`: the floor of one level, bounded by walls of every kind, doorways too, and by blocks; null on open ground, where a
+  tap is one column as before), a drag still paints columns. "As players" in its dock is `board.preview(on)`: only this device's view
+  (fog solid, hidden minis gone, the players' line of sight), no brush edits while it is on, and it ends with the tool.
+  `node scripts/e2e2-fog.mjs` checks both
   the camera. `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build
+- Sitting down: `src/ui/lobby.ts` is the lobby (Start a table / Join a table / Back to your table; an invite link shows only name, colour, Join;
+  the code and the relays are under Advanced) and calls `play(…, { started })`. Whoever *starts* a table that turns out to be new is its GM
+  (`session.claimNew()`: after `session.synced`, no GM and an empty store — never a table that exists). `src/ui/firstRun.ts` draws the first-run
+  drawers ("Start with…" for the GM of an empty board, "Pick your character" for a player without a figure; which is due is pure, `firstStep.ts`)
+  and offers the hints (`src/ui/hints.ts`: once per device, one at a time, sequencing pure). Checked by `node scripts/e2e2-lobby.mjs`
+- Roles: `fullPowers` is the GM (and everyone at a table without one); `canBuild` adds everyone at a table whose GM set `set:free`. Build powers are
+  the scene only (brushes, the pick tool, scenes, scatter: `session.build()`, the board's `build` flag); fog, hidden minis, secret rolls, line of
+  sight, boards, Prep and other players' figures stay with `full()`. A figure a builder puts down is theirs (`o`). A player takes a figure the GM
+  left to everyone (`o: '*'`) with `session.claim(id)`
 - Rules of the new chrome: no top bar; a new state swaps the dock's slots and never adds a row; no ring and no hidden
   gestures (long-press is only ever a shortcut); nothing is confirmed with a dialog — it is done, said in a notice, and Undo takes it back
 - `node scripts/e2e2.mjs` (after a build) checks it on phone viewports, including the screen budget: every dock state goes through its `layout()`

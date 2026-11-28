@@ -4,7 +4,7 @@ import { BLOCKS, BLOCK_SHELVES, MINIS, MINI_SHELVES, PROPS, PROP_SHELVES, makeMi
 import { kindOf, known as has, namespaceOf, onRegistry, pieceId, registerPack, registered, unregisterPack } from './registry';
 import { decode, kindsFor, reading, results, rollValues, shape, simulate, type Kind } from './dice';
 import { deriveRoom, pack, seal, unpack, unseal } from './net';
-import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
+import { canControl, columnTop, dressing, edgeBetween, ek, grow, levelTo, resurface, sculpt, eyesOf, canBuild, fullPowers, measure, miniShown, nextTurn, roomEdges, sees, turnOrder, type MiniVal } from './rules';
 import { buildTerrain } from './terrain';
 import { MAX_ROOM_KINDS, PRESETS, THEMES, addPresets, generate as build, loadPresets, parsePreset, roomName, type GenOpts, type GenRoom, type KnownPiece, type Preset, type Theme } from './gen';
 import { EDGES, edgeBetween as between, nextLight } from './rules';
@@ -172,6 +172,20 @@ describe('table rules', () => {
     expect(canControl(s, 'kid', mini(0, 0, { o: '*' }))).toBe(true);
     s.set('gm:gm', null);
     expect(fullPowers(s, 'kid')).toBe(true);
+  });
+
+  it('lets everyone build when the GM says so, and keeps what is the GM\'s with the GM', () => {
+    const s = new Store('gm');
+    expect(canBuild(s, 'kid')).toBe(true); // no GM: free play, as it always was
+    s.set('gm:gm', true);
+    expect(canBuild(s, 'gm')).toBe(true);
+    expect(canBuild(s, 'kid')).toBe(false);
+    s.set('set:free', true);
+    expect(canBuild(s, 'kid')).toBe(true);
+    expect(fullPowers(s, 'kid')).toBe(false);
+    expect(canControl(s, 'kid', mini(0, 0))).toBe(false);
+    expect(miniShown(s, 'kid', mini(0, 0, { h: true }), eyesOf(s, 'kid'))).toBe('no');
+    for (const not of [false, 1, 'yes', null]) { s.set('set:free', not); expect(canBuild(s, 'kid')).toBe(false); } // only `true` opens it
   });
 
   it('blocks line of sight with walls but not with water or over low cover', () => {

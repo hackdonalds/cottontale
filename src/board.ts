@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { BLOCKS, MINIS, PROPS, STANDIN_HEIGHT, makeMini, makeProp } from './catalog';
 import { KIT, TINT_COLORS, WILD, kit, kitPending, onKitPack, rand, setSeason, setWind, withDetail, type Season } from './kit';
-import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, safeArea, type Ambience } from './glide';
+import { Glide, ambientDue, ambientLive, flicker, nudge, outOfView, readView, safeArea, type Ambience } from './glide';
 import { GROUND, buildTerrain, type Column, type Terrain } from './terrain';
 import { BoulderView } from './boulder';
 import { DiceView, type Solid, type Kind, type Start } from './dice';
@@ -13,10 +13,10 @@ import { SHOTS, ShotsView, shotPath, type Shot } from './shots';
 import { buzz } from './haptics';
 import { LIGHT_LEVELS, nextLight } from './rules';
 import { RISE, SQUASH, TOPPLE, hopAt, hopPlan, nearestDir, riseAt, squashAt, toppleAt } from './feel';
-import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, resurface, roomEdges, sculpt, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
+import { EDGES, columnTop, ek, eyesOf, fogged, grow, levelTo, measure, miniShown, parseEdge, playerEyes, regions, resurface, roomEdges, sculpt, shownToPlayers, type CellVal, type EdgeVal, type MiniVal, type Side } from './rules';
 import type { Store } from './store';
 import { heading, land } from './forces';
-import { boundsOf, copyEdits, kindOf, moveEdits, present, removeEdits, turnEdits, whereIs, type Picked } from './pick';
+import { areaKeys, boundsOf, copyEdits, kindOf, moveEdits, present, removeEdits, turnAreaEdits, turnEdits, whereIs, type Picked } from './pick';
 import { Look } from './look';
 import { onRegistry } from './registry';
 import { standees } from './standee';
@@ -70,6 +70,10 @@ export interface BoardHooks {
   onShove(id: string, sx: number, sz: number): void;
   /** The pieces selected with the pick tool changed (none = an empty list), or a move of them ended. */
   onPick?(keys: string[]): void;
+  /** An area was dragged out with the pick tool: how many pieces it took (0 = none there), or null when it held too many to take. */
+  onArea?(n: number | null): void;
+  /** A tap of the fog tool hid or revealed this many columns (0: nothing changed); `room`: a whole room or region, not one column. */
+  onFog?(cells: number, hide: boolean, room: boolean): void;
 }
 
 const LIMIT = 96;
@@ -230,6 +234,8 @@ interface Gesture {
   press?: ReturnType<typeof setTimeout>;
   /** Carrying the selected pieces to another spot. */
   piece?: boolean;
+  /** Dragging out an area to select (the pick tool, with `areaPick` on). */
+  area?: boolean;
 }
 const TOUCH_LIFT = 44; // px a dragged mini floats above the fingertip so it stays visible
 const LONG_PRESS = 550;
@@ -415,6 +421,10 @@ export class Board {
   onSample: (key: string) => void = () => {};
   /** Armed by the chrome's Move: the next touch on the table says where the selection goes. */
   placing = false;
+  /** Armed by the chrome's Select area (`pickArea`): one finger drags a rectangle, and what stands in it is picked. */
+  areaPick = false;
+  /** Where a finger took hold of several picked pieces (a cell on their lowest level): they keep their place under it. */
+  private grab: Vec | null = null;
   readonly dice: DiceView;
   readonly shots: ShotsView;
   /** Set while a shot is being aimed: the next tap in play names its target (a mini, or a spot in half cells) instead of selecting. */
@@ -432,6 +442,13 @@ export class Board {
 
   private me = '';
   private full = true;
+  /** The powers this player really has, and whether they are set aside to see as players (`preview`): `full` is the one without the other. */
+  private powers = true;
+  private asPlayers = false;
+  /** May this player change the scene? The GM may, and everyone where the table says so (`canBuild` in rules.ts). */
+  private build = true;
+  /** The same, before "see as players" sets it aside. */
+  private builds = true;
   private turnId: string | null = null;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -522,6 +539,10 @@ export class Board {
   /** Glide to the mini whose turn it has become, if it is out of view. Local, not shared. */
   followTurns = true;
   private glide: Glide | null = null;
+  /** With a glide under way: what the camera moves besides (a new angle or distance, see `flyTo`). */
+  private swing: Glide | null = null;
+  /** The camera moved (by hand or by itself). Never called while the view is still. */
+  onCamera: () => void = () => {};
   /** Is there anything on the table that sways or flickers? Looked up again only once the table is at rest. */
   private alive = false;
   private lifeDirty = true;
@@ -644,6 +665,7 @@ export class Board {
     this.controls.maxDistance = 90;
     this.controls.target.set(0, 0, 0);
     this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
+    this.controls.addEventListener('change', () => this.onCamera());
 
     const hidden = (x: number, y: number, z: number) => this.cellHidden(x, y, z);
     // Ground under the smooth surface is not drawn as cubes as well.
@@ -724,12 +746,30 @@ export class Board {
   // ---- what this player gets to see ------------------------------------------
 
   /** Who is looking: their player id, and whether they have GM powers (always true in free play). */
-  setRole(me: string, full: boolean): void {
+  setRole(me: string, full: boolean, build = full): void {
     this.me = me;
-    this.full = full;
-    if (!full) this.offer(null);
+    this.powers = full;
+    this.asPlayers &&= full;
+    this.full = full && !this.asPlayers;
+    this.builds = build;
+    this.build = build && !this.asPlayers; // looking as the players do, nothing is built either
+    if (!this.full) this.offer(null);
     this.refresh();
   }
+
+  /**
+   * See as players: draw the table as someone without the GM's powers would see it (fog solid,
+   * hidden minis gone, line of sight if it is on). Only a view: nothing shared changes, and
+   * while it is on no brush of this device edits anything. It belongs to the fog tool and
+   * goes when the tool does.
+   */
+  preview(on: boolean): void {
+    on &&= this.powers;
+    if (on === this.asPlayers) return;
+    this.asPlayers = on;
+    this.setRole(this.me, this.powers, this.builds);
+  }
+  get previewing(): boolean { return this.asPlayers; }
 
   /** Re-evaluate everything that depends on role, fog, cutaway or line-of-sight settings. */
   refresh(): void {
@@ -851,9 +891,9 @@ export class Board {
   /** Decide which minis this player sees (hidden, fogged, out of sight, above the cutaway). */
   private refreshMinis(): void {
     this.visDirty = false;
-    const eyes = this.full ? null : eyesOf(this.store, this.me);
+    const eyes = this.asPlayers ? playerEyes(this.store) : this.full ? null : eyesOf(this.store, this.me);
     for (const [id, m] of this.minis) {
-      const show = m.val.y < this.cut && miniShown(this.store, this.me, m.val, eyes) !== 'no';
+      const show = m.val.y < this.cut && (this.asPlayers ? shownToPlayers(this.store, m.val, eyes) : miniShown(this.store, this.me, m.val, eyes)) !== 'no';
       m.group.visible = show;
       if (!show && this.selected === id) this.select(null);
     }
@@ -1761,7 +1801,7 @@ export class Board {
   }
   /** Select pieces with the pick tool (an empty list lets go of them). Only whoever may build can. */
   pick(keys: string[]): void {
-    const next = this.full ? present(this.store, keys) : [];
+    const next = this.build ? present(this.store, keys) : [];
     if (next.length && this.selected) this.select(null);
     this.picked = next;
     if (!next.length) this.placing = false;
@@ -1788,6 +1828,18 @@ export class Board {
     if (!from) return null;
     const kind = kindOf(keys[0]), v = this.store.get<CellVal>(keys[0]);
     let to: Vec | null = null;
+    if (keys.length > 1) {
+      // Several pieces slide on their own level, as one: by as far as the finger has come since it
+      // took hold, or (Move, then a touch) with their middle on the column the finger points at.
+      const b = boundsOf(this.store, keys);
+      if (!b) return null;
+      if (!this.grab) {
+        const c = this.pickSurface()?.place;
+        return c ? [c[0] - ((b.min[0] + b.max[0] + 1) >> 1), 0, c[2] - ((b.min[2] + b.max[2] + 1) >> 1)] : null;
+      }
+      const pt = this.onLevel(b.min[1]);
+      return pt && [Math.floor(pt.x) - this.grab[0], 0, Math.floor(pt.z) - this.grab[2]];
+    }
     if (keys.length === 1 && kind === 'mini') to = this.standing();
     else if (keys.length === 1 && kind === 'cell' && PROPS[v?.i ?? '']) to = this.pickSurface()?.place ?? null;
     else {
@@ -1796,10 +1848,15 @@ export class Board {
     }
     return to && [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
   }
+  private carried = '';
   /** Show where the selection would land: white where it fits, red where it does not. */
   private carryGhost(): void {
-    const d = this.carry(), b = boundsOf(this.store, this.selection());
+    const d = this.carry();
+    // (A big selection is only measured again when the finger reaches another cell.)
+    if (d && this.ghost.visible && this.carried === d.join()) return;
+    const b = d && boundsOf(this.store, this.selection());
     if (!d || !b) { this.hideGhost(); return; }
+    this.carried = d.join();
     (this.ghost.material as THREE.MeshBasicMaterial).color.set(moveEdits(this.store, this.selection(), d) ? '#ffffff' : '#ff5a5a');
     const w = b.max[0] - b.min[0] + 1, h = b.max[1] - b.min[1] + 1, dp = b.max[2] - b.min[2] + 1;
     this.ghost.scale.set(w, h, dp);
@@ -1809,7 +1866,7 @@ export class Board {
   }
   /** Write what a selection tool worked out, as one step of undo, and keep hold of the result. */
   private took(out: Picked | null): boolean {
-    if (!out || !this.full) return false;
+    if (!out || !this.build) return false;
     const mini = this.selected;
     this.write(out.edits);
     if (mini && out.keys.length === 1 && out.keys[0].startsWith('m:')) this.select(out.keys[0].slice(2));
@@ -1818,14 +1875,18 @@ export class Board {
   }
   /** Move the selection by whole cells. False if the table has no room there. */
   movePicked(d: Vec): boolean { return this.took(moveEdits(this.store, this.selection(), d)); }
-  /** Turn each selected piece a step where it stands. */
-  turnPicked(): boolean { return this.took(turnEdits(this.store, this.selection())); }
+  /** Turn each selected piece a step where it stands; pieces spread over several cells go round their middle together. */
+  turnPicked(): boolean {
+    const keys = this.selection(), b = boundsOf(this.store, keys);
+    const wide = !!b && (b.max[0] > b.min[0] || b.max[2] > b.min[2]);
+    return this.took(wide ? turnAreaEdits(this.store, keys) : turnEdits(this.store, keys));
+  }
   /** Copy the selection onto the nearest free spot; the copy becomes the selection. */
   copyPicked(): boolean { return this.took(copyEdits(this.store, this.selection(), () => crypto.randomUUID().replace(/-/g, '').slice(0, 12))); }
   /** Take the selection off the table. */
   removePicked(): boolean {
     const out = removeEdits(this.store, this.selection());
-    if (!out || !this.full) return false;
+    if (!out || !this.build) return false;
     this.write(out.edits);
     this.select(null);
     this.pick([]);
@@ -1858,7 +1919,7 @@ export class Board {
   /** A spot on the table for the scatter brush: where the pointer meets the ground or a block. */
   private pourSpot(): Vec | null {
     const p = this.pickSurface()?.point;
-    return p && this.full && p.y < Math.min(MAX_Y, this.cut) ? [+p.x.toFixed(2), +Math.max(0, p.y).toFixed(2), +p.z.toFixed(2)] : null;
+    return p && this.build && p.y < Math.min(MAX_Y, this.cut) ? [+p.x.toFixed(2), +Math.max(0, p.y).toFixed(2), +p.z.toFixed(2)] : null;
   }
   /** The loose pieces under the pointer: a fingertip covers more than one coin, so all that it covers. */
   private looseAt(): string[] {
@@ -2034,13 +2095,51 @@ export class Board {
     this.hooks.onSlab(this.slab);
   }
 
+  /**
+   * Select by area (the pick tool): while on, one finger drags a rectangle and everything standing
+   * in it is picked. Two fingers are the camera, as with every tool. It turns itself off once
+   * something is picked.
+   */
+  pickArea(on: boolean): void {
+    on = on && this.full && this.tool === 'pick';
+    if (on) { this.select(null); this.pick([]); }
+    this.areaPick = on;
+    if (this.tool !== 'pick') return;
+    this.controls.touches.ONE = on ? (-1 as THREE.TOUCH) : THREE.TOUCH.ROTATE;
+    this.controls.mouseButtons.LEFT = on ? (-1 as THREE.MOUSE) : THREE.MOUSE.ROTATE;
+    this.marquee.visible = false;
+    this.canvas.style.cursor = on ? 'crosshair' : 'grab';
+    this.invalidate();
+  }
+  /** Stretch the marquee from the column the finger started on; on release, pick what stands in it, from the level touched up. */
+  private stretchArea(g: Gesture, done: boolean): void {
+    const s = this.pickSurface(), a = g.first, b = s && (s.cell ?? s.place);
+    if (!a || !b) { if (done) this.marquee.visible = false; return; }
+    const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), z0 = Math.min(a[2], b[2]), z1 = Math.max(a[2], b[2]);
+    this.marquee.position.set(x0, a[1], z0);
+    this.marquee.scale.set(x1 - x0 + 1, Math.max(1, this.maxHeight() - a[1]) + 0.05, z1 - z0 + 1);
+    this.marquee.visible = !done;
+    this.invalidate();
+    if (!done) return;
+    const found = areaKeys(this.store, x0, x1, z0, z1, a[1], (x, y, z) => this.cellHidden(x, y, z));
+    if (found?.length) {
+      this.pickArea(false);
+      // One figure alone is a figure selected, as a tap on it would have.
+      if (found.length === 1 && found[0].startsWith('m:')) this.select(found[0].slice(2));
+      else this.pick(found);
+    }
+    this.hooks.onArea?.(found ? found.length : null);
+  }
+
   setTool(t: Tool): void {
     this.tool = t;
+    this.areaPick = false;
     this.offer(null);
     this.hideGhost();
     if (t !== 'move' && t !== 'pick') this.select(null);
     if (t !== 'pick' && this.picked.length) this.pick([]);
     this.placing = false;
+    if (t !== 'fog') this.preview(false);
     if (t !== 'ruler' && this.rulers.has('me')) {
       this.showRuler('me', null, '');
       this.hooks.onRuler(null);
@@ -2058,7 +2157,7 @@ export class Board {
    * bounds, and whatever is left of the scene it replaces (`old`), makes way for it.
    */
   applyScene(edits: [string, unknown][], [x0, x1, z0, z1]: number[], old: Set<string>, frame = true): void {
-    if (!this.full) return;
+    if (!this.build) return;
     const scene = new Map(edits);
     this.batch = [];
     this.undoStack.push(this.batch);
@@ -2109,7 +2208,9 @@ export class Board {
       this.store.set(u.k, u.prev);
     }
     to.push(inverse);
-    this.showPick();
+    // The picked pieces went with the step (a move or a copy taken back): what it put back is picked instead.
+    if (this.picked.some((k) => this.store.get(k) === null)) this.pick([...new Set(group.map((u) => u.k))]);
+    else this.showPick();
     return new Set(group.map((u) => u.k)).size;
   }
   /**
@@ -2133,7 +2234,7 @@ export class Board {
     return step;
   }
   private edit(k: string, v: unknown): void {
-    if (!this.full) return; // building and fog are the GM's once a table has one
+    if (!this.build) return; // building is the GM's once a table has one, unless the GM shares it
     const u = { k, prev: this.store.get(k) };
     if (this.batch) this.batch.push(u);
     else this.undoStack.push([u]);
@@ -2222,6 +2323,24 @@ export class Board {
   private glideBy(d: THREE.Vector3): void {
     if (d.lengthSq() < 1e-4 || d.length() > 2 * LIMIT) return;
     this.glide = new Glide([d.x, d.y, d.z], this.calm ? 0 : 0.5);
+    this.swing = null;
+    this.invalidate();
+  }
+  /** Where the camera stands and what it looks at, to the centimetre. */
+  view(): { p: Vec; t: Vec } {
+    const r = (v: THREE.Vector3): Vec => [Math.round(v.x * 100) / 100, Math.round(v.y * 100) / 100, Math.round(v.z * 100) / 100];
+    return { p: r(this.camera.position), t: r(this.controls.target) };
+  }
+  /** Take up another view, smoothly: stand at `p`, look at `t`. As with any glide, a touch on the table stops it where it is. */
+  flyTo(p: unknown, t: unknown): void {
+    const v = readView(p, t, LIMIT, this.controls.minDistance, this.controls.maxDistance);
+    if (!v || this.handsOn()) return;
+    const dt = new THREE.Vector3(...v.t).sub(this.controls.target), dp = new THREE.Vector3(...v.p).sub(this.camera.position).sub(dt);
+    if (dt.lengthSq() + dp.lengthSq() < 1e-4) return;
+    const seconds = this.calm ? 0 : 0.6;
+    this.zoomGoal = null;
+    this.glide = new Glide([dt.x, dt.y, dt.z], seconds);
+    this.swing = new Glide([dp.x, dp.y, dp.z], seconds);
     this.invalidate();
   }
   /** The turn has passed to a mini: go to it, but only if it is out of view and the player is not busy. */
@@ -2264,9 +2383,10 @@ export class Board {
   /** Hand out this frame's share of a camera move. True while one is under way. */
   private slide(dt: number): boolean {
     const s = this.glide?.step(dt);
-    if (!s) { this.glide = null; return false; }
+    if (!s) { this.glide = this.swing = null; return false; }
+    const c = this.swing?.step(dt) ?? [0, 0, 0];
     this.controls.target.x += s[0]; this.controls.target.y += s[1]; this.controls.target.z += s[2];
-    this.camera.position.x += s[0]; this.camera.position.y += s[1]; this.camera.position.z += s[2];
+    this.camera.position.x += s[0] + c[0]; this.camera.position.y += s[1] + c[1]; this.camera.position.z += s[2] + c[2];
     return true;
   }
 
@@ -2427,7 +2547,15 @@ export class Board {
     this.aim(e);
     switch (this.tool) {
       case 'move': case 'pick': {
+        if (this.areaPick && this.tool === 'pick') { // an area is being dragged out: the finger picks nothing up
+          const s = this.pickSurface();
+          g.area = true;
+          g.first = s && s.place;
+          this.canvas.setPointerCapture(e.pointerId);
+          break;
+        }
         if (this.placing && this.selection().length) { // Move was tapped: this touch says where the selection goes
+          this.grab = null;
           g.piece = true;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
@@ -2435,7 +2563,8 @@ export class Board {
           break;
         }
         const id = this.shoving ? null : this.pickMini(); // waiting for a direction: this touch points, it does not pick up
-        if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
+        if (id && this.picked.includes(`m:${id}`)) this.holdPicked(g, e); // one of the picked: they all come along
+        else if (id && !this.aimed && this.hooks.canMove(id)) { // (while aiming, a tap on a mini picks a target: nothing is dragged)
           g.mini = id;
           this.controls.enabled = false;
           this.canvas.setPointerCapture(e.pointerId);
@@ -2443,11 +2572,7 @@ export class Board {
         else if (this.tool === 'pick') {
           // A finger on the selection carries it; anywhere else it is the camera's (and a tap selects).
           const t = this.picked.length ? this.pickTarget() : null;
-          if (t && this.picked.includes(t)) {
-            g.piece = true;
-            this.controls.enabled = false;
-            this.canvas.setPointerCapture(e.pointerId);
-          }
+          if (t && (this.picked.includes(t) || this.overPicked())) this.holdPicked(g, e);
         } else {
           // Press and hold on the table to ping the spot for everyone.
           const at = { clientX: e.clientX, clientY: e.clientY };
@@ -2494,6 +2619,20 @@ export class Board {
         if (this.erasing) { const t = this.eraseTarget(); g.wipe = !!t?.startsWith('l:'); g.first = t && !/^[wl]:/.test(t) ? parse(t) : null; }
         else if (this.tool === 'build') g.first = this.pickSurface()?.place ?? null;
     }
+  }
+
+  /** A finger came down on the picked pieces: it carries them. */
+  private holdPicked(g: Gesture, e: PointerEvent): void {
+    const b = boundsOf(this.store, this.picked), pt = b && this.onLevel(b.min[1]);
+    this.grab = pt ? [Math.floor(pt.x), 0, Math.floor(pt.z)] : null;
+    g.piece = true;
+    this.controls.enabled = false;
+    this.canvas.setPointerCapture(e.pointerId);
+  }
+  /** Several pieces are picked and the pointer is on the ground among them: an area is held by any part of it. */
+  private overPicked(): boolean {
+    const b = this.picked.length > 1 ? boundsOf(this.store, this.picked) : null, c = this.pickSurface()?.place;
+    return !!b && !!c && c[0] >= b.min[0] && c[0] <= b.max[0] && c[2] >= b.min[2] && c[2] <= b.max[2] && c[1] >= b.min[1] && c[1] <= b.max[1] + 1;
   }
 
   /** Replay the other fingers' pointerdown to OrbitControls (it ignores pointers that land while it is disabled). */
@@ -2562,10 +2701,11 @@ export class Board {
     }
     if (g.piece) {
       if (!g.moved && !this.placing) return;
-      this.aim(e, g.touch && g.moved ? TOUCH_LIFT : 0);
+      this.aim(e, g.touch && g.moved && this.selection().length === 1 ? TOUCH_LIFT : 0); // (one piece floats clear of the fingertip; an area stays under it)
       this.carryGhost();
       return;
     }
+    if (g.area) { this.aim(e); this.stretchArea(g, false); return; }
     if (!g.drags || g.button !== 0 || this.sampling) return;
     this.aim(e);
     if (this.tool === 'ruler') this.stretchRuler(g, false);
@@ -2599,6 +2739,19 @@ export class Board {
     if ((this.store.get(key) === true) === this.fogHide) return;
     if (!this.batch) { this.batch = []; this.undoStack.push(this.batch); }
     this.edit(key, this.fogHide ? true : null);
+  }
+
+  /**
+   * A tap with the fog tool hides or reveals the whole room under the finger (`regions`), as
+   * one step of undo. On open ground, where there is no room to speak of, it is one column.
+   */
+  private tapFog(): void {
+    const s = this.pickSurface();
+    if (!s || !this.full) { this.hooks.onFog?.(0, this.fogHide, false); return; }
+    const room = regions(this.store, ...s.place), c = s.cell ?? s.place;
+    const keys = (room ?? [[c[0], c[2]]]).map(([x, z]) => `f:${x},${z}`).filter((k) => (this.store.get(k) === true) !== this.fogHide);
+    if (keys.length) this.editAll(keys.map((k) => [k, this.fogHide ? true : null]));
+    this.hooks.onFog?.(keys.length, this.fogHide, !!room);
   }
 
   /** Dragging a finger paints (or erases) a flat layer at the height of the first cell. */
@@ -2740,7 +2893,7 @@ export class Board {
       const placing = this.placing;
       this.placing = false;
       if (g.moved || placing) {
-        this.aim(e, g.touch && g.moved ? TOUCH_LIFT : 0);
+        this.aim(e, g.touch && g.moved && this.selection().length === 1 ? TOUCH_LIFT : 0);
         const d = this.carry();
         if (!d || !this.movePicked(d)) buzz(20); // no room there: it stays where it was
       }
@@ -2750,6 +2903,7 @@ export class Board {
     }
     if (g.button !== 0) return;
     this.aim(e);
+    if (g.area) { this.stretchArea(g, true); return; }
     if (this.tool === 'ruler') {
       // A drag measures and leaves the ruler out; a tap puts it away.
       if (g.moved) this.stretchRuler(g, true);
@@ -2757,7 +2911,8 @@ export class Board {
       return;
     }
     if (this.tool === 'fog') {
-      this.paintFog(); // a tap fogs one column; a drag has been painting all along
+      if (g.moved) this.paintFog(); // a drag has been painting all along
+      else this.tapFog(); // a tap takes the whole room
       this.batch = null;
       return;
     }
@@ -2816,7 +2971,7 @@ export class Board {
         if (this.lighting) { this.stepLight(); break; }
         if (this.erasing) {
           const t = this.eraseTarget();
-          if (t?.startsWith('l:')) this.commit(this.looseAt().map((k) => [k, null]));
+          if (t?.startsWith('l:') && this.build) this.write(this.looseAt().map((k) => [k, null]));
           else if (t) this.edit(t, null);
           break;
         }
@@ -2826,14 +2981,14 @@ export class Board {
       }
       case 'mini': {
         const p = this.standing();
-        if (!p || !this.full) break;
+        if (!p || !this.build) break;
         const id = crypto.randomUUID().slice(0, 12);
         this.edit(`m:${id}`, { ...this.hooks.newMini(), x: p[0], y: p[1], z: p[2] });
         break;
       }
       case 'pick': {
         if (g.tapMini) { this.select(g.tapMini); break; }
-        const t = this.full ? this.pickTarget() : null;
+        const t = this.build ? this.pickTarget() : null;
         this.select(null);
         this.pick(t ? [t] : []);
         break;

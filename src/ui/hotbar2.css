@@ -1,0 +1,28 @@
+/* The hotbar (src/ui/hotbar2.ts): pinned and recent pieces while a brush is in hand. One slim
+   row of pictures on the dock's top edge, to the left of the Undo pair — 48px, so with the dock
+   and the pair the table still keeps over 80% of the smallest phone. It is as wide as what it
+   holds and scrolls sideways beyond that. */
+.hotbar { position: absolute; left: calc(6px + var(--sl)); bottom: calc(var(--dock) + var(--sb) + 4px); max-width: calc(100% - 112px - var(--sl) - var(--sr)); display: flex; gap: 2px; padding: 2px; border-radius: 14px; background: rgba(36, 27, 22, .88); overflow: auto hidden; overscroll-behavior: contain; scrollbar-width: none; touch-action: pan-x; }
+.hotbar::-webkit-scrollbar { display: none; }
+.hotbar .hb { position: relative; flex: none; width: var(--tap); height: var(--tap); min-width: var(--tap); min-height: var(--tap); padding: 0; display: grid; place-items: center; background: none; box-shadow: none; border: 0; border-radius: 12px; }
+.hotbar .hb:active { background: rgba(255, 226, 190, .14); transform: none; }
+.hotbar .hb i { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: #2b211b no-repeat; font-style: normal; font-size: 22px; line-height: 1; }
+.hotbar .hb svg.cube { width: 30px; height: 30px; }
+.hotbar .hb.on i { box-shadow: 0 0 0 2px var(--acc); }
+/* A pinned piece carries a small star, as it does in the library. */
+.hotbar .hb.fav::after { content: '★'; position: absolute; top: 2px; right: 3px; font-size: 10px; line-height: 1; color: var(--acc); text-shadow: 0 1px 2px #000; pointer-events: none; }
+/* During a fight the turn strip steps up over the row rather than under it. */
+#app:has(.hotbar:not([hidden])) .turn { bottom: calc(var(--dock) + var(--sb) + 58px); }
+
+/* Pinning in the library: the star beside the search turns taps into pins. */
+.drawer .line > .pin { flex: none; width: var(--tap); padding: 0; }
+.drawer .line > .pin.on { color: var(--acc); }
+.drawer .line > .pin.on svg { fill: currentColor; }
+.drawer .tiles.pinning .tile:not(.fav) i::after { content: '☆'; position: absolute; top: 2px; right: 4px; font-size: 14px; line-height: 1; color: #f3ebe0; opacity: .8; text-shadow: 0 1px 2px #000; }
+
+/* A phone held sideways: a short column beside the rail, over the Undo pair, so the short axis stays the table's.
+   Three pieces and a half (the half says there are more): with the rail, the pair and a turn strip the table keeps its 80%. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .hotbar { left: auto; right: calc(var(--dock) + var(--sr) + 6px); bottom: calc(var(--sb) + 56px); max-width: none; max-height: 162px; flex-direction: column; overflow: hidden auto; touch-action: pan-y; }
+  #app:has(.hotbar:not([hidden])) .turn { bottom: calc(6px + var(--sb)); }
+}

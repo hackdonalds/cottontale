@@ -9,18 +9,22 @@ export type Sel = 'none' | 'mini' | 'theirs' | 'piece';
 
 export interface DockState {
   role: Role;
+  /** A player who may build (the GM opened building to the table). */
+  build?: boolean;
   mode: Mode;
   sel: Sel;
   /** A brush is in hand (Build): its name, and what kind of brush it is. */
   armed?: { name: string; turns: boolean; sized: boolean; erasing: boolean; sampling: boolean; size: number };
+  /** Select area is armed (Build): one finger drags a rectangle over the pieces to select. */
+  area?: boolean;
   /** Move was tapped: the next touch says where the selection goes. */
   placing?: boolean;
   /** The table plays by a rules system, so there are character sheets. */
   sheets?: boolean;
   /** The selected mini is hidden from the players. */
   hidden?: boolean;
-  /** A tool of Play is out: the ruler (and which template), or the GM's fog brush (hiding or revealing). */
-  tool?: { ruler: 'line' | 'circle' | 'cone'; blast?: boolean } | { fog: 'hide' | 'reveal' };
+  /** A tool of Play is out: the ruler (and which template), or the GM's fog (hiding or revealing; or only looking, as the players see it). */
+  tool?: { ruler: 'line' | 'circle' | 'cone'; blast?: boolean } | { fog: 'hide' | 'reveal'; asPlayers?: boolean };
 }
 
 export interface Slot {
@@ -41,11 +45,13 @@ const DONE = slot('done', 'Done', 'check');
 
 export function dockFor(s: DockState): Slot[] {
   if (s.role === 'display') return []; // the table screen has no chrome at all
-  const gm = s.role === 'gm';
+  const gm = s.role === 'gm', builds = gm || !!s.build;
   // A mini that is not ours: look, do not touch.
   if (s.sel === 'theirs') return [slot('details', 'Details', 'list'), DONE];
+  // An area is being dragged out: nothing else to do until it is, but call it off.
+  if (gm && s.mode === 'build' && s.area) return [slot('area', 'Area', 'grid', { on: true }), DONE];
   // Build with something selected: what you can do to it, where it stands.
-  if (gm && s.mode === 'build' && s.sel !== 'none') {
+  if (builds && s.mode === 'build' && s.sel !== 'none') {
     return [
       slot('move', 'Move', 'move', { on: !!s.placing }), slot('turn', 'Turn', 'turn'), slot('copy', 'Duplicate', 'copy'),
       slot('remove', 'Delete', 'trash'), slot('more', 'More', 'more'), DONE,
@@ -68,14 +74,15 @@ export function dockFor(s: DockState): Slot[] {
     ];
   }
   if (gm && s.mode === 'play' && s.tool && 'fog' in s.tool) {
+    const look = !!s.tool.asPlayers; // seeing as players is only a view: the brushes wait, in their places
     return [
-      slot('fogHide', 'Hide', 'fog', { on: s.tool.fog === 'hide' }), slot('fogShow', 'Reveal', 'eye', { on: s.tool.fog === 'reveal' }),
-      slot('revealAll', 'Reveal all', 'sun'), DONE,
+      slot('fogHide', 'Hide', 'fog', { on: !look && s.tool.fog === 'hide', off: look }), slot('fogShow', 'Reveal', 'eye', { on: !look && s.tool.fog === 'reveal', off: look }),
+      slot('revealAll', 'Reveal all', 'sun', { off: look }), slot('asPlayers', 'As players', 'pawn', { on: look }), DONE,
     ];
   }
-  if (!gm) {
+  if (!gm && !(builds && s.mode === 'build')) {
     return [
-      slot('dice', 'Dice', 'dice'), ...(s.sheets ? [slot('sheet', 'Sheet', 'sheet')] : []),
+      ...(builds ? [slot('build', 'Build', 'cube')] : []), slot('dice', 'Dice', 'dice'), ...(s.sheets ? [slot('sheet', 'Sheet', 'sheet')] : []),
       slot('ruler', 'Ruler', 'ruler'), slot('chat', 'Chat', 'chat'), slot('table', 'Table', 'table'),
     ];
   }

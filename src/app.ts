@@ -7,9 +7,12 @@ import { EMOTES } from './board';
 import * as registry from './registry';
 import { ls, startSession, type Session } from './session';
 import { armKey, watchLibrary, type Ctx } from './ui/buildSheets';
+import { showDisplay } from './ui/display';
 import { mountDock, type Dock } from './ui/dock';
 import { mountDrawer } from './ui/drawer';
 import { thumb } from './ui/face';
+import { mountHotbar, type Hotbar } from './ui/hotbar2';
+import { mountFirstRun, type FirstRun } from './ui/firstRun';
 import { registerImportPage } from './ui/importPage';
 import { mountNotice } from './ui/notice';
 import { registerPacksPage } from './ui/packsPage';
@@ -21,7 +24,9 @@ import { initSheets } from './ui/sheets';
 import { registerSoundPage } from './ui/soundPage';
 import { initThemeEditor } from './ui/themeEditor';
 
-export async function play(name: string, code: string, relays: string[], color: string): Promise<void> {
+/** `started`: the table was started from the lobby, not joined: if it turns out to be new, this device is its GM. `display`: this device is a table screen. */
+export async function play(name: string, code: string, relays: string[], color: string, { started = false, display = false } = {}): Promise<void> {
+  if (display) return showDisplay(code, relays); // a table screen has no chrome to wire up (src/ui/display.ts)
   // Of the old chrome only the parts that are reused stay: the Prep pages, the character sheet, the rules picker and the roll toast.
   const hud = document.getElementById('hud')!;
   for (const kid of [...hud.children]) if (!['prepPages', 'sheet', 'rules', 'toast'].includes(kid.id)) kid.remove();
@@ -32,11 +37,11 @@ export async function play(name: string, code: string, relays: string[], color: 
   document.body.append(root);
   const notice = mountNotice(root);
   const log = new Log();
-  let dock: Dock | undefined, prep: Prep | undefined, turn: ReturnType<typeof mountTurn> | undefined;
+  let dock: Dock | undefined, hotbar: Hotbar | undefined, prep: Prep | undefined, turn: ReturnType<typeof mountTurn> | undefined, first: FirstRun | undefined;
   const plain = (html: string) => html.replace(/<[^>]+>/g, '');
   // The session starts telling us things before the chrome below exists: until then there is nothing to draw.
   let ready = false;
-  const redraw = () => { if (!ready) return; dock?.render(); turn?.render(); drawer.redraw(); inset(); };
+  const redraw = () => { if (!ready) return; dock?.render(); hotbar?.render(); turn?.render(); drawer.redraw(); inset(); first?.update(); };
   let toastTimer: ReturnType<typeof setTimeout>;
   const session: Session = await startSession({
     canvas: document.getElementById('c') as HTMLCanvasElement, name, code, relays, color,
@@ -63,7 +68,7 @@ export async function play(name: string, code: string, relays: string[], color: 
   });
   const s = session;
   document.getElementById('lobby')!.hidden = true;
-  const drawer = mountDrawer(root, () => { if (drawer.id) openLegacy(null, false); dock?.render(); inset(); });
+  const drawer = mountDrawer(root, () => { if (drawer.id) openLegacy(null, false); dock?.render(); hotbar?.render(); inset(); });
   const ctx: Ctx = { s, drawer, notice };
   log.onChange = () => { if (drawer.id === 'dice') drawer.redraw(); dock?.render(); };
 
@@ -107,6 +112,7 @@ export async function play(name: string, code: string, relays: string[], color: 
 
   turn = mountTurn(root, ctx);
   dock = mountDock(root, ctx, log, () => prep);
+  hotbar = mountHotbar(root, ctx);
   /** Tell the board how much of the canvas the chrome covers, so "the middle of the table" is the middle of what can be seen. */
   let was = '';
   function inset(): void {
@@ -119,6 +125,8 @@ export async function play(name: string, code: string, relays: string[], color: 
     s.board.setInset(bottom, right);
   }
   addEventListener('resize', () => setTimeout(inset));
+  first = mountFirstRun(ctx);
+  if (started) void s.claimNew();
   ready = true;
   s.touch();
   redraw();

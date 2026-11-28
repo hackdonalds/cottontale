@@ -10,7 +10,7 @@ import { Board, type MiniVal, type Ruler, type Sky, type Slab, type Tool, type V
 import { BLOCKS, MINIS, MINI_SHELVES, PROPS } from './catalog';
 import * as registry from './registry';
 import { loadKit, type Season } from './kit';
-import { EDGES, canControl, eyesOf, fullPowers, gms, miniShown, nextTurn, parseEdge, pid, roomEdges, setting, turnOrder, type CellVal, type Turn } from './rules';
+import { EDGES, PARTY, canBuild, canControl, eyesOf, fullPowers, gms, miniShown, nextTurn, parseEdge, pid, roomEdges, setting, turnOrder, type CellVal, type Turn } from './rules';
 import { PRESETS, addPresets, generate, loadPresets, parsePreset, type GenOpts, type GenRoom, type KnownPiece, type Preset, type Theme } from './gen';
 import { MAX_DICE, decode, kindsFor, results, rollValues, simulate, type Kind, type Start, type Throw } from './dice';
 import { Blobs, deriveBlobKey, pickIce, pickServers } from './blob';
@@ -27,7 +27,7 @@ import { SHOTS, readShot } from './shots';
 import { LOOSE, MAX_LOOSE, type LooseVal } from './loose';
 import { pour } from './pour';
 import { MAX_BLAST, blast, fellLine, shove, type Fall } from './forces';
-import { kindOf } from './pick';
+import { AREA_MAX, areaKeys, boundsOf, kindOf } from './pick';
 import { authority } from './system';
 import type { SystemUI } from './ui/sheet';
 
@@ -51,21 +51,35 @@ export interface SessionHooks {
   grabbed(): void;
 }
 
-export interface SessionOpts { canvas: HTMLCanvasElement; name: string; code: string; relays: string[]; color: string; hooks: SessionHooks }
+export interface SessionOpts {
+  canvas: HTMLCanvasElement; name: string; code: string; relays: string[]; color: string; hooks: SessionHooks;
+  /** A table screen (src/ui/display.ts): it looks on with the party, and can change nothing. */
+  display?: boolean;
+}
 export type Mode = 'play' | 'build';
 interface SceneRec { o: GenOpts; rooms: GenRoom[]; p?: unknown }
 export const SLAB_TAG = 'cottontale-slab:';
 
 export type Session = Awaited<ReturnType<typeof startSession>>;
 
-export async function startSession({ canvas, name, code, relays, color: myColor, hooks }: SessionOpts) {
-  let skHex = ls.get('sk');
-  if (!skHex) ls.set('sk', (skHex = hex(generateSecretKey())));
+export async function startSession({ canvas, name, code, relays, color: myColor, hooks, display = false }: SessionOpts) {
+  // A table screen has a key of its own: opened in the browser the GM plays in, it is still another seat.
+  const skKey = display ? 'skd' : 'sk';
+  let skHex = ls.get(skKey);
+  if (!skHex) ls.set(skKey, (skHex = hex(generateSecretKey())));
   const sk = unhex(skHex);
   const me = getPublicKey(sk);
   const meId = pid(me);
   const store = new Store(meId);
-  const full = () => fullPowers(store, meId);
+  /** Whose eyes the table is drawn for: this player's, or (a table screen) the whole party's. */
+  const seat = display ? PARTY : meId;
+  const full = () => fullPowers(store, seat);
+  /** May this device change the mini? A table screen changes nothing, whoever the mini belongs to. */
+  const may = (v: MiniVal) => !display && canControl(store, meId, v);
+  /** Does this device get to see the mini at all? */
+  const shown = (v: MiniVal) => miniShown(store, seat, v, eyesOf(store, seat)) !== 'no';
+  /** May this device change the scene? The GM, everyone at a table without one, and everyone where the GM said so (`set:free`). Never a table screen. */
+  const build = () => !display && canBuild(store, meId);
   const amGM = () => gms(store).includes(meId);
   // The modelled pieces; without them (offline, first visit) the table falls back to plain shapes.
   const [{ tag }] = await Promise.all([deriveRoom(code), loadKit('./kit').catch(() => {})]);
@@ -94,13 +108,14 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   const board = new Board(canvas, store, {
     onSelect: (id) => { rules?.follow(id); if (cutAuto) autoCut(); later(); },
     onPick: () => later(),
+    onArea: (n) => { if (!n) sys(n === null ? `Too much for one selection (over ${AREA_MAX} pieces): drag a smaller area.` : 'Nothing stands there. Drag over the pieces to select.'); later(); },
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
     onLand: (mine) => { sound.knock(); if (mine) buzz(8); },
-    onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
-    newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
+    onPing: (p) => { if (display) return; board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
+    newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1, ...(full() ? {} : { o: meId }) }), // a figure a player puts down is theirs to move
     canMove: (id) => {
       const v = store.get<MiniVal>(`m:${id}`);
-      if (!v || !canControl(store, meId, v)) return false;
+      if (!v || !may(v)) return false;
       // In a fight, players move on their own turn (the GM always can).
       const turn = store.get<Turn>('turn');
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
@@ -120,6 +135,14 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     },
     onView: () => {},
     onLight: (name) => sys(`Light: ${name}`),
+    onFog: (cells, hide, room) => {
+      const n = `${cells} cell${cells === 1 ? '' : 's'}`;
+      if (board.previewing) sys('This is what the players see. Tap As players to go on.');
+      else if (!cells) sys(hide ? 'Already hidden.' : 'Nothing hidden here.');
+      else if (room) sys(hide ? `Room hidden — ${n}. Undo reveals it.` : `Room revealed — ${n}. Undo hides it again.`);
+      else sys(`Open ground: one cell ${hide ? 'hidden' : 'revealed'}. Drag to paint more.`);
+      later();
+    },
     onSlab: (slab) => {
       board.brush = 'paste';
       board.setTool('build');
@@ -133,11 +156,11 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   });
 
   async function pourOut(a: Vec, b: Vec): Promise<void> {
-    if (!full()) return;
+    if (!build()) return;
     if (board.loose.count >= MAX_LOOSE) return sys(`This board holds no more than ${MAX_LOOSE} loose pieces. Erase some first.`);
     void pour({
       store, here: () => here, count: () => board.loose.count, solidsNear: (c, r) => board.solidsNear(c, r),
-      send: (t) => void send({ y: 'pour', t }), play: (t) => board.loose.play(t), commit: (edits) => board.commit(edits),
+      send: (t) => void send({ y: 'pour', t }), play: (t) => board.loose.play(t), commit: (edits) => (build() ? board.write(edits) : []),
     }, pourKind, pourCount, a, b);
   }
 
@@ -162,12 +185,14 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   const relay = { open: 0, total: relays.length };
   const net = new Net({
-    code, relays, sk, name, color: myColor, store, unconfirmed,
+    code, relays, sk, name, color: myColor, display, store, unconfirmed,
     onMsg: handle,
     onPeers: () => later(),
     onStatus: (open, total) => { relay.open = open; relay.total = total; later(); },
   });
   await net.start();
+  /** The relays have answered (or the wait for them is over): what the store holds now is what there is of this table. */
+  const synced = new Promise<void>((done) => { const t = setInterval(() => { if (net.synced) { clearInterval(t); done(); } }, 200); });
   board.loose.onHit = (strength) => sound.clack(strength * 0.6);
   board.shots.onSound = (kind, hit) => sound.shot(kind, hit);
   // Everyone hears the dice; only the thrower feels them in the hand.
@@ -236,16 +261,18 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
       case 'ping': if (!elsewhere && Array.isArray(msg.p) && msg.p.every(Number.isFinite)) { board.ping(msg.p, net.colorOf(from)); sound.ping(); } break;
       case 'broke': if (!elsewhere && typeof msg.k === 'string') board.broke(msg.k, String(msg.i)); break;
       // Only someone who may build can pour; the recording itself is checked by the view.
-      case 'pour': if (!elsewhere && fullPowers(store, pid(from))) void board.loose.play(msg.t); break;
+      case 'pour': if (!elsewhere && canBuild(store, pid(from))) void board.loose.play(msg.t); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
       case 'sroll': case 'sys': rules?.onMsg(msg, from); break;
       case 'sfx': if (state.ready) tableSounds.heard(msg.id, fullPowers(store, pid(from))); break; // the GM's soundboard, heard on every board
       case 'fall': {
         // Only what this player can see is worth a line: a fall must not give a mini away.
         const v = elsewhere ? null : store.get<MiniVal>(`m:${String(msg.id)}`), n = Math.round(Number(msg.n));
-        if (v && n > 0 && n <= 40 && miniShown(store, meId, v, eyesOf(store, meId)) !== 'no') sys(fellLine(v, n));
+        if (v && n > 0 && n <= 40 && shown(v)) sys(fellLine(v, n));
         break;
       }
+      // The GM shows the table screen a view. Only a GM's is taken up, and only by a screen.
+      case 'cam': if (display && !elsewhere && gms(store).includes(pid(from))) board.flyTo(msg.p, msg.t); break;
       case 'blast': if (!elsewhere && Array.isArray(msg.c) && msg.c.every(Number.isFinite)) board.rock(msg.c, Math.max(1, Math.min(MAX_BLAST, Number(msg.r) || 1))); break;
     }
   }
@@ -457,7 +484,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   /** A brush is in hand: one finger paints with it until Done. */
   const armed = () => board.tool === 'build' || board.tool === 'mini';
   function setTool(t: Tool): void {
-    if (t !== 'move' && t !== 'ruler' && !full()) t = 'move';
+    if (t === 'fog' ? !full() : t !== 'move' && t !== 'ruler' && !build()) t = 'move'; // fog is the GM's, the rest of the tools belong to whoever may build
     board.sampling = false;
     board.setTool(t);
     later();
@@ -469,13 +496,13 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   }
   /** Take a brush in hand: a block, a prop, a wall piece, or one of the tools (`erase`, `room`, `raise`…). */
   function arm(brush: string): void {
-    if (!full()) return;
+    if (!build()) return;
     board.brush = brush;
     setTool('build');
   }
   /** Take a kind of mini in hand. */
   function armMini(kind: string, color = miniColor): void {
-    if (!full() || !registry.known.mini(kind)) return;
+    if (!build() || !registry.known.mini(kind)) return;
     miniKind = kind;
     miniColor = color;
     setTool('mini');
@@ -484,7 +511,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   function disarm(): void { if (building()) setTool('pick'); }
   /** Pick from the scene: the next tap takes whatever it lands on as the brush. */
   function sample(on = true): void {
-    if (!full()) return;
+    if (!build()) return;
     if (!armed()) setTool('build');
     board.sampling = on;
     if (on) sys('Tap a piece on the table to take it in hand.');
@@ -526,16 +553,16 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   // ---- the selection ----
 
   const sel = () => (board.selected ? store.get<MiniVal>(`m:${board.selected}`) : null);
-  const mine = (v = sel()) => !!v && canControl(store, meId, v);
+  const mine = (v = sel()) => !!v && may(v);
   /** Change the selected mini (if it is ours to change), as a step of undo. */
   function patch(p: Partial<MiniVal>): void {
     const v = sel();
-    if (v && canControl(store, meId, v)) board.write([[`m:${board.selected}`, { ...v, ...p }]]);
+    if (v && may(v)) board.write([[`m:${board.selected}`, { ...v, ...p }]]);
   }
   /** Write a field that may be cleared: `undefined` removes it from the mini. */
   function setOpt(key: 'hp' | 'mhp' | 'ini' | 'o', value: number | string | undefined): void {
     const v = sel();
-    if (!v || !canControl(store, meId, v)) return;
+    if (!v || !may(v)) return;
     const { [key]: _, ...rest } = v;
     board.write([[`m:${board.selected}`, value === undefined || value === '' ? rest : { ...rest, [key]: value }]]);
   }
@@ -544,7 +571,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     const edits: [string, unknown][] = [];
     for (const id of ids) {
       const v = store.get<MiniVal>(`m:${id}`);
-      if (!v || !canControl(store, meId, v)) continue;
+      if (!v || !may(v)) continue;
       edits.push([`m:${id}`, { ...v, hp: Math.max(0, Math.min(v.mhp ?? 9999, (v.hp ?? v.mhp ?? 0) + by)) }]);
     }
     board.write(edits);
@@ -554,16 +581,33 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     board.pick([]);
     later();
   }
+  /** Select by area: one finger drags a rectangle on the table, and everything standing in it is selected. */
+  function selectArea(on = true): void {
+    if (on && !full()) return;
+    if (on && board.tool !== 'pick') setTool('pick');
+    board.pickArea(on);
+    if (board.areaPick) sys('Drag over the pieces to select.');
+    later();
+  }
+  /** Take the ground under the selected pieces as well: everything in their columns, from the bottom up. */
+  function selectGround(): void {
+    const b = boundsOf(store, board.picked), keys = b && areaKeys(store, b.min[0], b.max[0], b.min[2], b.max[2], 0, (x, y, z) => y > b.max[1]);
+    if (b && !keys) sys(`Too much for one selection (over ${AREA_MAX} pieces).`);
+    else if (keys) board.pick(keys);
+    later();
+  }
   /** Move was tapped: the next touch on the table says where the selection goes (tap again to call it off). */
   function place(on = !board.placing): void {
-    board.placing = on && board.selection().length > 0;
+    board.placing = on && board.selection().length > 0 && ours();
     if (board.placing) sys('Tap where it goes, or drag it there.');
     later();
   }
   const blocked = (ok: boolean, why: string) => { if (!ok) { buzz(20); sys(why); } later(); };
-  const turnSel = () => blocked(board.turnPicked(), 'That cannot be turned.');
-  const copySel = () => blocked(board.copyPicked(), 'No room beside it for a copy.');
-  const removeSel = () => blocked(board.removePicked(), 'Nothing to remove.');
+  /** The selection is ours to change: pieces of the scene are any builder's, a figure only its owner's and the GM's. */
+  const ours = () => board.picked.length > 0 || !board.selected || mine();
+  const turnSel = () => blocked(ours() && board.turnPicked(), board.picked.length > 1 ? 'No room to turn it here.' : 'That cannot be turned.');
+  const copySel = () => blocked(ours() && board.copyPicked(), 'No room beside it for a copy.');
+  const removeSel = () => blocked(ours() && board.removePicked(), 'Nothing to remove.');
   function emote(kind: string): void {
     if (!board.selected) return;
     board.emote(board.selected, kind);
@@ -679,7 +723,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   // less motion; it also saves battery) and whether the camera follows the turn order.
   const local = {
     ambient: (ls.get('ambient') ?? (matchMedia('(prefers-reduced-motion: reduce)').matches ? '0' : '1')) === '1',
-    follow: ls.get('follow') !== '0',
+    follow: display || ls.get('follow') !== '0', // a table screen is nobody's to steer: it goes where the turn is
   };
   function setLocal(k: 'ambient' | 'follow', on: boolean): void {
     local[k] = on;
@@ -700,11 +744,11 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   }
   let role = '', los = false;
   function sync(): void {
-    const f = full(), now = `${amGM()}|${f}`;
+    const f = full(), b = build(), now = `${amGM()}|${f}|${b}`;
     if (now !== role) {
       role = now;
-      board.setRole(meId, f);
-      if (!f && board.tool !== 'move' && board.tool !== 'ruler') setTool('move');
+      board.setRole(seat, f, b);
+      if (board.tool === 'fog' ? !f : !b && board.tool !== 'move' && board.tool !== 'ruler') setTool('move');
       if (!f) secret = false;
     }
     // Follow the table to its active board, unless the GM is off preparing another one.
@@ -733,6 +777,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   /** Take the GM's seat (false: someone who is here has it) or give it up. */
   function setGM(on: boolean): boolean {
+    if (display) return false; // a table screen is nobody's seat
     const g = gms(store), present = [meId, ...[...net.peers.keys()].map(pid)];
     if (!on) { store.set(`gm:${meId}`, null); return true; }
     if (g.includes(meId)) return true;
@@ -744,6 +789,41 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     return true;
   }
 
+  /**
+   * Whoever starts a table is its GM. Only a table that turned out to be new is claimed: a relay has answered, and
+   * still nobody is its GM and nothing in it was written by anyone else. Opening a table somebody else made, or an
+   * old one, never takes it; with no relay in reach the question waits (until then everyone can do everything anyway).
+   */
+  async function claimNew(): Promise<boolean> {
+    await new Promise<void>((done) => { const t = setInterval(() => { if (net.heard) { clearInterval(t); done(); } }, 300); });
+    if (gms(store).length || [...store.entries.values()].some((e) => e.b !== meId)) return false;
+    return setGM(true);
+  }
+  /** Building is everyone's (`set:free`), or the GM's alone. The GM says which; at a table without one everyone builds anyway. */
+  function setFree(on: boolean): void {
+    if (!amGM()) return;
+    store.set('set:free', on);
+    sys(on ? 'Everyone can build now. Fog and hidden things stay yours.' : 'Only you build now.');
+  }
+
+  // ---- a character of one's own ----
+
+  const myMinis = () => [...store.keys('m:')].filter((k) => store.get<MiniVal>(k)?.o === meId).map((k) => k.slice(2));
+  /** The figures a player may take as their own: the ones the GM left to everyone (`o: '*'`) that this player can see. */
+  function claimable(): { id: string; v: MiniVal }[] {
+    const eyes = eyesOf(store, meId);
+    return [...store.keys('m:')].map((k) => ({ id: k.slice(2), v: store.get<MiniVal>(k)! })).filter(({ v }) => v.o === '*' && !v.h && miniShown(store, meId, v, eyes) !== 'no');
+  }
+  /** Take one of them: from now on it is moved by this player and the GM only. A step of undo. */
+  function claim(id: string): boolean {
+    const v = store.get<MiniVal>(`m:${id}`);
+    if (!v || v.o !== '*' || v.h) return false;
+    board.write([[`m:${id}`, { ...v, o: meId }]]);
+    board.focusMini(id);
+    board.select(id);
+    return true;
+  }
+
   // ---- a fight: turn order ----
 
   function fight() {
@@ -751,10 +831,10 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     const current = order.find((o) => o.id === turn?.id) ?? null;
     return { order, current, round: current ? turn!.round : 0, mayAdvance: f || mine(current?.v) };
   }
-  function next(): void { const t = nextTurn(store); if (t) store.set('turn', t); }
+  function next(): void { const t = display ? null : nextTurn(store); if (t) store.set('turn', t); }
   /** Everyone leaves the turn order. One step of undo for the GM. */
   function endFight(): void {
-    const edits: [string, unknown][] = turnOrder(store).map((o) => { const { ini: _, ...rest } = o.v; return [`m:${o.id}`, rest]; });
+    const edits: [string, unknown][] = turnOrder(store).map((o) => { const { ini: _, io: __, ...rest } = o.v; return [`m:${o.id}`, rest]; });
     board.commit([...edits, ['turn', null]]);
     sys('The fight is over. Undo brings it back.');
   }
@@ -763,9 +843,21 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   function revealAll(): void {
     const keys = [...store.keys('f:')];
-    if (!keys.length) return;
+    if (!keys.length || board.previewing) return;
     board.commit(keys.map((k) => [k, null]));
     sys('Everything is revealed. Undo covers it again.');
+  }
+
+  /**
+   * See as players, for the GM with the fog tool out: the table as the players have it (fog
+   * solid, hidden figures gone, line of sight if it is on). Only this device's view; putting
+   * the tool away ends it.
+   */
+  function asPlayers(on: boolean): void {
+    if (board.tool !== 'fog' || !full()) on = false;
+    board.preview(on);
+    if (on) sys('This is what the players see. Nothing can be changed until you tap it again.');
+    later();
   }
 
   // ---- cutaway: hide everything above a floor to look inside buildings ----
@@ -798,6 +890,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   /** Everything a table is made of comes back, read strictly wherever it is used, as anything another player wrote would be. */
   function importTable(text: string): boolean {
     try {
+      if (display) throw new Error('a table screen changes nothing');
       const data = JSON.parse(text);
       for (const [k, v] of data.rows as [string, unknown][]) if (/^(?:[bmfwl]:|at:|gen$)/.test(k)) store.set(k, v);
         else if (/^(?:@[\w-]+\/(?:[bmfwl]:|at:|gen$)|bd:)/.test(k)) store.setRaw(k, v);
@@ -836,7 +929,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
    * with `fixed` every room stays where it is and only what changed in them is rebuilt.
    */
   function buildScene(o: GenOpts, prior: GenRoom[] = [], fixed = false, preset = presetOf(o.theme) ?? presets()[0]): boolean {
-    if (!full() || !preset) return false;
+    if (!build() || !preset) return false;
     o = { ...o, theme: preset.id };
     const old = sceneRec(), was = old && presetFor(old);
     // What the old scene put on the table follows from its numbers, so it can be cleared exactly.
@@ -865,7 +958,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   }
   function lockRoom(i: number, lock: boolean): void {
     const rec = sceneRec();
-    if (rec?.rooms[i] && full()) store.set('gen', { ...rec, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock } : r)) });
+    if (rec?.rooms[i] && build()) store.set('gen', { ...rec, rooms: rec.rooms.map((r, j) => (j === i ? { ...r, lock } : r)) });
   }
 
   /** A starter scene: a cottage in a clearing, with something to fight. One step of undo. */
@@ -939,21 +1032,27 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   return {
     // who and where
-    me, meId, name, color: myColor, invite, store, net, board, sound, blobs, tableSounds, packs, loaded, fresh,
-    full, amGM, setGM, gmIds: () => gms(store), relay, leave,
-    people: () => [{ id: meId, name, color: myColor }, ...[...net.peers].map(([pk, p]) => ({ id: pid(pk), name: p.name, color: p.color }))],
+    me, meId, name, color: myColor, invite, store, net, board, sound, blobs, tableSounds, packs, loaded, fresh, synced,
+    full, build, amGM, setGM, claimNew, gmIds: () => gms(store), free: () => store.get('set:free') === true, setFree, relay, leave,
+    myMinis, claimable, claim,
+    /** The players here. Table screens are not among them (nobody's seat, never a mini's owner): those are `screens`. */
+    people: () => [...(display ? [] : [{ id: meId, name, color: myColor }]), ...[...net.peers].filter(([, p]) => !p.disp).map(([pk, p]) => ({ id: pid(pk), name: p.name, color: p.color }))],
+    display, screens: () => [...net.peers].filter(([, p]) => p.disp).map(([pk, p]) => ({ id: pid(pk), name: p.name, color: p.color })),
+    /** The GM's view of the table, for every table screen on this board to take up. */
+    showView: () => { if (amGM()) void send({ y: 'cam', ...board.view() }); },
+    shown,
     // play and build
     mode, setMode, setTool, armed, arm, armMini, disarm, sample, inHand, undo,
     mini: { get kind() { return miniKind; }, get color() { return miniColor; }, set color(c: string) { miniColor = c; later(); } },
     scatter: { get kind() { return pourKind; }, set kind(k: string) { pourKind = k; later(); }, get count() { return pourCount; }, set count(n: number) { pourCount = n; later(); } },
     // the selection
-    sel, mine, patch, setOpt, hurt, deselect, place, turnSel, copySel, removeSel, emote, aim,
+    sel, mine, patch, setOpt, hurt, deselect, selectArea, selectGround, place, turnSel, copySel, removeSel, emote, aim,
     // dice and chat
     dice: { pickUp, empty: emptyHand, text: handText, count: () => handKinds().length, get secret() { return secret; }, set secret(on: boolean) { secret = on && full(); later(); }, get shake() { return shakeOn; }, setShake, canShake, armShake },
     hold: (kinds: Kind[], text: string, landed: (t: Throw) => void) => { hand.clear(); handMod = 0; asked = { kinds, text, landed }; syncHand(); hooks.grabbed(); },
     chat, armBoulder, blastHere, ruler: () => myRuler,
     // a fight, fog, floors
-    fight, next, endFight, revealAll, cut, cutState: () => ({ auto: cutAuto, level: board.cut }),
+    fight, next, endFight, revealAll, asPlayers, seeingAsPlayers: () => board.previewing, cut, cutState: () => ({ auto: cutAuto, level: board.cut }),
     // boards
     here: () => here, boardList, boardName, activeBoard, newBoard, renameBoard, lookAtBoard, bringEveryone, deleteBoard,
     // atmosphere and themes

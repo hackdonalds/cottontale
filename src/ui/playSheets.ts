@@ -4,12 +4,14 @@
 
 import { EMOTES, type MiniVal, type Sky } from '../board';
 import { MINIS, PLAYER_COLORS } from '../catalog';
+import { moveInOrder } from '../rules';
 import { SHOTS } from '../shots';
 import { SOUNDSCAPES } from '../sound';
 import { atmo, setAtmo } from '../theme';
 import { btn, esc, h, ico } from './dom';
 import type { Ctx } from './buildSheets';
 import type { DrawerOpts } from './drawer';
+import { dragHandle } from './reorder';
 import { renderSoundboard } from './soundPage';
 
 const nameOf = (v: MiniVal) => v.n || MINIS[v.k]?.name || 'Figure';
@@ -82,15 +84,23 @@ export function fightSheet(ctx: Ctx): DrawerOpts {
   const { s, drawer, notice } = ctx;
   const { store, board } = s;
   const picked = new Set<string>();
+  // Rearranging the order by hand: `moving` is the row whose grip was tapped (it shows Move up /
+  // Move down), `held` the drawer's content while a row is being dragged, so that a redraw
+  // from elsewhere puts the same rows back instead of pulling them from under the finger.
+  let moving: string | null = null, held: Node[] | null = null;
+  const moveTo = (id: string, to: number) => { if (s.full()) board.commit(moveInOrder(store, id, to)); drawer.redraw(); };
+  const GRIP = '<svg viewBox="0 0 24 24"><path d="M8 8h8M8 12h8M8 16h8"/></svg>';
   const all = () => [...store.keys('m:')].map((k) => ({ id: k.slice(2), v: store.get<MiniVal>(k)! })).filter((m) => m.v && (s.full() || !m.v.h));
   const roll = () => (crypto.getRandomValues(new Uint32Array(1))[0] % 20) + 1;
   const join = (ms: { id: string; v: MiniVal }[]) => { board.commit(ms.filter((m) => m.v.ini === undefined).map((m) => [`m:${m.id}`, { ...m.v, ini: roll() }])); };
   const self: DrawerOpts = {
     title: 'Fight', stay: true,
     render(body) {
+      if (held) { body.append(...held); return; }
       const f = s.fight(), gm = s.full(), minis = all();
       const inFight = new Set(f.order.map((o) => o.id)), out = minis.filter((m) => !inFight.has(m.id));
       for (const id of [...picked]) if (!minis.some((m) => m.id === id)) picked.delete(id);
+      if (!gm || !inFight.has(moving ?? '')) moving = null;
       if (!minis.length) { body.append(h('p', { class: 'hint', text: 'No figures on this board yet. Place some in Build → Pieces.' })); return; }
       if (gm) body.append(h('div', { class: 'chips' },
         btn(f.order.length ? 'Add the rest' : 'Start: everyone rolls', () => { join(out); if (!s.fight().current) s.next(); }, { icon: 'swords', cls: f.order.length ? '' : 'primary', disabled: !out.length }),
@@ -100,12 +110,21 @@ export function fightSheet(ctx: Ctx): DrawerOpts {
       if (f.current) body.append(h('p', { class: 'hint', text: `Round ${f.round} — tap figures to pick targets, then Damage or Heal` }));
       const row = (m: { id: string; v: MiniVal }, on: boolean) => {
         const ini = h('input', { type: 'number', inputmode: 'numeric', class: 'ini', placeholder: '–', 'aria-label': `Initiative of ${nameOf(m.v)}`, value: m.v.ini ?? '', disabled: !gm,
-          onchange: () => { const n = Math.round(+ini.value), { ini: _, ...rest } = m.v; board.commit([[`m:${m.id}`, ini.value.trim() === '' || !Number.isFinite(n) ? rest : { ...rest, ini: Math.max(-99, Math.min(999, n)) }]]); } });
-        return h('div', { class: `line fighter${f.current?.id === m.id ? ' now' : ''}${picked.has(m.id) ? ' picked' : ''}${on ? '' : ' out'}` },
-          ini,
-          h('button', { type: 'button', class: 'grow who', 'aria-pressed': String(picked.has(m.id)), html: `<i style="background:${esc(m.v.c)}"></i><span>${esc(nameOf(m.v))}${m.v.h ? ' (hidden)' : ''}</span><b>${hpText(m.v)}</b>`, onclick: () => { if (picked.has(m.id)) picked.delete(m.id); else picked.add(m.id); drawer.redraw(); } }),
-          btn('', () => board.focusMini(m.id), { icon: 'eye', title: `Show ${nameOf(m.v)}` }),
-        );
+          onchange: () => { const n = Math.round(+ini.value), { ini: _, io: __, ...rest } = m.v; board.commit([[`m:${m.id}`, ini.value.trim() === '' || !Number.isFinite(n) ? rest : { ...rest, ini: Math.max(-99, Math.min(999, n)) }]]); } });
+        const who = h('button', { type: 'button', class: 'grow who', 'aria-pressed': String(picked.has(m.id)), html: `<i style="background:${esc(m.v.c)}"></i><span>${esc(nameOf(m.v))}${m.v.h ? ' (hidden)' : ''}</span><b>${hpText(m.v)}</b>`, onclick: () => { if (picked.has(m.id)) picked.delete(m.id); else picked.add(m.id); drawer.redraw(); } });
+        const el = h('div', { class: `line fighter${f.current?.id === m.id ? ' now' : ''}${picked.has(m.id) ? ' picked' : ''}${on ? '' : ' out'}`, 'data-id': m.id });
+        // Only whoever runs the fight rearranges it, and only those in it have a place. With one in it there is nothing to rearrange.
+        if (!gm || !on || f.order.length < 2) { el.append(ini, who, btn('', () => board.focusMini(m.id), { icon: 'eye', title: `Show ${nameOf(m.v)}` })); return el; }
+        const at = f.order.indexOf(m), armed = moving === m.id;
+        const grip = h('button', { type: 'button', class: `grip${armed ? ' on' : ''}`, html: GRIP, title: `Move ${nameOf(m.v)} in the order`, 'aria-label': `Move ${nameOf(m.v)} in the order: drag, or tap for Move up and Move down`, 'aria-pressed': String(armed), onclick: () => { moving = armed ? null : m.id; drawer.redraw(); } });
+        dragHandle(grip, el, () => [...body.querySelectorAll<HTMLElement>('.fighter:not(.out)')], body, {
+          start: () => { held = [...body.childNodes]; },
+          end: (to) => { held = null; if (to !== null) moveTo(m.id, to); else drawer.redraw(); },
+        });
+        // Tapped, the grip trades the number and the eye for the two steps: the row never grows.
+        if (armed) el.append(grip, who, btn('', () => moveTo(m.id, at - 1), { icon: 'up', cls: 'step', title: 'Move up', disabled: at === 0 }), btn('', () => moveTo(m.id, at + 1), { icon: 'down', cls: 'step', title: 'Move down', disabled: at === f.order.length - 1 }));
+        else el.append(grip, ini, who, btn('', () => board.focusMini(m.id), { icon: 'eye', title: `Show ${nameOf(m.v)}` }));
+        return el;
       };
       for (const o of f.order) body.append(row(o, true));
       if (out.length && f.order.length) body.append(h('p', { class: 'hint', text: 'Not in the fight — give a number to add one' }));
@@ -148,7 +167,7 @@ export function toolsSheet({ s, drawer, notice }: Ctx): DrawerOpts {
       body.append(
         h('div', { class: 'chips' },
           btn('Ruler', () => { s.setTool('ruler'); drawer.close(); notice.say('Drag on the table to measure.'); }, { icon: 'ruler' }),
-          s.amGM() && btn('Fog', () => { s.setTool('fog'); drawer.close(); notice.say('Drag to hide an area from the players.'); }, { icon: 'fog' }),
+          s.amGM() && btn('Fog', () => { s.setTool('fog'); drawer.close(); notice.say('Tap a room to hide it from the players, or drag to paint.'); }, { icon: 'fog' }),
         ),
         h('p', { class: 'hint', text: 'Floors — hide what is above, to look inside buildings' }),
         h('div', { class: 'chips' },

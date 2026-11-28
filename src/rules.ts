@@ -27,6 +27,8 @@ export interface MiniVal {
   hp?: number; mhp?: number;
   /** Initiative score; minis that have one are in the turn order. */
   ini?: number;
+  /** Place among minis with the same initiative, lowest first (absent = 0). Written only when the order is rearranged by hand. */
+  io?: number;
   /** Hidden by the GM: players do not see it at all. */
   h?: boolean;
   /** Flying height above the surface it stands over, in cells. */
@@ -90,10 +92,28 @@ export const pid = (pubkey: string) => pubkey.slice(0, 10);
 export function gms(store: Store): string[] {
   return [...store.keys('gm:')].map((k) => k.slice(3));
 }
+/**
+ * The seat of a table screen (src/ui/display.ts): not a player's id, so it never has powers,
+ * not even in free play. It looks on with the whole party: what any player's mini sees, it sees.
+ */
+export const PARTY = '*party';
 /** With no GM the table is free play: everyone can do everything. */
 export function fullPowers(store: Store, me: string): boolean {
   const g = gms(store);
-  return !g.length || g.includes(me);
+  return me !== PARTY && (!g.length || g.includes(me));
+}
+/** Is this mini one of `me`'s own to see with? For the party: any mini that has an owner who is not a GM. */
+function owns(store: Store, me: string, v: MiniVal): boolean {
+  if (me === PARTY) return !!v.o && !gms(store).includes(v.o);
+  return v.o === me || v.o === '*';
+}
+/**
+ * May this player build: place, change and remove the pieces of the scene? Whoever has full powers may, and so may
+ * everyone once the GM has opened building to the table (`set:free`). Nothing else comes with it: fog, hidden minis,
+ * secret rolls, line of sight and other players' figures stay the GM's (`fullPowers`, `canControl`).
+ */
+export function canBuild(store: Store, me: string): boolean {
+  return fullPowers(store, me) || store.get('set:free') === true;
 }
 export const fogged = (store: Store, x: number, z: number) => store.get(`f:${x},${z}`) === true;
 export const setting = <T>(store: Store, name: string, fallback: T) => store.get<T>(`set:${name}`) ?? fallback;
@@ -160,12 +180,12 @@ export type Shown = 'yes' | 'ghost' | 'no';
  * How a mini appears to player `me`. The GM (and everyone in free play) sees
  * all, with hidden minis ghosted. Players never see hidden minis or ones under
  * fog, and with line of sight on they see others only through the eyes of the
- * minis they control.
+ * minis they control. The table screen (`PARTY`) sees through every player's.
  */
 export function miniShown(store: Store, me: string, v: MiniVal, eyes: MiniVal[] | null): Shown {
   if (fullPowers(store, me)) return v.h ? 'ghost' : 'yes';
   if (v.h) return 'no';
-  if (v.o === me || v.o === '*') return 'yes';
+  if (owns(store, me, v)) return 'yes';
   if (fogged(store, v.x, v.z)) return 'no';
   if (!eyes || !eyes.length) return 'yes'; // line of sight off, or a spectator with no mini
   return eyes.some((e) => sees(store, e, v)) ? 'yes' : 'no';
@@ -177,19 +197,108 @@ export function eyesOf(store: Store, me: string): MiniVal[] | null {
   const out: MiniVal[] = [];
   for (const k of store.keys('m:')) {
     const v = store.get<MiniVal>(k)!;
-    if (!v.h && (v.o === me || v.o === '*')) out.push(v);
+    if (!v.h && owns(store, me, v)) out.push(v);
   }
   return out;
 }
 
-/** Everyone with an initiative score, highest first. */
+/**
+ * What the players see of a mini between them, for the GM's "See as players": what any one of
+ * them could see. Hidden and fogged minis are gone; with line of sight on, the rest show only
+ * to the eyes of the minis that players control (`playerEyes`).
+ */
+export function shownToPlayers(store: Store, v: MiniVal, eyes: MiniVal[] | null): Shown {
+  if (v.h) return 'no';
+  if (v.o) return 'yes';
+  if (fogged(store, v.x, v.z)) return 'no';
+  if (!eyes || !eyes.length) return 'yes';
+  return eyes.some((e) => sees(store, e, v)) ? 'yes' : 'no';
+}
+
+/** The minis the players see through, all of them together, or null when line of sight is switched off. */
+export function playerEyes(store: Store): MiniVal[] | null {
+  if (!setting(store, 'los', false)) return null;
+  const out: MiniVal[] = [];
+  for (const k of store.keys('m:')) {
+    const v = store.get<MiniVal>(k)!;
+    if (!v.h && v.o) out.push(v);
+  }
+  return out;
+}
+
+/** The most cells a tap of the fog tool takes for one room: a hall of 20 by 20. */
+export const REGION_MAX = 400;
+
+/**
+ * The room or region a cell belongs to, for fog by the room: the floor connected to cell
+ * (x, y, z) on its own level, as columns. `y` is the level one stands on (the cell above the
+ * floor, the level its walls are stored at). A step to a neighbouring cell is stopped by
+ * anything standing on the edge between them, by a block in that cell, and by there being no
+ * floor under it (level 0 is the table itself, floor everywhere). Walls of every kind stop it,
+ * a doorway and a window too: a room ends at its door, or one tap would take the corridor and
+ * everything beyond with it. Furniture and other props do not.
+ *
+ * Null when there is no such region: the cell itself is solid or has no floor, or the area is
+ * open ground, more than `cap` cells of it. The caller then does what it did before there were
+ * rooms (one column), instead of flooding the whole table.
+ */
+export function regions(store: Store, x: number, y: number, z: number, cap = REGION_MAX): [x: number, z: number][] | null {
+  const solid = (cx: number, cy: number, cz: number) => { const v = store.get<CellVal>(`b:${cx},${cy},${cz}`); return !!v && !!BLOCKS[v.i]; };
+  const open = (cx: number, cz: number) => !solid(cx, y, cz) && (y === 0 || solid(cx, y - 1, cz));
+  if (![x, y, z].every(Number.isInteger) || y < 0 || !open(x, z)) return null;
+  const out: [number, number][] = [[x, z]], seen = new Set([`${x},${z}`]);
+  for (let i = 0; i < out.length; i++) {
+    const [cx, cz] = out[i];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx, nz = cz + dz, k = `${nx},${nz}`;
+      if (seen.has(k) || store.get(edgeBetween(y, cx, cz, nx, nz)) || !open(nx, nz)) continue;
+      if (out.length >= cap) return null;
+      seen.add(k);
+      out.push([nx, nz]);
+    }
+  }
+  return out;
+}
+
+const tieOf = (v: MiniVal): number => (typeof v.io === 'number' && Number.isFinite(v.io) ? v.io : 0);
+const byTurn = (a: { id: string; v: MiniVal }, b: { id: string; v: MiniVal }): number =>
+  b.v.ini! - a.v.ini! || tieOf(a.v) - tieOf(b.v) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** Everyone with an initiative score, highest first. Equal scores go by `io` (set when rearranged by hand), then by id. */
 export function turnOrder(store: Store): { id: string; v: MiniVal }[] {
   const out: { id: string; v: MiniVal }[] = [];
   for (const k of store.keys('m:')) {
     const v = store.get<MiniVal>(k)!;
     if (typeof v.ini === 'number') out.push({ id: k.slice(2), v });
   }
-  return out.sort((a, b) => b.v.ini! - a.v.ini! || (a.id < b.id ? -1 : 1));
+  return out.sort(byTurn);
+}
+
+/**
+ * Move one mini to place `to` of the turn order (0 = first), as edits. Initiative stays what
+ * the table reads, so the mover's score changes only as far as it must: it is pulled to the
+ * score of the neighbour it passed. Among equal scores the order is then spelled out in `io`,
+ * and only for those minis whose place it changes. Nothing to do: no edits.
+ */
+export function moveInOrder(store: Store, id: string, to: number): [string, MiniVal][] {
+  const order = turnOrder(store), from = order.findIndex((o) => o.id === id);
+  if (from < 0 || !Number.isFinite(to)) return [];
+  to = Math.max(0, Math.min(order.length - 1, Math.round(to)));
+  if (to === from) return [];
+  const seq = order.filter((o) => o.id !== id), above = seq[to - 1], below = seq[to];
+  const ini = Math.max(below?.v.ini ?? -Infinity, Math.min(above?.v.ini ?? Infinity, order[from].v.ini!));
+  const { io: _, ...bare } = order[from].v;
+  const moved = { id, v: { ...bare, ini } as MiniVal };
+  seq.splice(to, 0, moved);
+  // Those sharing the score, in the order wanted. If id order already gives it, no `io` is needed.
+  const group = seq.filter((o) => o.v.ini === ini);
+  const edits: [string, MiniVal][] = [];
+  if ([...group].sort(byTurn).every((o, i) => o === group[i])) return [[`m:${id}`, moved.v]];
+  group.forEach((o, i) => {
+    const { io: _, ...rest } = o.v, v = (i ? { ...rest, io: i } : rest) as MiniVal;
+    if (o === moved || tieOf(o.v) !== i) edits.push([`m:${o.id}`, v]);
+  });
+  return edits;
 }
 
 export function nextTurn(store: Store): Turn | null {

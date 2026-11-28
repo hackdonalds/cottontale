@@ -3,13 +3,18 @@
 // (theme, sound, pieces, rules), this device's settings, and saving or leaving.
 
 import { buzz, canBuzz, hapticsOn, setHaptics } from '../haptics';
+import { screenChips, screenSection } from './display';
 import { btn, h } from './dom';
 import type { Ctx } from './buildSheets';
 import type { DrawerOpts } from './drawer';
 import { prepPages, type Prep } from './prep';
+import { tableSearch } from './tableSearch';
 
-export function tableSheet({ s, drawer, notice }: Ctx, prep: () => Prep | undefined): DrawerOpts {
+/** `dock` runs what a slot of the dock does, by its id (ui/dock.ts): the search reaches them all. */
+export function tableSheet(ctx: Ctx, prep: () => Prep | undefined, dock: (slot: string) => void): DrawerOpts {
+  const { s, drawer, notice } = ctx;
   let asking = '';
+  const search = tableSearch(ctx, prep, dock);
   return {
     title: 'Table', height: 'full',
     render(body) {
@@ -22,13 +27,18 @@ export function tableSheet({ s, drawer, notice }: Ctx, prep: () => Prep | undefi
       // People
       const gms = s.gmIds();
       body.append(head('People'),
-        h('div', { class: 'chips' }, ...s.people().map((p) => h('span', { class: 'person', style: `--c:${p.color}`, text: `${p.name}${gms.includes(p.id) ? ' · GM' : ''}${p.id === s.meId ? ' (you)' : ''}` }))),
+        h('div', { class: 'chips' }, ...s.people().map((p) => h('span', { class: 'person', style: `--c:${p.color}`, text: `${p.name}${gms.includes(p.id) ? ' · GM' : ''}${p.id === s.meId ? ' (you)' : ''}` })), ...screenChips(s)),
         h('div', { class: 'chips' },
           btn('Invite someone', () => void share(), { icon: 'link', cls: 'primary' }),
           btn(gm ? 'Stop being the GM' : 'Become the GM', () => { s.setGM(!gm); }, { icon: 'crown', on: gm }),
+          gm && btn(`Everyone can build: ${s.free() ? 'on' : 'off'}`, () => s.setFree(!s.free()), { icon: 'cube', on: s.free(), title: 'Let the players build too. Fog, hidden things and other figures stay yours' }),
         ),
-        h('p', { class: 'hint', text: gms.length ? 'The GM builds, hides things and moves every figure. Players move their own.' : 'Nobody is the GM, so everyone can build. Become the GM to keep the table yours.' }),
+        ...screenSection({ s, drawer, notice }),
+        h('p', { class: 'hint', text: !gms.length ? 'Nobody is the GM, so everyone can build. Become the GM to keep the table yours.'
+          : s.free() ? 'Everyone can build. The GM alone hides things, lifts the fog and moves every figure; players move their own.'
+            : 'The GM builds, hides things and moves every figure. Players move their own.' }),
       );
+      if (gm) body.append(h('p', { class: 'hint', text: 'A player picks a character from the figures set to “Moved by: everyone” (select a figure, then More).' }));
       // Boards
       const active = s.activeBoard(), here = s.here();
       body.append(head('Boards'));
@@ -47,7 +57,7 @@ export function tableSheet({ s, drawer, notice }: Ctx, prep: () => Prep | undefi
       const pr = prep();
       if (pr && full) {
         body.append(head('Prepare'));
-        for (const p of prepPages()) body.append(h('button', { type: 'button', class: 'rowlink', html: `<svg><use href="#i-${p.icon}"/></svg><span><b>${p.title}</b><small>${p.hint ?? ''}</small></span>`, onclick: () => { drawer.close(); pr.open(p.id); } }));
+        for (const p of prepPages()) if (p.listed !== false) body.append(h('button', { type: 'button', class: 'rowlink', html: `<svg><use href="#i-${p.icon}"/></svg><span><b>${p.title}</b><small>${p.hint ?? ''}</small></span>`, onclick: () => { drawer.close(); pr.open(p.id); } }));
       }
       // This device
       body.append(head('This device'), h('div', { class: 'chips' },
@@ -58,13 +68,16 @@ export function tableSheet({ s, drawer, notice }: Ctx, prep: () => Prep | undefi
       ));
       // The whole table
       const file = h('input', { type: 'file', accept: 'application/json', hidden: true, onchange: () => { const f = file.files?.[0]; if (f) void f.text().then((t) => { if (s.importTable(t)) notice.say('Table loaded.'); }); file.value = ''; } });
+      const save = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(s.exportTable()); a.download = 'cottontale-table.json'; a.click(); URL.revokeObjectURL(a.href); };
       body.append(head('Save and load'), file, h('div', { class: 'chips' },
-        btn('Save to a file', () => { const a = document.createElement('a'); a.href = URL.createObjectURL(s.exportTable()); a.download = 'cottontale-table.json'; a.click(); URL.revokeObjectURL(a.href); }, { icon: 'save' }),
+        btn('Save to a file', save, { icon: 'save' }),
         full && btn('Load a file', () => file.click(), { icon: 'open' }),
         full && btn('Clear this board', () => { s.clearBoard(); drawer.close(); }, { icon: 'trash', title: 'Take everything off this board (Undo brings it back)' }),
         btn('Leave', () => void s.leave(), { icon: 'door' }),
       ));
       body.append(head('Help'), h('p', { class: 'hint', html: 'One finger: look around, or use what is in hand. Two fingers: pan, pinch to zoom, twist to turn.<br>In Build, tap a piece to move, turn, copy or delete it. Pieces puts one in hand; Done puts it down.<br>Press and hold the table to ping. Dice: pick them up, drag on the table, let go.' }));
+      // One search over all of it, and over what has no row here: it goes on top, and takes the sections' place while something is typed.
+      search.mount(body, { invite: () => void share(), save, load: () => file.click() });
     },
   };
 }

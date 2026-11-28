@@ -1,0 +1,14 @@
+/* The table screen (src/ui/display.ts): the table and nothing else, read from across it. */
+body.display #c { cursor: default; }
+body.display #hud .sheet { display: none !important; }
+#app > .banner { position: absolute; left: 50%; top: calc(14px + var(--st)); transform: translateX(-50%); max-width: 90%; display: flex; align-items: center; gap: .5em; padding: .3em .9em; border-radius: 999px; background: rgba(20, 16, 13, .82); color: #f3ebe0; font-size: clamp(22px, 5vmin, 64px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+#app > .banner i { flex: none; width: .6em; height: .6em; border-radius: 50%; }
+body.display #toast { top: 24%; font-size: clamp(22px, 5vmin, 64px); }
+body.display #toast big { font-size: clamp(80px, 22vmin, 280px); }
+
+/* The GM's side, in Table → People. */
+.person.screen { --c: #8b8d98; border-style: dashed; }
+.screenlink { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, .28); }
+.screenlink .qr { width: min(240px, 70%); height: auto; aspect-ratio: 1; border-radius: 8px; image-rendering: pixelated; }
+.screenlink .url { margin: 0; font-size: 16px; line-height: 1.35; text-align: center; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+.screenlink .hint { text-align: center; }
