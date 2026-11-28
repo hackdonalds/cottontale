@@ -41,7 +41,7 @@ async function join(name, room, viewport) {
 }
 
 // The screen budget (CLAUDE.md, "Screen real estate drives the design"): how much of the smallest phone the table keeps.
-const BUDGET = { rest: 0.85, swapped: 0.8 };
+const BUDGET = { rest: 0.85, swapped: 0.8, half: 0.45 };
 
 for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['landscape', { width: 640, height: 360 }]]) {
   console.log(`new chrome, phone ${label} ${viewport.width}x${viewport.height}`);
@@ -105,10 +105,10 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
   /** Nothing overlaps or leaves the screen, every target is big enough, the dock holds at most six, and the table keeps its share. */
   const layout = (share) => p.evaluate((share) => {
     const bad = [];
-    const boxes = [...document.querySelectorAll('#app .dock, #app .undo:not([hidden])')].map((e) => ({ id: e.className, r: e.getBoundingClientRect() }));
+    const boxes = [...document.querySelectorAll('#app .dock, #app .undo:not([hidden]), #app .drawer:not([hidden]), #app .turn:not([hidden])')].map((e) => ({ id: e.className, r: e.getBoundingClientRect() }));
     let covered = 0;
     for (const a of boxes) {
-      covered += a.r.width * a.r.height;
+      if (share !== null) covered += a.r.width * a.r.height;
       if (a.r.left < 0 || a.r.top < 0 || a.r.right > innerWidth + 0.5 || a.r.bottom > innerHeight + 0.5) bad.push(`${a.id} off-screen`);
       for (const b of boxes) if (a.id < b.id && a.r.left < b.r.right && b.r.left < a.r.right && a.r.top < b.r.bottom && b.r.top < a.r.bottom) bad.push(`${a.id} overlaps ${b.id}`);
     }
@@ -118,16 +118,17 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
       const r = b.getBoundingClientRect();
       if (b.offsetParent && (r.width < 43.5 || r.height < 43.5)) bad.push(`small target ${b.dataset.slot || b.title} ${Math.round(r.width)}x${Math.round(r.height)}`);
     }
+    for (const b of document.querySelectorAll('#app .drawer:not([hidden]) :is(button, input, select)')) { const r = b.getBoundingClientRect(); if (r.width && (r.right > innerWidth + 0.5 || r.left < -0.5)) bad.push(`${b.textContent || b.placeholder} sticks out sideways`); }
     for (const s of document.querySelectorAll('#app .dock .slot span')) if (s.scrollWidth > s.clientWidth + 1) bad.push(`label cut off: ${s.textContent}`);
     for (const i of document.querySelectorAll('input, textarea')) if (i.offsetParent && parseFloat(getComputedStyle(i).fontSize) < 16) bad.push(`input ${i.id} under 16px`);
     if (document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth) bad.push('the page scrolls sideways');
     const table = 1 - covered / (innerWidth * innerHeight);
-    if (table < share) bad.push(`the table keeps ${(table * 100).toFixed(1)}% of the screen, under ${share * 100}%`);
+    if (share !== null && table < share) bad.push(`the table keeps ${(table * 100).toFixed(1)}% of the screen, under ${share * 100}%`);
     return bad;
   }, share);
   const fits = async (what, share = BUDGET.swapped) => { const bad = await layout(share); assert(!bad.length, `${what}: layout holds${bad.length ? ` — ${bad.join('; ')}` : ''}`); await shot(what.replace(/\W+/g, '-')); };
 
-  assert(await p.evaluate(() => !document.querySelector('#hud') && document.querySelector('#lobby').hidden), 'the old chrome is gone and the table is up');
+  assert(await p.evaluate(() => !document.querySelector('#tools, #menu, #ring, #top') && document.querySelector('#lobby').hidden), 'the old chrome is gone and the table is up');
   assert(await slots() === 'build,fight,dice,quick,tools,table', `a GM in Play sees six slots (${await slots()})`);
   const rail = await p.evaluate(() => { const r = document.querySelector('#app .dock').getBoundingClientRect(); return r.height > r.width; });
   assert(rail === (label === 'landscape'), label === 'landscape' ? 'held sideways, the dock is a rail on the side' : 'held upright, the dock is one row along the bottom');
@@ -162,7 +163,7 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
   await settle();
   const back = await get('m:start-knight');
   assert(back.x === knight.x && back.z === knight.z, 'Undo puts the mini back');
-  assert(await slots() === 'hp,conditions,hide,more,done', `the selected mini decides the dock (${await slots()})`);
+  assert(await slots() === 'hp,hide,more,done', `the selected mini decides the dock (${await slots()})`);
   await fits('play, mini selected');
   await slot('done');
   assert((await st()).selected === null && await slots() === 'build,fight,dice,quick,tools,table', 'Done lets go of it');
@@ -254,9 +255,39 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
 
   // ---- Build: a brush in hand until Done ----
   await slot('pieces');
+  assert(await p.evaluate(() => window.__ct.ui.drawer.id === 'pieces' && document.querySelectorAll('.drawer .tile').length > 80), 'Pieces opens the library: every piece, by shelf');
+  await fits('build, library open', null);
+  await p.fill('.drawer input[type=search]', 'barr');
+  await settle();
+  assert(await p.evaluate(() => document.querySelector('.drawer .tile')?.title === 'Barrel' && document.querySelectorAll('.drawer .tile').length < 6), 'one search finds a piece whatever shelf it is on');
+  await p.tap('.drawer .tile');
+  await settle();
   s = await st();
-  assert(s.tool === 'build' && await slots() === 'hand,rot,size,sample,erase,done', `Pieces puts the last piece back in hand (${s.brush}; ${await slots()})`);
+  assert(s.tool === 'build' && s.brush === 'barrel' && await p.evaluate(() => window.__ct.ui.drawer.id === null) && await slots() === 'hand,rot,size,sample,erase,done', `picking one puts it in hand and the library away (${s.brush}; ${await slots()})`);
   await fits('build, brush in hand');
+  await slot('done');
+  await slot('pieces');
+  assert((await st()).brush === 'barrel' && (await st()).tool === 'build', 'the next time, Pieces has the last piece in hand at once');
+  await p.tap('.drawer header button');
+  await settle();
+  // Make and Shape
+  await slot('done');
+  await slot('make');
+  await fits('build, make', BUDGET.half);
+  await p.tap('.drawer button:has-text("Stone room")');
+  await settle();
+  assert((await st()).brush === 'room' && await p.evaluate(() => window.__ct.ui.drawer.id === null), 'Make arms the room tool and gets out of the way');
+  await slot('done');
+  await slot('shape');
+  await fits('build, shape', BUDGET.half);
+  await p.tap('.drawer button:has-text("Raise")');
+  await settle();
+  assert((await st()).brush === 'raise' && await p.evaluate(() => document.querySelector('[data-slot="size"]').getAttribute('aria-disabled') !== 'true'), 'Shape arms a land brush, and Size is live for it');
+  await slot('hand');
+  await p.fill('.drawer input[type=search]', 'crate');
+  await settle();
+  await p.tap('.drawer .tile');
+  await settle();
   const hand = () => p.evaluate(() => document.querySelector('[data-slot="hand"] span').textContent);
   await slot('sample');
   await tapAt(await at(3.5, 1.4, 0.5)); // the crate by the fire
@@ -284,8 +315,80 @@ for (const [label, viewport] of [['portrait', { width: 360, height: 640 }], ['la
   const camB = await cam();
   await p.evaluate(() => window.__ct.session.setMode('play'));
   await settle();
-  assert((await st()).selected === 'start-wolf' && await cam() === camB && await slots() === 'hp,conditions,hide,more,done', 'going to Play keeps the selection and the camera');
+  assert((await st()).selected === 'start-wolf' && await cam() === camB && await slots() === 'hp,hide,more,done', 'going to Play keeps the selection and the camera');
+
+  // ---- Play: hit points by number pad, the fight, dice, tools, the table ----
+  await slot('hp');
+  await fits('play, number pad', BUDGET.half);
+  for (const d of ['1', '2']) await p.tap(`.drawer .keys button:text-is("${d}")`);
+  await p.tap('.drawer button:has-text("Max")');
+  await settle();
+  assert((await get('m:start-wolf')).mhp === 12 && (await get('m:start-wolf')).hp === 12, 'the pad sets a maximum, and a new bar starts full');
+  await p.tap('.drawer .keys button:text-is("5")');
+  await p.tap('.drawer button:has-text("Damage")');
+  await settle();
+  assert((await get('m:start-wolf')).hp === 7, 'damage is typed as a number, not tapped one point at a time');
+  await slot('more');
+  await fits('play, figure details', BUDGET.half);
+  await p.fill('.drawer input[aria-label="Name"]', 'Greyback');
+  await p.keyboard.press('Tab');
+  await settle();
+  assert((await get('m:start-wolf')).n === 'Greyback', 'a figure is named where it stands');
   await slot('done');
+  await slot('fight');
+  await p.tap('.drawer button:has-text("Start")');
+  await settle(300);
+  const fight = await p.evaluate(() => { const f = window.__ct.session.fight(); return { n: f.order.length, cur: f.current?.id, strip: !document.querySelector('#app .turn').hidden }; });
+  assert(fight.n === 3 && !!fight.cur, `Start puts everyone in the fight with a roll (${fight.n} in order)`);
+  await fits('play, fight', BUDGET.half);
+  await p.tap('.drawer header button');
+  await settle();
+  assert(await p.evaluate(() => !document.querySelector('#app .turn').hidden), 'with the tracker put away, the turn strip shows who is up');
+  await fits('play, turn strip');
+  await p.tap('#app .turn .next');
+  await settle();
+  assert(await p.evaluate((was) => window.__ct.session.fight().current?.id !== was, fight.cur), 'Next on the strip passes the turn');
+  await slot('fight');
+  await p.tap('.drawer button:has-text("End fight")');
+  await settle();
+  assert(await p.evaluate(() => window.__ct.session.fight().order.length === 0 && document.querySelector('#app .turn').hidden), 'End fight ends it at once');
+  await p.tap('.drawer header button');
+  await p.tap('#app .undo [data-u="undo"]');
+  await settle();
+  assert(await p.evaluate(() => window.__ct.session.fight().order.length === 3), 'and Undo brings the fight back');
+  await p.evaluate(() => window.__ct.session.endFight());
+  await slot('dice');
+  await fits('play, dice', BUDGET.half);
+  await p.tap('.drawer .dice button:text-is("d20")');
+  await settle();
+  assert(await p.evaluate(() => window.__ct.board.hand.length === 1 && document.querySelector('[data-slot="dice"]').dataset.n === '1'), 'a die picked up is in the hand, and the Dice slot says so');
+  await p.tap('.drawer .dice button[title="Put the dice back"]');
+  await p.tap('.drawer header button');
+  await settle();
+  await slot('tools');
+  await fits('play, tools', BUDGET.half);
+  await p.tap('.drawer button:has-text("Ruler")');
+  await settle();
+  assert((await st()).tool === 'ruler' && await slots() === 'line,circle,cone,blast,done', `the ruler brings its own dock (${await slots()})`);
+  await fits('play, ruler');
+  await slot('done');
+  assert((await st()).tool === 'move', 'and Done puts it away');
+  await slot('quick');
+  await fits('play, quick board', BUDGET.half);
+  await p.tap('.drawer button:has-text("Night")');
+  await settle();
+  assert(await get('at:sky') === 'night', 'the quick board changes the sky in one tap');
+  await p.tap('.drawer header button');
+  await slot('table');
+  await fits('table', null);
+  assert(await p.evaluate(() => document.querySelectorAll('.drawer .rowlink').length >= 4), 'Table lists the pages for getting a table ready');
+  await p.tap('.drawer .rowlink:has-text("Theme")');
+  await settle(300);
+  assert(await p.evaluate(() => !document.querySelector('#prepPages').hidden && getComputedStyle(document.querySelector('#app')).display === 'none'), 'a page takes the whole screen');
+  await p.tap('#prepPageBack');
+  await settle(300);
+  if (await p.evaluate(() => !document.querySelector('#prepPages').hidden)) { await p.tap('#prepPageBack'); await settle(300); }
+  assert(await p.evaluate(() => document.querySelector('#prepPages').hidden && getComputedStyle(document.querySelector('#app')).display !== 'none'), 'and Back returns to the table');
 
   // ---- a player: fewer slots, and no building ----
   if (label === 'portrait') {

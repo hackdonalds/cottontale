@@ -28,6 +28,8 @@ import { LOOSE, MAX_LOOSE, type LooseVal } from './loose';
 import { pour } from './pour';
 import { MAX_BLAST, blast, fellLine, shove, type Fall } from './forces';
 import { kindOf } from './pick';
+import { authority } from './system';
+import type { SystemUI } from './ui/sheet';
 
 export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 export const ls = {
@@ -90,7 +92,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   let pourKind = 'stone', pourCount = 6;
 
   const board = new Board(canvas, store, {
-    onSelect: () => { if (cutAuto) autoCut(); later(); },
+    onSelect: (id) => { rules?.follow(id); if (cutAuto) autoCut(); later(); },
     onPick: () => later(),
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
     onLand: (mine) => { sound.knock(); if (mine) buzz(8); },
@@ -141,8 +143,11 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   const save = () => ls.set(`room:${tag}`, JSON.stringify(store.dump()));
+  /** The table's game system and its sheets (src/ui/sheet.ts), once the chrome has mounted them. */
+  let rules: SystemUI | undefined;
   store.onChange = (k, v, prev) => {
     board.apply(k, v, prev);
+    rules?.onStore(k, v, prev);
     packs.packChanged(k); // the GM's own pieces (packs.ts)
     later(); // role, turn order and the chrome follow the store
     saveTimer ??= setTimeout(() => { saveTimer = undefined; save(); }, 1500);
@@ -233,6 +238,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
       // Only someone who may build can pour; the recording itself is checked by the view.
       case 'pour': if (!elsewhere && fullPowers(store, pid(from))) void board.loose.play(msg.t); break;
       case 'mv': if (!elsewhere && Array.isArray(msg.p)) board.liveMove(String(msg.id), msg.p as Vec); break;
+      case 'sroll': case 'sys': rules?.onMsg(msg, from); break;
       case 'sfx': if (state.ready) tableSounds.heard(msg.id, fullPowers(store, pid(from))); break; // the GM's soundboard, heard on every board
       case 'fall': {
         // Only what this player can see is worth a line: a fall must not give a mini away.
@@ -719,6 +725,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     const order = turnOrder(store), turn = store.get<Turn>('turn');
     board.setTurn(order.find((o) => o.id === turn?.id)?.id ?? null);
     if (cutAuto) autoCut();
+    rules?.refresh();
     hooks.changed();
   }
 
@@ -954,6 +961,11 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     // scenes and the whole table
     gen: { get opts() { return genOpts; }, set opts(o: GenOpts) { genOpts = o; later(); }, get recent() { return genRecent; }, presets, presetOf, presetFor, scene: sceneRec, build: buildScene, reroll, refurnish, lockRoom, newSeed },
     starterScene, emptyBoard, clearBoard, exportTable, importTable, slabCode, loadSlab,
+    attachRules: (r: SystemUI) => { rules = r; later(); }, system: () => rules?.system() ?? null, openSheet: (id?: string | null) => rules?.open(id),
+    /** Would this device apply what the rules say follows (the GM's; lowest id of several; the actor's with no GM here)? */
+    referee: () => authority(gms(store), [meId, ...[...net.peers.keys()].map(pid)], meId) === meId,
+    send: (m: Msg) => void send(m), secretRoll: () => secret,
+    setLos: (on: boolean) => { if (full()) store.set('set:los', on); }, los: () => setting(store, 'los', false),
     /** Ask for the chrome to be redrawn (after a change the store does not know about). */
     touch: later,
   };

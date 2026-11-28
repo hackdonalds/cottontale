@@ -97,6 +97,9 @@ order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes ov
 - `src/ui/dockFor.ts` what the dock shows, pure: one function from the table's state to at most six slots — add a state here
   first, with a test (`dockFor.test.ts`). `src/ui/dock.ts` draws it, with the Undo / Redo pair; `src/ui/notice.ts` is the
   one fading line that replaces system messages in the log
+- `src/ui/drawer.ts` the one sheet of the new chrome: a slot opens a drawer, another slot swaps it, a touch on the table puts it away
+  (unless `stay`). What the slots open lives in `buildSheets.ts`, `playSheets.ts` and `tableSheet.ts`, each a function returning `DrawerOpts`;
+  `dock.ts` maps slot ids to them. Half height keeps the table ≥ 45% of the screen (e2e2 measures it); `full` is for lists and forms
 - `src/pick.ts` editing what is already placed, pure (move, turn, copy, remove a selection of store keys) — unit-test here.
   The board's `pick` tool is Build with nothing in hand: tap selects, a finger on the selection carries it, anything else is
   the camera. `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build

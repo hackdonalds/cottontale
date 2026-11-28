@@ -27,7 +27,8 @@ describe('the dock', () => {
     expect(ids({ role: 'gm', mode: 'build', sel: 'piece' })).toEqual(['move', 'turn', 'copy', 'remove', 'more', 'done']);
     expect(ids({ role: 'gm', mode: 'build', sel: 'mini' })).toEqual(['move', 'turn', 'copy', 'remove', 'more', 'done']); // a mini is finished where it is placed
     expect(ids({ role: 'gm', mode: 'play', sel: 'mini', sheets: true })).toEqual(['hp', 'conditions', 'hide', 'sheet', 'more', 'done']);
-    expect(ids({ role: 'player', mode: 'play', sel: 'mini' })).toEqual(['hp', 'conditions', 'more', 'done']);
+    expect(ids({ role: 'player', mode: 'play', sel: 'mini' })).toEqual(['hp', 'more', 'done']);
+    expect(ids({ role: 'gm', mode: 'play', sel: 'mini' })).toEqual(['hp', 'hide', 'more', 'done']);
     expect(ids({ role: 'player', mode: 'play', sel: 'theirs' })).toEqual(['details', 'done']);
   });
 
@@ -38,6 +39,13 @@ describe('the dock', () => {
     expect(block[1].off).toBe(true); // a block has no facing, but Turn keeps its place
     const eraser = dockFor({ role: 'gm', mode: 'build', sel: 'none', armed: { ...ARMED, erasing: true } });
     expect(eraser.find((s) => s.id === 'erase')!.on).toBe(true);
+  });
+
+  it('gives a tool of Play its own dock, with a way out', () => {
+    expect(ids({ role: 'gm', mode: 'play', sel: 'none', tool: { ruler: 'circle', blast: true } })).toEqual(['line', 'circle', 'cone', 'blast', 'done']);
+    expect(ids({ role: 'player', mode: 'play', sel: 'none', tool: { ruler: 'line' } })).toEqual(['line', 'circle', 'cone', 'done']);
+    expect(ids({ role: 'gm', mode: 'play', sel: 'none', tool: { fog: 'hide' } })).toEqual(['fogHide', 'fogShow', 'revealAll', 'done']);
+    expect(ids({ role: 'player', mode: 'play', sel: 'none', tool: { fog: 'hide' } })).not.toContain('fogHide'); // fog is the GM's
   });
 
   it('shows what state the table is in', () => {
