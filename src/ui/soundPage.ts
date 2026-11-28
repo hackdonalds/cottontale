@@ -502,6 +502,7 @@ export function registerSoundPage(ts: TableSounds, app: SoundPageHost): void {
 
   registerPrepPage({
     id: 'sound', title: 'Sound', icon: 'sound', order: 50, hint: 'Music, ambience, effects and a mixer',
+    now: () => { const n = ts.list().length; return n ? `${n} sound${n === 1 ? '' : 's'}` : ''; },
     render(el) {
       root = h('div', { class: 'snd' }, parts.notice, parts.list, parts.add, parts.mix);
       el.append(root);

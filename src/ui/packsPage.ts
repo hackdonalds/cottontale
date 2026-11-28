@@ -131,6 +131,7 @@ function pack(p: PackInfo, full: boolean, redraw: () => void): HTMLElement {
 export function registerPacksPage(): void {
   registerPrepPage({
     id: 'packs', title: 'Packs', icon: 'cube', order: 20, hint: 'The table’s own pieces, and what they weigh',
+    now: () => { const n = listPacks().reduce((sum, p) => sum + p.pieces.length, 0); return n ? `${n} piece${n === 1 ? '' : 's'}` : ''; },
     render(el, ctx) {
       off?.();
       // A picture arriving is not a change to the table: listen for it while the page is up.

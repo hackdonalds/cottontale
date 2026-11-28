@@ -893,7 +893,7 @@ export function initThemeEditor(host: ThemeHost): ThemeEditor {
 
   // ---- wiring ----
 
-  registerPrepPage({ id: 'theme', title: 'Theme', icon: 'moon', order: 10, hint: 'The mood, and the pieces up front', render: gallery, update: galleryUpdate });
+  registerPrepPage({ id: 'theme', title: 'Theme', icon: 'moon', order: 10, hint: 'The mood, and the pieces up front', now: (app) => { const t = app.theme(); return t ? `${t.icon} ${t.name}` : ''; }, render: gallery, update: galleryUpdate });
   registerPrepPage({
     id: EDIT, title: 'Customise theme', icon: 'moon', listed: false, see: true,
     render: editor, update: editorUpdate,

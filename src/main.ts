@@ -1083,7 +1083,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   // Prep: the full-screen pages for getting a table ready (see ui/prep.ts).
   registerBuiltinPrepPages();
   // Rules in Prep is the same picker the menu's Rules sheet shows (ui/sheet.ts).
-  registerPrepPage({ id: 'rules', title: 'Rules', icon: 'list', order: 40, hint: 'The game system and its character sheets', render: renderSystemPicker, update: renderSystemPicker });
+  registerPrepPage({ id: 'rules', title: 'Rules', icon: 'list', order: 40, hint: 'The game system and its character sheets', now: () => rules?.system()?.name ?? '', render: renderSystemPicker, update: renderSystemPicker });
   const prep = initPrep({
     store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name,
     // Straight from an import to the table: Prep closes, and the new piece is in hand on its own shelf.

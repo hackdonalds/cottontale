@@ -44,6 +44,8 @@ export interface PrepPage {
   order?: number;
   /** One line under the title in the list. */
   hint?: string;
+  /** What the table has of this right now ("Pirates", "3 pieces"), shown beside the title in the list; '' for nothing yet. */
+  now?(app: PrepApp): string;
   /** False for a page that is only reached from another page. */
   listed?: boolean;
   /** True for a page that leaves the table showing (and takes touches only where it draws): `#prepPages[data-see]`. */
@@ -102,6 +104,9 @@ export function initPrep(app: PrepApp): Prep {
       b.dataset.page = p.id;
       b.innerHTML = `<i>${ico(p.icon)}</i><span><b></b><small></small></span>${ico('fwd')}`;
       b.querySelector('b')!.textContent = p.title;
+      let now = '';
+      try { now = p.now?.(app) ?? ''; } catch { /* a page that cannot say goes without */ }
+      if (now) { const em = document.createElement('em'); em.textContent = now.slice(0, 28); b.lastElementChild!.before(em); } // beside the arrow: the title stays the title
       b.querySelector('small')!.textContent = p.hint ?? '';
       b.onclick = () => open(p.id);
       el.append(b);
@@ -177,7 +182,8 @@ export function initPrep(app: PrepApp): Prep {
     refresh() {
       if (cur === null) return;
       if (!app.full()) { close(); return; }
-      pages.get(cur)?.update?.(body, ctx);
+      if (cur === ROOT) { const at = body.scrollTop; body.innerHTML = ''; list(body); body.scrollTop = at; } // what each row says the table has may have changed
+      else pages.get(cur)?.update?.(body, ctx);
     },
   };
 }
