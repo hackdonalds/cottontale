@@ -106,6 +106,11 @@ order; `reports/Mobile first VTT UX research.md` the reasons). Until it takes ov
   the camera. Select area (`board.pickArea`, armed from Make or More; `areaKeys`) lets one finger drag a rectangle: what stands in it
   is picked, and is then moved, turned about its middle (`turnAreaEdits`), copied a footprint over or removed as one step
   (`node scripts/e2e2-area.mjs`). `board.write` is an undoable edit anyone may make to what is theirs; `board.commit` is the same for whoever may build
+- Fog by the room: with the fog tool a tap hides or reveals the whole room under the finger as one step of undo (`regions` in
+  `src/rules.ts`: the floor of one level, bounded by walls of every kind, doorways too, and by blocks; null on open ground, where a
+  tap is one column as before), a drag still paints columns. "As players" in its dock is `board.preview(on)`: only this device's view
+  (fog solid, hidden minis gone, the players' line of sight), no brush edits while it is on, and it ends with the tool.
+  `node scripts/e2e2-fog.mjs` checks both
 - Rules of the new chrome: no top bar; a new state swaps the dock's slots and never adds a row; no ring and no hidden
   gestures (long-press is only ever a shortcut); nothing is confirmed with a dialog — it is done, said in a notice, and Undo takes it back
 - `node scripts/e2e2.mjs` (after a build) checks it on phone viewports, including the screen budget: every dock state goes through its `layout()`

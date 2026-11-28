@@ -167,7 +167,7 @@ export function toolsSheet({ s, drawer, notice }: Ctx): DrawerOpts {
       body.append(
         h('div', { class: 'chips' },
           btn('Ruler', () => { s.setTool('ruler'); drawer.close(); notice.say('Drag on the table to measure.'); }, { icon: 'ruler' }),
-          s.amGM() && btn('Fog', () => { s.setTool('fog'); drawer.close(); notice.say('Drag to hide an area from the players.'); }, { icon: 'fog' }),
+          s.amGM() && btn('Fog', () => { s.setTool('fog'); drawer.close(); notice.say('Tap a room to hide it from the players, or drag to paint.'); }, { icon: 'fog' }),
         ),
         h('p', { class: 'hint', text: 'Floors — hide what is above, to look inside buildings' }),
         h('div', { class: 'chips' },
