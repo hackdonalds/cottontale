@@ -369,4 +369,4 @@ Further asserted behaviour: start card clear of the dock and hidden for sheets/B
 25. **The start card is the only guidance**, appears only in Play on an empty board, and offers four unrelated verbs with no order.
 26. **Gestures are never taught**: one-finger orbit vs two-finger pan, long-press ping, drag-and-release dice, tap-edge walls, two-finger-only camera in Build.
 27. **A joining player gets no pointer to their character** and no hint about what they may do.
-28. **Three shipped rule systems and four themes are discoverable only through Prep or ☰**; a first-time GM can run a whole session without learning that sheets, conditions or themes exist.
+28. **Four shipped rule systems and four themes are discoverable only through Prep or ☰**; a first-time GM can run a whole session without learning that sheets, conditions or themes exist.
