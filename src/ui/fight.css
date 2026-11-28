@@ -1,0 +1,11 @@
+/* The fight tracker's turn order, rearranged by hand (src/ui/reorder.ts, `fightSheet`).
+   The grip is the one place where a finger does not scroll the drawer: it carries the row. */
+.drawer .fighter .grip { flex: 0 0 var(--tap); width: var(--tap); min-height: var(--tap); padding: 0; background: none; box-shadow: none; opacity: .7; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.drawer .fighter .grip.on { opacity: 1; color: var(--acc); background: rgba(255, 209, 102, .16); }
+.drawer .fighter .step { flex: 0 0 var(--tap); width: var(--tap); min-height: var(--tap); padding: 0; }
+.drawer .fighter .step:disabled { opacity: .3; }
+/* While a row is carried it floats over the others, which slide out of its way. */
+.drawer .fighter.dragging { position: relative; z-index: 2; background: #3a2d25; border-radius: 10px; box-shadow: 0 6px 14px rgba(0, 0, 0, .5); }
+.drawer .fighter.dragging .grip { cursor: grabbing; opacity: 1; color: var(--acc); }
+.drawer .body.sorting .fighter:not(.dragging) { transition: transform .12s ease-out; }
+@media (prefers-reduced-motion: reduce) { .drawer .body.sorting .fighter:not(.dragging) { transition: none; } }
