@@ -1772,8 +1772,9 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if (document.elementFromPoint(x, y)?.id === 'c') return [x, y];
     return null;
   });
+  await p.evaluate(() => { window.__ev = []; for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'touchstart', 'touchend', 'touchcancel', 'blur']) addEventListener(t, (e) => window.__ev.push(`${t}>${e.target?.id ?? e.target?.nodeName}:${e.isPrimary ?? ''}:${e.pointerId ?? ''}`), true); });
   await touch('touchStart', [bare]);
-  const fingers = await p.evaluate(([x, y]) => { const { board } = window.__ct, e = document.elementFromPoint(x, y); return { pointers: board.pointers.size, hand: board.hand.length, under: `${e?.tagName}#${e?.id}`, menu: !document.querySelector('#menu').hidden, follow: board.followTurns, sel: board.selected, focus: document.hasFocus() }; }, bare);
+  const fingers = await p.evaluate(([x, y]) => { const { board } = window.__ct, e = document.elementFromPoint(x, y); return { ev: window.__ev, pointers: board.pointers.size, hand: board.hand.length, under: `${e?.tagName}#${e?.id}`, menu: !document.querySelector('#menu').hidden, follow: board.followTurns, sel: board.selected, focus: document.hasFocus() }; }, bare);
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 1 }));
   await p.waitForFunction(() => window.__ct.board.turnId === 'far2');
   await p.waitForTimeout(200);
