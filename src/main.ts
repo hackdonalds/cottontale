@@ -354,7 +354,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderPlayers(): void {
     const g = gms(store);
     const all = [{ id: meId, name, color: myColor }, ...[...net.peers].map(([pk, p]) => ({ id: pid(pk), ...p }))];
-    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}${esc(p.name)}</span>`).join('');
+    $('players').innerHTML = all.map((p) => `<span style="border-color:${p.color}">${g.includes(p.id) ? ico('crown') : ''}<i>${esc(p.name)}</i></span>`).join('');
   }
   renderPlayers();
 
@@ -1106,7 +1106,9 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   function renderThemes(): void {
     const el = $('themes'), f = full(), cur = gameTheme()?.id;
     el.innerHTML = '';
+    // The shipped themes and the table's, then the ones saved on this device: your own are one tap away here too.
     const offered = themesOffered();
+    for (const t of themeEd.saved()) if (!offered.some((o) => o.id === t.id)) offered.push(t);
     $('themeHint').hidden = el.hidden = !offered.length;
     for (const t of offered) {
       const b = document.createElement('button');
