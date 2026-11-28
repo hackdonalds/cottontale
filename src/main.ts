@@ -433,6 +433,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     $<HTMLCanvasElement>('c').style.cursor = total ? 'grabbing' : '';
     if (total) void import('cannon-es'); // warm up the physics engine before the throw
     if (total) armBoulder(false); // dice in hand: the boulder is put back
+    if (ui.ready) renderRing(); // a selected piece's ring comes and goes with the dice
   }
   function pickUp(sides: number, n = 1): boolean {
     asked = null;
@@ -1261,7 +1262,8 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     renderStart();
     const el = $('ring'), v = sel();
     el.innerHTML = '';
-    el.hidden = !v || board.tool !== 'move';
+    // With dice in hand the next touch on the table throws them: the ring steps aside so no button is in the way.
+    el.hidden = !v || board.tool !== 'move' || board.hand.length > 0;
     const mine = !!v && canControl(store, meId, v);
     if (!v || el.hidden || !mine) board.aimed = null; // nothing selected to shoot with any more
     if (!v || el.hidden) return;
