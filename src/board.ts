@@ -2677,8 +2677,14 @@ export class Board {
   /** Where held dice hover for this pointer: above the surface under it (and above the fingertip). */
   private holdPoint(e: PointerEvent, g: Gesture): THREE.Vector3 | null {
     this.aim(e, g.touch ? TOUCH_LIFT : 0);
-    const p = this.pickSurface()?.point ?? this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, 0), new THREE.Vector3());
-    if (!p || p.distanceTo(this.camera.position) > 120) return null;
+    let p = this.pickSurface()?.point ?? this.ray.ray.intersectPlane(new THREE.Plane(THREE.Object3D.DEFAULT_UP, 0), new THREE.Vector3());
+    if (!p || p.distanceTo(this.camera.position) > 120) {
+      // A finger on the sky, or far past the table with the camera low: the dice must still come to
+      // hand, so they hover out that way, as far as an arm would reach.
+      const cam = this.camera.position, d = this.ray.ray.direction, flat = new THREE.Vector3(d.x, 0, d.z);
+      if (flat.lengthSq() < 1e-6) return null;
+      p = new THREE.Vector3(cam.x, 0, cam.z).addScaledVector(flat.normalize(), 40);
+    }
     const at = p.clone().setY(Math.max(0, p.y) + 1.5);
     g.throwing!.push({ t: performance.now(), p: at });
     if (g.throwing!.length > 24) g.throwing!.shift();

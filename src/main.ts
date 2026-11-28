@@ -1625,7 +1625,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   let startOff = false;
   function renderStart(): void {
     const empty = () => { for (const p of ['b:', 'm:', 'w:', 'l:']) for (const _ of store.keys(p)) return false; return true; };
-    const show = ui.ready && !startOff && full() && !building() && !prep.isOpen && !document.querySelector('.sheet:not(.closed)') && !board.selected && empty();
+    const show = ui.ready && !startOff && full() && !building() && !prep.isOpen && !document.querySelector('.sheet:not(.closed)') && !board.selected && !board.hand.length && empty();
     if ($('start').hidden === !show) return;
     $('start').hidden = !show;
   }
