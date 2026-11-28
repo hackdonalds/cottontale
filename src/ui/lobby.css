@@ -1,0 +1,27 @@
+/* The lobby of the new chrome (src/ui/lobby.ts). Base rules are a phone held upright: one
+   column, centred in what the keyboard leaves of the screen, scrolling inside itself when
+   that is not enough, with the step's one decision kept in view. */
+#welcome { position: fixed; left: 50%; top: calc((100dvh - var(--kb) + var(--st) - var(--sb)) / 2); transform: translate(-50%, -50%); width: min(420px, calc(100vw - 24px - var(--sl) - var(--sr))); max-height: calc(100dvh - 24px - var(--st) - var(--sb) - var(--kb)); overflow: hidden auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+#welcome > * { flex: none; }
+#welcome h1 { margin: 0; font-size: 26px; line-height: 1.2; }
+#welcome .sub { margin: 2px 0 0; font-size: 14px; opacity: .75; }
+#welcome .me, #welcome .acts, #welcome details[open] { display: flex; flex-direction: column; gap: 10px; }
+#welcome label, #welcome .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+#welcome .acts > button { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+#welcome .acts svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* The one decision of the step stays on screen while the rest scrolls under the keyboard's edge. */
+#welcome .primary { position: sticky; bottom: 0; z-index: 1; min-height: 52px; font-size: 17px; }
+#welcome summary { cursor: pointer; font-size: 13px; opacity: .7; min-height: var(--tap); display: flex; align-items: center; }
+#welcome textarea { resize: none; }
+#welcome .err { margin: 0; font-size: 14px; color: #ffb4a8; }
+#welcome .err:empty { display: none; }
+
+/* A phone held sideways: who you are on the left, what to do on the right. */
+@media (orientation: landscape) and (max-height: 520px) {
+  #welcome { width: min(620px, calc(100vw - 24px - var(--sl) - var(--sr))); padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 16px; align-items: start; }
+  #welcome > header, #welcome .err { grid-column: 1 / -1; }
+  #welcome > header { display: flex; align-items: baseline; gap: 12px; }
+  #welcome h1 { font-size: 20px; flex: none; }
+  #welcome .sub { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #welcome .me, #welcome .acts { gap: 8px; }
+}

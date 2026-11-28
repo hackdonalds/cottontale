@@ -205,6 +205,8 @@ export class Net {
   peers = new Map<string, Peer>();
   tag = '';
   synced = false;
+  /** A relay has sent all it holds of this table and it has been taken in: what the store lacks now, that relay does not have (`synced` also turns true when none answers). */
+  heard = false;
   /** Other modules listening for live messages (file transfers); one that returns true has dealt with it. */
   taps: Array<(msg: Msg, from: string) => boolean | void> = [];
   private key!: CryptoKey;
@@ -216,6 +218,8 @@ export class Net {
   private dirty = false;
   private beat?: ReturnType<typeof setInterval>;
   private unconfirmed: Set<string>;
+  /** Events that have arrived and are still being opened (decrypting is not instant): the table is not in sync before they are in. */
+  private opening = 0;
 
   constructor(private o: NetOpts) {
     this.pk = getPublicKey(o.sk);
@@ -228,7 +232,9 @@ export class Net {
     this.tag = tag;
     const since = Math.floor(Date.now() / 1000) - 15;
     const filters = () => [{ kinds: [SNAP], '#t': [tag] }, { kinds: [LIVE], '#t': [tag], since }];
-    const finishSync = () => {
+    const finishSync = (heard = false) => {
+      if (this.opening) { setTimeout(() => finishSync(heard), 100); return; }
+      if (heard) this.heard = true;
       if (this.synced) return;
       this.synced = true;
       // Anything we had locally that no relay knows about (e.g. the relay
@@ -237,15 +243,15 @@ export class Net {
     };
     this.relays = this.o.relays.map((url) => new Relay(
       url, filters,
-      (e) => void this.receive(e),
+      (e) => { this.opening++; void this.receive(e).finally(() => { this.opening--; }); },
       () => {
         this.o.onStatus(this.relays.filter((r) => r.open).length, this.relays.length);
         this.hello();
         if (this.synced && this.o.store.entries.size) this.snapshotSoon(2000);
       },
-      () => setTimeout(finishSync, 300),
+      () => setTimeout(() => finishSync(true), 300),
     ));
-    setTimeout(finishSync, 5000);
+    setTimeout(() => finishSync(), 5000);
     this.o.store.onLocal = (row) => this.queueOp(row);
     this.beat = setInterval(() => {
       this.hello();

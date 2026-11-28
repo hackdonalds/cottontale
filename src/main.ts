@@ -107,7 +107,7 @@ $('newcode').onclick = () => { $<HTMLInputElement>('code').value = randomCode();
 const query = new URLSearchParams(location.search), asDisplay = query.get('ui') === '2' && query.get('display') === '1';
 function openDisplay(code: string, relays: string[]): void {
   $('lobby').hidden = true;
-  void import('./app').then((m) => m.play('', code, relays, '', true));
+  void import('./app').then((m) => m.play('', code, relays, '', { display: true }));
 }
 
 $<HTMLFormElement>('lobby').onsubmit = (e) => {
@@ -130,6 +130,9 @@ if (asDisplay) {
   $('name').closest('label')!.hidden = true;
   if (hash.get('room')) $('lobby').dispatchEvent(new Event('submit', { cancelable: true }));
 }
+
+// The redesigned lobby (src/ui/lobby.ts) takes this form's place behind `?ui=2`.
+if (query.get('ui') === '2' && !asDisplay) { $('lobby').hidden = true; void import('./ui/lobby').then((m) => m.mountLobby()); } // (a table screen is not asked who it is)
 
 // ---- game ----------------------------------------------------------------------
 

@@ -31,10 +31,14 @@ export function tableSheet(ctx: Ctx, prep: () => Prep | undefined, dock: (slot: 
         h('div', { class: 'chips' },
           btn('Invite someone', () => void share(), { icon: 'link', cls: 'primary' }),
           btn(gm ? 'Stop being the GM' : 'Become the GM', () => { s.setGM(!gm); }, { icon: 'crown', on: gm }),
+          gm && btn(`Everyone can build: ${s.free() ? 'on' : 'off'}`, () => s.setFree(!s.free()), { icon: 'cube', on: s.free(), title: 'Let the players build too. Fog, hidden things and other figures stay yours' }),
         ),
         ...screenSection({ s, drawer, notice }),
-        h('p', { class: 'hint', text: gms.length ? 'The GM builds, hides things and moves every figure. Players move their own.' : 'Nobody is the GM, so everyone can build. Become the GM to keep the table yours.' }),
+        h('p', { class: 'hint', text: !gms.length ? 'Nobody is the GM, so everyone can build. Become the GM to keep the table yours.'
+          : s.free() ? 'Everyone can build. The GM alone hides things, lifts the fog and moves every figure; players move their own.'
+            : 'The GM builds, hides things and moves every figure. Players move their own.' }),
       );
+      if (gm) body.append(h('p', { class: 'hint', text: 'A player picks a character from the figures set to “Moved by: everyone” (select a figure, then More).' }));
       // Boards
       const active = s.activeBoard(), here = s.here();
       body.append(head('Boards'));
