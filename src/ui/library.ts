@@ -8,6 +8,26 @@ export const MAX_RECENT = 8;
 /** Favourites are a shelf too; this keeps it one that can still be scrolled with a thumb. */
 export const MAX_FAVS = 48;
 
+/** How many pieces the hotbar holds: a row a thumb can run along. */
+export const MAX_HOTBAR = 10;
+/** Of those, how many are kept for recent pieces however many are pinned: what was just used must not fall off the row. */
+const HOTBAR_RECENT = 2;
+
+/**
+ * What the hotbar shows: pinned pieces first, in their order, then the recent ones that are not pinned,
+ * each once. Pieces this table does not have (`has`) are left out.
+ */
+export function hotbarKeys(favs: readonly string[], recents: readonly string[], has: (key: string) => boolean, max = MAX_HOTBAR): string[] {
+  const seen = new Set<string>(), once = (k: string) => has(k) && !seen.has(k) && !!seen.add(k);
+  const pinned = favs.filter(once), rest = recents.filter(once);
+  return [...pinned.slice(0, Math.max(0, max - Math.min(rest.length, HOTBAR_RECENT))), ...rest].slice(0, max);
+}
+
+/** A row under a thumb must not shuffle: while it holds the same pieces it keeps the order it had (`prev`, returned as it is). */
+export function steady(prev: readonly string[], next: readonly string[]): readonly string[] {
+  return prev.length === next.length && next.every((k) => prev.includes(k)) ? prev : next;
+}
+
 /** The list with `key` moved (or added) to the front. Returns the same array if nothing changed. */
 export function pushRecent(list: readonly string[], key: string, max = MAX_RECENT): readonly string[] {
   if (!key || list[0] === key) return list;
