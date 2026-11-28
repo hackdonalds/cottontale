@@ -1772,7 +1772,7 @@ for (const [label, viewport] of [['portrait', { width: 390, height: 844 }], ['la
     for (let y = innerHeight / 2; y > 60; y -= 20) for (const x of [innerWidth / 2, innerWidth / 4, (innerWidth * 3) / 4]) if (document.elementFromPoint(x, y)?.id === 'c') return [x, y];
     return null;
   });
-  await p.evaluate(() => { window.__ev = []; for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'touchstart', 'touchend', 'touchcancel', 'blur']) addEventListener(t, (e) => window.__ev.push(`${t}>${e.target?.id ?? e.target?.nodeName}:${e.isPrimary ?? ''}:${e.pointerId ?? ''}`), true); });
+  await p.evaluate(() => { window.__ev = []; for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'touchstart', 'touchend', 'touchcancel', 'blur']) addEventListener(t, (e) => window.__ev.push(`${t}>${e.target?.nodeName}#${e.target?.id}.${e.target?.className}<${e.target?.closest?.('[id]')?.id}@${Math.round(e.clientX ?? -1)},${Math.round(e.clientY ?? -1)} vis=${e.target?.checkVisibility?.()} css=${e.target instanceof Element ? getComputedStyle(e.target).visibility + '/' + getComputedStyle(e.target).pointerEvents : ''}`), true); });
   await touch('touchStart', [bare]);
   const fingers = await p.evaluate(([x, y]) => { const { board } = window.__ct, e = document.elementFromPoint(x, y); return { ev: window.__ev, pointers: board.pointers.size, hand: board.hand.length, under: `${e?.tagName}#${e?.id}`, menu: !document.querySelector('#menu').hidden, follow: board.followTurns, sel: board.selected, focus: document.hasFocus() }; }, bare);
   await p.evaluate(() => window.__ct.store.set('turn', { id: 'far2', round: 1 }));
