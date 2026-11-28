@@ -95,6 +95,14 @@ export function fullPowers(store: Store, me: string): boolean {
   const g = gms(store);
   return !g.length || g.includes(me);
 }
+/**
+ * May this player build: place, change and remove the pieces of the scene? Whoever has full powers may, and so may
+ * everyone once the GM has opened building to the table (`set:free`). Nothing else comes with it: fog, hidden minis,
+ * secret rolls, line of sight and other players' figures stay the GM's (`fullPowers`, `canControl`).
+ */
+export function canBuild(store: Store, me: string): boolean {
+  return fullPowers(store, me) || store.get('set:free') === true;
+}
 export const fogged = (store: Store, x: number, z: number) => store.get(`f:${x},${z}`) === true;
 export const setting = <T>(store: Store, name: string, fallback: T) => store.get<T>(`set:${name}`) ?? fallback;
 

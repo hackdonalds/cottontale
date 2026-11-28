@@ -432,6 +432,8 @@ export class Board {
 
   private me = '';
   private full = true;
+  /** May this player change the scene? The GM may, and everyone where the table says so (`canBuild` in rules.ts). */
+  private build = true;
   private turnId: string | null = null;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -724,9 +726,10 @@ export class Board {
   // ---- what this player gets to see ------------------------------------------
 
   /** Who is looking: their player id, and whether they have GM powers (always true in free play). */
-  setRole(me: string, full: boolean): void {
+  setRole(me: string, full: boolean, build = full): void {
     this.me = me;
     this.full = full;
+    this.build = build;
     if (!full) this.offer(null);
     this.refresh();
   }
@@ -1761,7 +1764,7 @@ export class Board {
   }
   /** Select pieces with the pick tool (an empty list lets go of them). Only whoever may build can. */
   pick(keys: string[]): void {
-    const next = this.full ? present(this.store, keys) : [];
+    const next = this.build ? present(this.store, keys) : [];
     if (next.length && this.selected) this.select(null);
     this.picked = next;
     if (!next.length) this.placing = false;
@@ -1809,7 +1812,7 @@ export class Board {
   }
   /** Write what a selection tool worked out, as one step of undo, and keep hold of the result. */
   private took(out: Picked | null): boolean {
-    if (!out || !this.full) return false;
+    if (!out || !this.build) return false;
     const mini = this.selected;
     this.write(out.edits);
     if (mini && out.keys.length === 1 && out.keys[0].startsWith('m:')) this.select(out.keys[0].slice(2));
@@ -1825,7 +1828,7 @@ export class Board {
   /** Take the selection off the table. */
   removePicked(): boolean {
     const out = removeEdits(this.store, this.selection());
-    if (!out || !this.full) return false;
+    if (!out || !this.build) return false;
     this.write(out.edits);
     this.select(null);
     this.pick([]);
@@ -1858,7 +1861,7 @@ export class Board {
   /** A spot on the table for the scatter brush: where the pointer meets the ground or a block. */
   private pourSpot(): Vec | null {
     const p = this.pickSurface()?.point;
-    return p && this.full && p.y < Math.min(MAX_Y, this.cut) ? [+p.x.toFixed(2), +Math.max(0, p.y).toFixed(2), +p.z.toFixed(2)] : null;
+    return p && this.build && p.y < Math.min(MAX_Y, this.cut) ? [+p.x.toFixed(2), +Math.max(0, p.y).toFixed(2), +p.z.toFixed(2)] : null;
   }
   /** The loose pieces under the pointer: a fingertip covers more than one coin, so all that it covers. */
   private looseAt(): string[] {
@@ -2058,7 +2061,7 @@ export class Board {
    * bounds, and whatever is left of the scene it replaces (`old`), makes way for it.
    */
   applyScene(edits: [string, unknown][], [x0, x1, z0, z1]: number[], old: Set<string>, frame = true): void {
-    if (!this.full) return;
+    if (!this.build) return;
     const scene = new Map(edits);
     this.batch = [];
     this.undoStack.push(this.batch);
@@ -2133,7 +2136,7 @@ export class Board {
     return step;
   }
   private edit(k: string, v: unknown): void {
-    if (!this.full) return; // building and fog are the GM's once a table has one
+    if (!this.build) return; // building is the GM's once a table has one, unless the GM shares it
     const u = { k, prev: this.store.get(k) };
     if (this.batch) this.batch.push(u);
     else this.undoStack.push([u]);
@@ -2816,7 +2819,7 @@ export class Board {
         if (this.lighting) { this.stepLight(); break; }
         if (this.erasing) {
           const t = this.eraseTarget();
-          if (t?.startsWith('l:')) this.commit(this.looseAt().map((k) => [k, null]));
+          if (t?.startsWith('l:') && this.build) this.write(this.looseAt().map((k) => [k, null]));
           else if (t) this.edit(t, null);
           break;
         }
@@ -2826,14 +2829,14 @@ export class Board {
       }
       case 'mini': {
         const p = this.standing();
-        if (!p || !this.full) break;
+        if (!p || !this.build) break;
         const id = crypto.randomUUID().slice(0, 12);
         this.edit(`m:${id}`, { ...this.hooks.newMini(), x: p[0], y: p[1], z: p[2] });
         break;
       }
       case 'pick': {
         if (g.tapMini) { this.select(g.tapMini); break; }
-        const t = this.full ? this.pickTarget() : null;
+        const t = this.build ? this.pickTarget() : null;
         this.select(null);
         this.pick(t ? [t] : []);
         break;

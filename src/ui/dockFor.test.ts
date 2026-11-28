@@ -7,8 +7,8 @@ const ids = (s: DockState) => dockFor(s).map((x) => x.id);
 describe('the dock', () => {
   it('never holds more than six slots, never repeats one, and always has something for a seated player', () => {
     for (const role of ['gm', 'player', 'display'] as Role[]) for (const mode of ['play', 'build'] as Mode[]) for (const sel of ['none', 'mini', 'theirs', 'piece'] as Sel[]) {
-      for (const armed of [undefined, ARMED]) for (const sheets of [false, true]) for (const placing of [false, true]) {
-        const slots = dockFor({ role, mode, sel, armed, sheets, placing, hidden: placing });
+      for (const armed of [undefined, ARMED]) for (const sheets of [false, true]) for (const placing of [false, true]) for (const build of [false, true]) {
+        const slots = dockFor({ role, build, mode, sel, armed, sheets, placing, hidden: placing });
         expect(slots.length).toBeLessThanOrEqual(MAX_SLOTS);
         expect(new Set(slots.map((s) => s.id)).size).toBe(slots.length);
         expect(slots.length > 0).toBe(role !== 'display');
@@ -21,6 +21,16 @@ describe('the dock', () => {
     expect(ids({ role: 'gm', mode: 'play', sel: 'none' })[0]).toBe('build');
     expect(ids({ role: 'gm', mode: 'build', sel: 'none' })[0]).toBe('play');
     expect(ids({ role: 'player', mode: 'play', sel: 'none' })).not.toContain('build');
+  });
+
+  it('gives a player who may build the Build slot and Build\'s docks, and nothing of the GM\'s', () => {
+    expect(ids({ role: 'player', build: true, mode: 'play', sel: 'none', sheets: true })).toEqual(['build', 'dice', 'sheet', 'ruler', 'chat', 'table']);
+    expect(ids({ role: 'player', build: true, mode: 'build', sel: 'none' })).toEqual(ids({ role: 'gm', mode: 'build', sel: 'none' }));
+    expect(ids({ role: 'player', build: true, mode: 'build', sel: 'none', armed: ARMED })).toEqual(ids({ role: 'gm', mode: 'build', sel: 'none', armed: ARMED }));
+    expect(ids({ role: 'player', build: true, mode: 'build', sel: 'piece' })).toEqual(['move', 'turn', 'copy', 'remove', 'more', 'done']);
+    expect(ids({ role: 'player', build: true, mode: 'build', sel: 'theirs' })).toEqual(['details', 'done']); // the GM's figures stay put
+    expect(ids({ role: 'player', build: true, mode: 'play', sel: 'mini' })).not.toContain('hide');
+    expect(ids({ role: 'player', build: true, mode: 'play', sel: 'none', tool: { fog: 'hide' } })).not.toContain('fogHide');
   });
 
   it('lets the selected thing decide', () => {

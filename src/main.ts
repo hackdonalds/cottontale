@@ -120,6 +120,9 @@ $<HTMLFormElement>('lobby').onsubmit = (e) => {
   else void play(name, code, relays);
 };
 
+// The redesigned lobby (src/ui/lobby.ts) takes this form's place behind `?ui=2`.
+if (new URLSearchParams(location.search).get('ui') === '2') { $('lobby').hidden = true; void import('./ui/lobby').then((m) => m.mountLobby()); }
+
 // ---- game ----------------------------------------------------------------------
 
 async function play(name: string, code: string, relays: string[]): Promise<void> {
