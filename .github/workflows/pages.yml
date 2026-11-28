@@ -33,5 +33,8 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+      # The artifact just uploaded is not always listed straight away, and the deploy step looks for
+      # it only once ("Found 0 artifact(s)"): give the listing a moment.
+      - run: sleep 20
       - id: deploy
         uses: actions/deploy-pages@v4

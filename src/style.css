@@ -263,6 +263,7 @@ body.building:not(.player) #strips { right: calc(74px + var(--sr)); }
 .prepRow { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 10px 12px; border-radius: 14px; text-align: left; }
 .prepRow > i { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: rgba(255, 209, 102, .16); color: var(--acc); }
 .prepRow > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.prepRow > em { flex: 0 1 auto; max-width: 38%; font-style: normal; font-weight: 600; font-size: 13px; color: var(--acc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prepRow small { font-size: 12.5px; opacity: .7; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 #hud .prepRow > svg { opacity: .5; }
 /* A gallery of large cards (the themes). */
