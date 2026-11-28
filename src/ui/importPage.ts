@@ -28,6 +28,8 @@ declare module './prep' {
     /** This player's id and name. */
     me: string;
     playerName: string;
+    /** Put a piece of the library in hand and go to the table: what "Place it" does after an import. */
+    place?(group: 'props' | 'minis', id: string): void;
   }
 }
 
@@ -35,7 +37,7 @@ type Frame = 'square' | 'portrait' | 'whole';
 type As = 'figure' | 'thing' | 'tile';
 type Tool = 'tap' | 'erase' | 'restore';
 interface Work { canvas: HTMLCanvasElement; g: CanvasRenderingContext2D; px: ImageData; alpha0: Uint8Array; undo: Uint8Array[] }
-interface Result { name: string; ok: boolean; text: string }
+interface Result { name: string; ok: boolean; text: string; /** The piece it became, so it can be placed in one tap. */ piece?: { group: 'props' | 'minis'; id: string } }
 
 /** The longest side a picture is worked on at: enough for a map tile; a token is cut out at a smaller one. */
 const SOURCE_SIDE = 2048, TOKEN_WORK = 768;
@@ -224,6 +226,14 @@ function start(box: HTMLElement, ctx: PrepCtx): void {
     li.innerHTML = '<b></b><span></span>';
     li.children[0].textContent = r.name;
     li.children[1].textContent = r.text;
+    if (r.piece && ctx.app.place && ctx.app.full()) {
+      // The shortest way from "it is in" to "it is on the table": one tap, the piece in hand.
+      const go = document.createElement('button'), piece = r.piece;
+      go.className = 'primary impPlace';
+      go.textContent = 'Place it on the table';
+      go.onclick = () => ctx.app.place!(piece.group, piece.id);
+      li.append(go);
+    }
     list.append(li);
   }
   if (!ctx.app.full()) { q<HTMLButtonElement>('impShoot').disabled = q<HTMLButtonElement>('impPick').disabled = q<HTMLButtonElement>('impModel').disabled = true; }
@@ -506,7 +516,7 @@ async function save(): Promise<void> {
     const done = addPiece(ns, group, pieceKey(label, (k) => taken.has(k)), entry, { shelf: flow.shelf, pack: packName(ctx) });
     if (!done.ok) return fail(done.reason);
     const where = flow.as === 'figure' ? 'Figures' : 'Things';
-    flow.results.unshift({ name: label, ok: true, text: `${storedText(ref, outcomes)}. Find it in Build → ${where}, on the shelf “${flow.shelf || packName(ctx)}”.` });
+    flow.results.unshift({ name: label, ok: true, text: `${storedText(ref, outcomes)}. Find it in Build → ${where}, on the shelf “${flow.shelf || packName(ctx)}”.`, ...(done.id ? { piece: { group, id: done.id } } : {}) });
     void next();
   } catch (e) {
     fail(e instanceof Error && e.message ? `That did not work: ${e.message}` : 'That did not work.');

@@ -712,9 +712,15 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
     const theme = (kind: string, ids: string[] = []): Shelf[] => (mine && ids.length ? [[MINE, `${mine.icon} ${mine.name}`, keys(kind, ids)]] : []);
     if (c === 'land') return [['Terrain', 'Ground', keys('b', themed(BLOCK_SHELVES.Terrain ?? []))]];
     if (c === 'walls') return [['Structures', 'Structures', keys('p', PROP_SHELVES.Structures)], ['Building', 'Building blocks', keys('b', themed(BLOCK_SHELVES.Building ?? []))]];
-    if (c === 'things') return [...theme('p', mine?.pieces.props), ...Object.keys(PROP_SHELVES).filter((n) => n !== 'Structures').map((n): Shelf => [n, n, keys('p', PROP_SHELVES[n])])];
-    if (c === 'figures') return [...theme('m', mine?.pieces.minis), ...Object.keys(MINI_SHELVES).map((n): Shelf => [n, n, keys('m', MINI_SHELVES[n])])];
+    if (c === 'things') return [...theme('p', mine?.pieces.props), ...shelfNames(PROP_SHELVES).filter((n) => n !== 'Structures').map((n): Shelf => [n, n, keys('p', PROP_SHELVES[n])])];
+    if (c === 'figures') return [...theme('m', mine?.pieces.minis), ...shelfNames(MINI_SHELVES).map((n): Shelf => [n, n, keys('m', MINI_SHELVES[n])])];
     return [];
+  };
+  /** The shelves of a kind, the table's own first (shelves made only of pack pieces): what a GM brought in should not be the last thing in a long row. */
+  const shelfNames = (shelves: Record<string, string[]>): string[] => {
+    const own = (n: string) => shelves[n].length > 0 && shelves[n].every((id) => id.includes(':'));
+    const names = Object.keys(shelves);
+    return [...names.filter(own), ...names.filter((n) => !own(n))];
   };
   /** Picked in the library, perhaps by searching: the tray turns to a shelf the piece is on. */
   const showShelfOf = (key: string) => {
@@ -832,7 +838,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const mine = gameTheme();
         if (mine?.pieces.props.length) chip(`${mine.icon} ${mine.name}`, thingShelf === MINE, () => { thingShelf = MINE; board.brush = mine.pieces.props[0]; });
         else if (thingShelf === MINE) thingShelf = 'Nature';
-        for (const name of Object.keys(PROP_SHELVES)) {
+        for (const name of shelfNames(PROP_SHELVES)) {
           if (name !== 'Structures') chip(name, thingShelf === name && board.brush !== 'pour', () => { thingShelf = name; board.brush = PROP_SHELVES[name][0]; });
         }
         turn();
@@ -848,7 +854,7 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
         const mine = gameTheme();
         if (mine?.pieces.minis.length) chip(`${mine.icon} ${mine.name}`, miniShelf === MINE, () => { miniShelf = MINE; miniKind = mine.pieces.minis[0]; });
         else if (miniShelf === MINE) miniShelf = 'Heroes';
-        for (const name of Object.keys(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
+        for (const name of shelfNames(MINI_SHELVES)) chip(name, miniShelf === name, () => { miniShelf = name; miniKind = MINI_SHELVES[name][0]; });
         chip('Base', false, () => { miniColor = PLAYER_COLORS[(PLAYER_COLORS.indexOf(miniColor) + 1) % PLAYER_COLORS.length]; }, `<i style="background:${miniColor}"></i>`, 'Base colour');
         minis(miniIds());
       } else {
@@ -1076,7 +1082,20 @@ async function play(name: string, code: string, relays: string[]): Promise<void>
   registerBuiltinPrepPages();
   // Rules in Prep is the same picker the menu's Rules sheet shows (ui/sheet.ts).
   registerPrepPage({ id: 'rules', title: 'Rules', icon: 'list', order: 40, hint: 'The game system and its character sheets', render: renderSystemPicker, update: renderSystemPicker });
-  const prep = initPrep({ store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name });
+  const prep = initPrep({
+    store, full, say, themes: themesOffered, theme: gameTheme, pickTheme, blobs, me: meId, playerName: name,
+    // Straight from an import to the table: Prep closes, and the new piece is in hand on its own shelf.
+    place: (group, id) => {
+      if (!full() || !registry.known[group === 'minis' ? 'mini' : 'prop'](id)) return;
+      prep.close();
+      cat = group === 'minis' ? 'figures' : 'things';
+      showShelfOf(`${group === 'minis' ? 'm' : 'p'}_${id}`);
+      if (group === 'minis') miniKind = id; else board.brush = id;
+      setCat(cat);
+      trayOpen = false;
+      renderPalette();
+    },
+  });
   registerSoundPage(tableSounds, { store, full, emotes: Object.keys(EMOTES), soundOn: () => { if (!sound.enabled) $('soundOn').click(); } });
   // Make your own theme (ui/themeEditor.ts): the Theme page's gallery with Customise, and the editor over the live table.
   const themeEd = initThemeEditor({ scapes: () => tableSounds.scapeNames(), store, board, known, me: meId, color: () => myColor, full, ls, themes: themesOffered, pickTheme, thumb, lookAround: () => setTool('move'), open: (page) => prep.open(page) });
