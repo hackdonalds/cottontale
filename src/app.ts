@@ -7,6 +7,7 @@ import { EMOTES } from './board';
 import * as registry from './registry';
 import { ls, startSession, type Session } from './session';
 import { armKey, watchLibrary, type Ctx } from './ui/buildSheets';
+import { showDisplay } from './ui/display';
 import { mountDock, type Dock } from './ui/dock';
 import { mountDrawer } from './ui/drawer';
 import { thumb } from './ui/face';
@@ -21,7 +22,8 @@ import { initSheets } from './ui/sheets';
 import { registerSoundPage } from './ui/soundPage';
 import { initThemeEditor } from './ui/themeEditor';
 
-export async function play(name: string, code: string, relays: string[], color: string): Promise<void> {
+export async function play(name: string, code: string, relays: string[], color: string, display = false): Promise<void> {
+  if (display) return showDisplay(code, relays); // a table screen has no chrome to wire up (src/ui/display.ts)
   // Of the old chrome only the parts that are reused stay: the Prep pages, the character sheet, the rules picker and the roll toast.
   const hud = document.getElementById('hud')!;
   for (const kid of [...hud.children]) if (!['prepPages', 'sheet', 'rules', 'toast'].includes(kid.id)) kid.remove();

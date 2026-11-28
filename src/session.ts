@@ -10,7 +10,7 @@ import { Board, type MiniVal, type Ruler, type Sky, type Slab, type Tool, type V
 import { BLOCKS, MINIS, MINI_SHELVES, PROPS } from './catalog';
 import * as registry from './registry';
 import { loadKit, type Season } from './kit';
-import { EDGES, canControl, eyesOf, fullPowers, gms, miniShown, nextTurn, parseEdge, pid, roomEdges, setting, turnOrder, type CellVal, type Turn } from './rules';
+import { EDGES, PARTY, canControl, eyesOf, fullPowers, gms, miniShown, nextTurn, parseEdge, pid, roomEdges, setting, turnOrder, type CellVal, type Turn } from './rules';
 import { PRESETS, addPresets, generate, loadPresets, parsePreset, type GenOpts, type GenRoom, type KnownPiece, type Preset, type Theme } from './gen';
 import { MAX_DICE, decode, kindsFor, results, rollValues, simulate, type Kind, type Start, type Throw } from './dice';
 import { Blobs, deriveBlobKey, pickIce, pickServers } from './blob';
@@ -51,21 +51,33 @@ export interface SessionHooks {
   grabbed(): void;
 }
 
-export interface SessionOpts { canvas: HTMLCanvasElement; name: string; code: string; relays: string[]; color: string; hooks: SessionHooks }
+export interface SessionOpts {
+  canvas: HTMLCanvasElement; name: string; code: string; relays: string[]; color: string; hooks: SessionHooks;
+  /** A table screen (src/ui/display.ts): it looks on with the party, and can change nothing. */
+  display?: boolean;
+}
 export type Mode = 'play' | 'build';
 interface SceneRec { o: GenOpts; rooms: GenRoom[]; p?: unknown }
 export const SLAB_TAG = 'cottontale-slab:';
 
 export type Session = Awaited<ReturnType<typeof startSession>>;
 
-export async function startSession({ canvas, name, code, relays, color: myColor, hooks }: SessionOpts) {
-  let skHex = ls.get('sk');
-  if (!skHex) ls.set('sk', (skHex = hex(generateSecretKey())));
+export async function startSession({ canvas, name, code, relays, color: myColor, hooks, display = false }: SessionOpts) {
+  // A table screen has a key of its own: opened in the browser the GM plays in, it is still another seat.
+  const skKey = display ? 'skd' : 'sk';
+  let skHex = ls.get(skKey);
+  if (!skHex) ls.set(skKey, (skHex = hex(generateSecretKey())));
   const sk = unhex(skHex);
   const me = getPublicKey(sk);
   const meId = pid(me);
   const store = new Store(meId);
-  const full = () => fullPowers(store, meId);
+  /** Whose eyes the table is drawn for: this player's, or (a table screen) the whole party's. */
+  const seat = display ? PARTY : meId;
+  const full = () => fullPowers(store, seat);
+  /** May this device change the mini? A table screen changes nothing, whoever the mini belongs to. */
+  const may = (v: MiniVal) => !display && canControl(store, meId, v);
+  /** Does this device get to see the mini at all? */
+  const shown = (v: MiniVal) => miniShown(store, seat, v, eyesOf(store, seat)) !== 'no';
   const amGM = () => gms(store).includes(meId);
   // The modelled pieces; without them (offline, first visit) the table falls back to plain shapes.
   const [{ tag }] = await Promise.all([deriveRoom(code), loadKit('./kit').catch(() => {})]);
@@ -96,11 +108,11 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     onPick: () => later(),
     onLiveMove: (id, p) => void send({ y: 'mv', id, p }),
     onLand: (mine) => { sound.knock(); if (mine) buzz(8); },
-    onPing: (p) => { board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
+    onPing: (p) => { if (display) return; board.ping(p, myColor); sound.ping(); void send({ y: 'ping', p }); },
     newMini: () => ({ k: miniKind, c: miniColor, n: '', r: 0, s: 1 }),
     canMove: (id) => {
       const v = store.get<MiniVal>(`m:${id}`);
-      if (!v || !canControl(store, meId, v)) return false;
+      if (!v || !may(v)) return false;
       // In a fight, players move on their own turn (the GM always can).
       const turn = store.get<Turn>('turn');
       return full() || !turn || !turnOrder(store).some((o) => o.id === turn.id) || turn.id === id;
@@ -162,7 +174,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   const relay = { open: 0, total: relays.length };
   const net = new Net({
-    code, relays, sk, name, color: myColor, store, unconfirmed,
+    code, relays, sk, name, color: myColor, display, store, unconfirmed,
     onMsg: handle,
     onPeers: () => later(),
     onStatus: (open, total) => { relay.open = open; relay.total = total; later(); },
@@ -243,9 +255,11 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
       case 'fall': {
         // Only what this player can see is worth a line: a fall must not give a mini away.
         const v = elsewhere ? null : store.get<MiniVal>(`m:${String(msg.id)}`), n = Math.round(Number(msg.n));
-        if (v && n > 0 && n <= 40 && miniShown(store, meId, v, eyesOf(store, meId)) !== 'no') sys(fellLine(v, n));
+        if (v && n > 0 && n <= 40 && shown(v)) sys(fellLine(v, n));
         break;
       }
+      // The GM shows the table screen a view. Only a GM's is taken up, and only by a screen.
+      case 'cam': if (display && !elsewhere && gms(store).includes(pid(from))) board.flyTo(msg.p, msg.t); break;
       case 'blast': if (!elsewhere && Array.isArray(msg.c) && msg.c.every(Number.isFinite)) board.rock(msg.c, Math.max(1, Math.min(MAX_BLAST, Number(msg.r) || 1))); break;
     }
   }
@@ -526,16 +540,16 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   // ---- the selection ----
 
   const sel = () => (board.selected ? store.get<MiniVal>(`m:${board.selected}`) : null);
-  const mine = (v = sel()) => !!v && canControl(store, meId, v);
+  const mine = (v = sel()) => !!v && may(v);
   /** Change the selected mini (if it is ours to change), as a step of undo. */
   function patch(p: Partial<MiniVal>): void {
     const v = sel();
-    if (v && canControl(store, meId, v)) board.write([[`m:${board.selected}`, { ...v, ...p }]]);
+    if (v && may(v)) board.write([[`m:${board.selected}`, { ...v, ...p }]]);
   }
   /** Write a field that may be cleared: `undefined` removes it from the mini. */
   function setOpt(key: 'hp' | 'mhp' | 'ini' | 'o', value: number | string | undefined): void {
     const v = sel();
-    if (!v || !canControl(store, meId, v)) return;
+    if (!v || !may(v)) return;
     const { [key]: _, ...rest } = v;
     board.write([[`m:${board.selected}`, value === undefined || value === '' ? rest : { ...rest, [key]: value }]]);
   }
@@ -544,7 +558,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     const edits: [string, unknown][] = [];
     for (const id of ids) {
       const v = store.get<MiniVal>(`m:${id}`);
-      if (!v || !canControl(store, meId, v)) continue;
+      if (!v || !may(v)) continue;
       edits.push([`m:${id}`, { ...v, hp: Math.max(0, Math.min(v.mhp ?? 9999, (v.hp ?? v.mhp ?? 0) + by)) }]);
     }
     board.write(edits);
@@ -679,7 +693,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   // less motion; it also saves battery) and whether the camera follows the turn order.
   const local = {
     ambient: (ls.get('ambient') ?? (matchMedia('(prefers-reduced-motion: reduce)').matches ? '0' : '1')) === '1',
-    follow: ls.get('follow') !== '0',
+    follow: display || ls.get('follow') !== '0', // a table screen is nobody's to steer: it goes where the turn is
   };
   function setLocal(k: 'ambient' | 'follow', on: boolean): void {
     local[k] = on;
@@ -703,7 +717,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     const f = full(), now = `${amGM()}|${f}`;
     if (now !== role) {
       role = now;
-      board.setRole(meId, f);
+      board.setRole(seat, f);
       if (!f && board.tool !== 'move' && board.tool !== 'ruler') setTool('move');
       if (!f) secret = false;
     }
@@ -733,6 +747,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
 
   /** Take the GM's seat (false: someone who is here has it) or give it up. */
   function setGM(on: boolean): boolean {
+    if (display) return false; // a table screen is nobody's seat
     const g = gms(store), present = [meId, ...[...net.peers.keys()].map(pid)];
     if (!on) { store.set(`gm:${meId}`, null); return true; }
     if (g.includes(meId)) return true;
@@ -751,7 +766,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     const current = order.find((o) => o.id === turn?.id) ?? null;
     return { order, current, round: current ? turn!.round : 0, mayAdvance: f || mine(current?.v) };
   }
-  function next(): void { const t = nextTurn(store); if (t) store.set('turn', t); }
+  function next(): void { const t = display ? null : nextTurn(store); if (t) store.set('turn', t); }
   /** Everyone leaves the turn order. One step of undo for the GM. */
   function endFight(): void {
     const edits: [string, unknown][] = turnOrder(store).map((o) => { const { ini: _, ...rest } = o.v; return [`m:${o.id}`, rest]; });
@@ -798,6 +813,7 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
   /** Everything a table is made of comes back, read strictly wherever it is used, as anything another player wrote would be. */
   function importTable(text: string): boolean {
     try {
+      if (display) throw new Error('a table screen changes nothing');
       const data = JSON.parse(text);
       for (const [k, v] of data.rows as [string, unknown][]) if (/^(?:[bmfwl]:|at:|gen$)/.test(k)) store.set(k, v);
         else if (/^(?:@[\w-]+\/(?:[bmfwl]:|at:|gen$)|bd:)/.test(k)) store.setRaw(k, v);
@@ -941,7 +957,12 @@ export async function startSession({ canvas, name, code, relays, color: myColor,
     // who and where
     me, meId, name, color: myColor, invite, store, net, board, sound, blobs, tableSounds, packs, loaded, fresh,
     full, amGM, setGM, gmIds: () => gms(store), relay, leave,
-    people: () => [{ id: meId, name, color: myColor }, ...[...net.peers].map(([pk, p]) => ({ id: pid(pk), name: p.name, color: p.color }))],
+    /** The players here. Table screens are not among them (nobody's seat, never a mini's owner): those are `screens`. */
+    people: () => [...(display ? [] : [{ id: meId, name, color: myColor }]), ...[...net.peers].filter(([, p]) => !p.disp).map(([pk, p]) => ({ id: pid(pk), name: p.name, color: p.color }))],
+    display, screens: () => [...net.peers].filter(([, p]) => p.disp).map(([pk, p]) => ({ id: pid(pk), name: p.name, color: p.color })),
+    /** The GM's view of the table, for every table screen on this board to take up. */
+    showView: () => { if (amGM()) void send({ y: 'cam', ...board.view() }); },
+    shown,
     // play and build
     mode, setMode, setTool, armed, arm, armMini, disarm, sample, inHand, undo,
     mini: { get kind() { return miniKind; }, get color() { return miniColor; }, set color(c: string) { miniColor = c; later(); } },

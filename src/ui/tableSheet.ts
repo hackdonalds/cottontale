@@ -3,6 +3,7 @@
 // (theme, sound, pieces, rules), this device's settings, and saving or leaving.
 
 import { buzz, canBuzz, hapticsOn, setHaptics } from '../haptics';
+import { screenChips, screenSection } from './display';
 import { btn, h } from './dom';
 import type { Ctx } from './buildSheets';
 import type { DrawerOpts } from './drawer';
@@ -22,11 +23,12 @@ export function tableSheet({ s, drawer, notice }: Ctx, prep: () => Prep | undefi
       // People
       const gms = s.gmIds();
       body.append(head('People'),
-        h('div', { class: 'chips' }, ...s.people().map((p) => h('span', { class: 'person', style: `--c:${p.color}`, text: `${p.name}${gms.includes(p.id) ? ' · GM' : ''}${p.id === s.meId ? ' (you)' : ''}` }))),
+        h('div', { class: 'chips' }, ...s.people().map((p) => h('span', { class: 'person', style: `--c:${p.color}`, text: `${p.name}${gms.includes(p.id) ? ' · GM' : ''}${p.id === s.meId ? ' (you)' : ''}` })), ...screenChips(s)),
         h('div', { class: 'chips' },
           btn('Invite someone', () => void share(), { icon: 'link', cls: 'primary' }),
           btn(gm ? 'Stop being the GM' : 'Become the GM', () => { s.setGM(!gm); }, { icon: 'crown', on: gm }),
         ),
+        ...screenSection({ s, drawer, notice }),
         h('p', { class: 'hint', text: gms.length ? 'The GM builds, hides things and moves every figure. Players move their own.' : 'Nobody is the GM, so everyone can build. Become the GM to keep the table yours.' }),
       );
       // Boards

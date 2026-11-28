@@ -23,7 +23,7 @@ const CHUNK_ROWS = 1000;
 
 type Body =
   | { y: 'ops'; o: Row[] }
-  | { y: 'hi'; n: string; c: string; re?: boolean }
+  | { y: 'hi'; n: string; c: string; re?: boolean; d?: 1 } // `d`: a table screen (src/ui/display.ts), not a player
   | { y: 'bye' }
   | { y: 'chat'; m: string; to?: string }
   | { y: 'roll'; d: string; r: number[]; mod: number; t?: Throw; s?: boolean }
@@ -37,6 +37,8 @@ type Body =
   | { y: 'emote'; id: string; e: string }
   | ({ y: 'shot' } & Shot)
   | { y: 'ping'; p: [number, number, number] }
+  // The GM's camera, for table screens to take up: where it stands and what it looks at (read with `readView`, glide.ts).
+  | { y: 'cam'; p: [number, number, number]; t: [number, number, number] }
   | { y: 'mv'; id: string; p: [number, number, number] }
   /** A piece (`i`) at a cell or edge key was broken on purpose: burst it when its removal arrives. */
   | { y: 'broke'; k: string; i: string }
@@ -57,7 +59,7 @@ type Body =
 /** `bd` says which board a live action happened on, so it is only shown to players who are there. */
 export type Msg = Body & { bd?: string };
 
-export interface Peer { name: string; color: string; last: number }
+export interface Peer { name: string; color: string; last: number; /** A table screen: it looks on, and is nobody's seat. */ disp?: boolean }
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -188,6 +190,8 @@ export interface NetOpts {
   sk: Uint8Array;
   name: string;
   color: string;
+  /** This device is a table screen: said with every hello, so nobody takes it for a player. */
+  display?: boolean;
   store: Store;
   /** Keys loaded from local storage that the relays have not yet confirmed. */
   unconfirmed?: Set<string>;
@@ -259,7 +263,7 @@ export class Net {
   }
 
   private hello(re = false): void {
-    void this.send({ y: 'hi', n: this.o.name, c: this.o.color, ...(re ? { re } : {}) });
+    void this.send({ y: 'hi', n: this.o.name, c: this.o.color, ...(re ? { re } : {}), ...(this.o.display ? { d: 1 as const } : {}) });
   }
 
   async send(msg: Msg): Promise<void> {
@@ -326,7 +330,7 @@ export class Net {
       case 'hi': {
         const name = String(msg.n ?? '?').slice(0, 24);
         const color = /^#[0-9a-f]{6}$/i.test(msg.c) ? msg.c : '#cccccc';
-        this.peers.set(ev.pubkey, { name, color, last: Date.now() });
+        this.peers.set(ev.pubkey, { name, color, last: Date.now(), ...(msg.d === 1 ? { disp: true } : {}) });
         this.o.onPeers();
         if (!known) {
           if (!msg.re) setTimeout(() => this.hello(true), Math.random() * 400);
