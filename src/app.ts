@@ -10,6 +10,7 @@ import { armKey, watchLibrary, type Ctx } from './ui/buildSheets';
 import { mountDock, type Dock } from './ui/dock';
 import { mountDrawer } from './ui/drawer';
 import { thumb } from './ui/face';
+import { mountHotbar, type Hotbar } from './ui/hotbar2';
 import { registerImportPage } from './ui/importPage';
 import { mountNotice } from './ui/notice';
 import { registerPacksPage } from './ui/packsPage';
@@ -32,11 +33,11 @@ export async function play(name: string, code: string, relays: string[], color: 
   document.body.append(root);
   const notice = mountNotice(root);
   const log = new Log();
-  let dock: Dock | undefined, prep: Prep | undefined, turn: ReturnType<typeof mountTurn> | undefined;
+  let dock: Dock | undefined, hotbar: Hotbar | undefined, prep: Prep | undefined, turn: ReturnType<typeof mountTurn> | undefined;
   const plain = (html: string) => html.replace(/<[^>]+>/g, '');
   // The session starts telling us things before the chrome below exists: until then there is nothing to draw.
   let ready = false;
-  const redraw = () => { if (!ready) return; dock?.render(); turn?.render(); drawer.redraw(); inset(); };
+  const redraw = () => { if (!ready) return; dock?.render(); hotbar?.render(); turn?.render(); drawer.redraw(); inset(); };
   let toastTimer: ReturnType<typeof setTimeout>;
   const session: Session = await startSession({
     canvas: document.getElementById('c') as HTMLCanvasElement, name, code, relays, color,
@@ -63,7 +64,7 @@ export async function play(name: string, code: string, relays: string[], color: 
   });
   const s = session;
   document.getElementById('lobby')!.hidden = true;
-  const drawer = mountDrawer(root, () => { if (drawer.id) openLegacy(null, false); dock?.render(); inset(); });
+  const drawer = mountDrawer(root, () => { if (drawer.id) openLegacy(null, false); dock?.render(); hotbar?.render(); inset(); });
   const ctx: Ctx = { s, drawer, notice };
   log.onChange = () => { if (drawer.id === 'dice') drawer.redraw(); dock?.render(); };
 
@@ -107,6 +108,7 @@ export async function play(name: string, code: string, relays: string[], color: 
 
   turn = mountTurn(root, ctx);
   dock = mountDock(root, ctx, log, () => prep);
+  hotbar = mountHotbar(root, ctx);
   /** Tell the board how much of the canvas the chrome covers, so "the middle of the table" is the middle of what can be seen. */
   let was = '';
   function inset(): void {
