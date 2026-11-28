@@ -20,6 +20,29 @@ owner's answers in two interviews.
 | Play, first version | Encounter sheet, GM quick board, room/region fog reveal, TV table-display role |
 | Delivery | Big-bang: new chrome on a branch beside the old, e2e rewritten once, switched over when complete |
 
+## Screen budget (the rule that drives every layout choice)
+
+The table is the product; chrome rents space from it. On the smallest screen
+(360 × 640 portrait, 640 × 360 landscape) every state must fit this budget, and
+e2e measures it in `layout()`:
+
+| State | Table left visible |
+|---|---|
+| Nothing open | ≥ 85% of the screen |
+| Something selected, or brush armed | ≥ 80% (the dock swaps, it does not grow) |
+| Sheet at peek (hotbar, turn strip) | ≥ 70% |
+| Sheet at half | ≥ 45% |
+
+How the design meets it:
+
+- **No top bar.** Nothing is pinned to the top edge; the dock is the only permanent chrome, one row of 48px slots plus the safe area.
+- **Swap, never add.** A new state replaces the dock's slots; it never adds a second row, a floating panel or a ring over the table.
+- **Chrome appears only while it is useful.** Undo/Redo show in Build and for a few seconds after an undoable action in Play; the turn strip exists only during a fight; notices are one line and fade; hints likewise.
+- **Icons with short labels in the dock, values on the piece.** HP, conditions and distance are drawn at the mini, not in a panel.
+- **Landscape phone:** the dock becomes a vertical rail on the thumb side and sheets open as a side panel, so the short axis is never spent on chrome.
+- **Larger screens** get more table, not more chrome: the same dock, with sheets as side panels that leave the table interactive.
+- **Dense content goes full-screen** (Table pages, forms, the library at full), where it can use the whole screen instead of squeezing beside the table.
+
 ## Target design
 
 ### The dock, by state (five or six slots, always)
@@ -34,9 +57,10 @@ owner's answers in two interviews.
 | Player | Dice · Sheet · Ruler · Chat · Table (reduced) |
 | Display (TV) | no dock |
 
-Outside the dock, fixed in both modes: **Undo / Redo** (a pair at the edge above
-the dock), the **turn strip** (compact, on the edge, Next within thumb reach),
-and **notices** (one line on the table, replacing system lines in the closed log).
+Outside the dock, and only while useful (see the screen budget): **Undo / Redo**
+(a small pair at the edge above the dock), the **turn strip** (compact, on the
+edge, Next within thumb reach, during a fight only), and **notices** (one fading
+line on the table, replacing system lines in the closed log).
 
 ### Build
 

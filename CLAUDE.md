@@ -7,6 +7,10 @@
 Phones are the primary target. Design and build every feature for a phone
 first, then enhance for larger screens.
 
+- **Screen real estate drives the design:** on the smallest phone the table gets
+  the screen and chrome rents space from it. Prefer swapping what is shown over
+  adding to it, show chrome only while it is useful, and send dense content to a
+  full-screen page instead of squeezing it beside the table.
 - **Layout:** base CSS is the portrait-phone layout; landscape-phone and desktop
   are media-query layers on top (`src/style.css`). New UI goes in the bottom
   dock or a sheet, within thumb reach, and must respect the safe-area and
